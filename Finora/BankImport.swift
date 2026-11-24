@@ -137,6 +137,7 @@ struct BankCenter: View {
             .disabled(busy)
             Text("ПУМБ PDF, А-БАНК PDF, ОТП XLSX. Лише гривневі рахунки; оригінальні суми в іншій валюті зберігаються. Приват24 і PDF monobank потребують шаблону.")
                 .font(.caption)
+            NavigationLink { AutomationCenter() } label: { IzanamiLabel(title: "Apple Pay / SMS — налаштування", icon: "bolt.fill", color: .orange) }
             NavigationLink { BankImportHistory() } label: {
                 IzanamiLabel(title: "Історія імпорту", icon: "clock.arrow.circlepath", color: .blue)
             }
@@ -173,7 +174,7 @@ struct BankCenter: View {
             lastFour = String(a.id.suffix(4))
         }
         let type = a.type ?? "Рахунок"
-        return type + " · " + lastFour
+        return type + " · " + lastFour + " · " + "Кредитний ліміт" + ": " + currencyMoney(a.creditLimit ?? 0,"UAH")
     }
     private var monoControls: some View {
         Group {
@@ -235,19 +236,63 @@ struct BankCenter: View {
 struct BankReview: View {
     @EnvironmentObject var s: Store; @Environment(\.dismiss) var dismiss
     let batch: BankBatch; let account: String
-    @State private var excluded: Set<String> = []; @State private var confirm = false
+    @State private var excluded: Set<String> = []; @State private var includedMatches: Set<String> = []; @State private var confirm = false
     var rows: [BankRow] { bankNewRows(batch.rows,existing:s.db.operations.filter{$0.account == account}.compactMap(\.bankKey)) }
-    var selected: [BankRow] {rows.filter{!excluded.contains($0.id)}}
+    var selected: [BankRow] {rows.filter{isSelected($0)}}
+    func possibleMatch(_ r: BankRow) -> Bool {
+        s.db.operations.contains {o in
+            o.captureSource != nil && (o.entryCurrency ?? "UAH") == "UAH" && captureSimilar(account:account,amount:abs(r.signed),incoming:r.signed>0,date:r.date,otherAccount:o.account,otherAmount:o.sourceMinor ?? o.amount,otherIncoming:o.kind.incoming,otherDate:o.date,window:36*3600)
+        }
+    }
+    func isSelected(_ r: BankRow) -> Bool { !excluded.contains(r.id) && (!possibleMatch(r) || includedMatches.contains(r.id)) }
+    func setSelected(_ r: BankRow,_ value:Bool) {
+        if value {excluded.remove(r.id);includedMatches.insert(r.id)} else {excluded.insert(r.id);includedMatches.remove(r.id)}
+    }
+    private func rowToggle(_ r:BankRow) -> some View {
+        Toggle(isOn:Binding(get:{isSelected(r)},set:{setSelected(r,$0)})) {
+            VStack(alignment:.leading){
+                Text(r.note.isEmpty ? "Без опису":r.note)
+                Text(money(r.signed)).bold()
+                Text(r.date.formatted(date:.abbreviated,time:.shortened)).font(.caption)
+                Text(kind(r).title).font(.caption).foregroundStyle(kind(r).needsReview ? Color.orange : Color.secondary)
+                Text(category(r)).font(.caption)
+                if possibleMatch(r) {Text("Можливий дублікат Apple Pay / SMS. Перевірте, перш ніж включити.").font(.caption).foregroundStyle(.orange)}
+                if let w=r.warning {Text(w).font(.caption).foregroundStyle(.orange)}
+                if r.fee>0 {Text("Комісія: "+money(r.fee)).font(.caption)}
+            }
+        }
+    }
     var body: some View {
         List {
-            Section { LabeledContent("Нові",value:String(rows.count));LabeledContent("Повторний імпорт",value:String(batch.rows.count-rows.count));LabeledContent("Не розпізнано / не проведено",value:String(batch.rejected)); LabeledContent("Вибрано",value:String(selected.count)); if let message=batch.reconciliation {Text(message).font(.caption).foregroundStyle(message.hasPrefix("Суми") ? Color.green : Color.orange)}; Text("Перекази та комісії перевір вручну. Підозрілі операції можна зняти з вибору. Схожі платежі з різних джерел поки не зіставляються.").font(.caption) }
+            Section { LabeledContent("Нові",value:String(rows.count));LabeledContent("Повторний імпорт",value:String(batch.rows.count-rows.count));LabeledContent("Не розпізнано / не проведено",value:String(batch.rejected)); LabeledContent("Вибрано",value:String(selected.count)); if let message=batch.reconciliation {Text(message).font(.caption).foregroundStyle(message.hasPrefix("Суми") ? Color.green : Color.orange)}; Text("Перекази та комісії перевір вручну. Підозрілі операції можна зняти з вибору. Можливі дублікати Apple Pay / SMS не вибрані за замовчуванням. Інші схожі джерела перевірте вручну.").font(.caption) }
             ForEach(rows) { r in
-                Toggle(isOn:Binding(get:{!excluded.contains(r.id)},set:{if $0{excluded.remove(r.id)}else{excluded.insert(r.id)}})) { VStack(alignment:.leading){Text(r.note.isEmpty ? "Без опису":r.note);Text(money(r.signed)).bold();Text(r.date.formatted(date:.abbreviated,time:.shortened)).font(.caption);Text(category(r)).font(.caption);if let w=r.warning{Text(w).font(.caption).foregroundStyle(.orange)}; if r.fee>0{Text("Комісія: "+money(r.fee)).font(.caption)} } }
+                rowToggle(r)
             }
         }.navigationTitle("Перевірити імпорт").toolbar{Button("Імпортувати \(selected.count)"){confirm=true}.disabled(selected.isEmpty)}.confirmationDialog("Зберегти вибрані операції?",isPresented:$confirm){Button("Зберегти") { save() }}
     }
-    func category(_ r:BankRow)->String { let kind:Kind=r.signed>0 ? .income:.expense;let byName=suggestedCategory(r.note,kind:kind,database:s.db);if byName != "Без категорії" {return byName};if let c=mccCategory(r.mcc,incoming:r.signed>0),s.db.expenseCategories.contains(c){return c};return "Без категорії" }
-    func save(){guard s.db.accounts.contains(where:{$0.id == account && $0.code == "UAH"}) else{return};let rows=selected;let batchID=UUID().uuidString;let incoming=rows.map{r -> Operation in var o=Operation(kind:r.signed>0 ? .income:.expense,amount:abs(r.signed),date:r.date,category:category(r),note:r.note,account:account);o.importBatch=batchID;o.bankKey=r.key;o.sourceBank=r.source;o.originalAmount=r.original;o.originalCurrency=r.currency;o.bankFee=r.fee;return o};if s.change({d in d.operations.append(contentsOf:incoming)}){s.error="Імпортовано: \(incoming.count)";dismiss()} }
+    func kind(_ r: BankRow) -> Kind {
+        let credit = s.db.accounts.first(where: {$0.id == account})?.isCredit ?? false
+        return Kind(rawValue: bankKind(signed:r.signed,note:r.note,mcc:r.mcc,operationType:r.operationType,creditAccount:credit)) ?? (r.signed > 0 ? .unclassifiedCredit : .unclassifiedDebit)
+    }
+    func category(_ r: BankRow) -> String {
+        let k = kind(r)
+        guard k.isReportCategory else {return "Без категорії"}
+        let byName = suggestedCategory(r.note,kind:k,database:s.db)
+        if byName != "Без категорії" {return byName}
+        if let c = mccCategory(r.mcc,incoming:r.signed>0),s.db.expenseCategories.contains(c) {return c}
+        return "Без категорії"
+    }
+    func save() {
+        guard s.db.accounts.contains(where:{$0.id == account && $0.code == "UAH"}) else {return}
+        let batchID=UUID().uuidString
+        let incoming=selected.map { r -> Operation in
+            var o=Operation(kind:kind(r),amount:abs(r.signed),date:r.date,category:category(r),note:r.note,account:account)
+            o.importBatch=batchID; o.bankKey=r.key; o.sourceBank=r.source; o.originalAmount=r.original; o.originalCurrency=r.currency; o.bankFee=r.fee; o.bankMCC=r.mcc; o.bankType=r.operationType
+            return o
+        }
+        if s.change({$0.operations.append(contentsOf:incoming)}) {s.error="Імпортовано: \(incoming.count)"; dismiss()}
+    }
+
 }
 struct ReceiptScanView: View {
     @EnvironmentObject var s:Store

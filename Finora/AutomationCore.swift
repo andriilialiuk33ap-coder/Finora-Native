@@ -1,0 +1,150 @@
+import Foundation
+
+// No SMS body, OTP, card number or bank credential is retained by this feature.
+struct CapturedPayment: Codable, Identifiable, Equatable {
+    var id = UUID().uuidString
+    var date = Date()
+    let account: String
+    let currency: String
+    let minor: Int64
+    let merchant: String
+    let source: String
+    let incoming: Bool
+    let clearPurchase: Bool
+    // Optional for decoding events from Preview 4. Contains no raw SMS text.
+    var messageFingerprint: String? = nil
+}
+enum CaptureError: LocalizedError {
+    case invalid, unsafeMessage, ambiguous, storage
+    var errorDescription: String? {
+        switch self {
+        case .invalid: return "Некоректна сума, валюта або код рахунку / Invalid amount, currency or account code."
+        case .unsafeMessage: return "Це не платіж або повідомлення містить код безпеки / Not a payment or contains a security code."
+        case .ambiguous: return "Не вдалося однозначно визначити суму та валюту. Додайте вручну / Ambiguous amount or currency; add manually."
+        case .storage: return "Не вдалося прочитати локальну чергу / Cannot read local inbox."
+        }
+    }
+}
+func captureWallet(amount: Double, merchant: String, account: String, currency: String) throws -> CapturedPayment {
+    let code = currency.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+    guard !account.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, ["UAH","USD"].contains(code), amount.isFinite, amount > 0, amount <= 10_000_000_000, let minor = bankMinor(String(amount)), minor > 0 else {throw CaptureError.invalid}
+    return CapturedPayment(account:account.trimmingCharacters(in:.whitespacesAndNewlines),currency:code,minor:minor,merchant:String(bankRedact(merchant).prefix(160)),source:"Apple Pay",incoming:false,clearPurchase:true)
+}
+func captureMessage(_ text: String, account: String) throws -> CapturedPayment {
+    let account = account.trimmingCharacters(in:.whitespacesAndNewlines)
+    guard !account.isEmpty, text.count <= 4000 else {throw CaptureError.invalid}
+    let normalized = bankClean(text)
+    let lower = normalized.lowercased()
+    guard !["otp", "одноразов", "код підтвердж", "код авторизац", "verification code", "password", "пароль", "не повідомляйте", "не передавайте", "one-time", "security code", "код для", "код операції", "declined", "відхилен", "неуспіш", "скасован", "відмов", "недостатньо коштів", "failed"].contains(where:{lower.contains($0)}) else {throw CaptureError.unsafeMessage}
+    let purchase = ["покупка","купівля","оплата","purchase","payment","списання","списано","сплачено","paid","debit"].contains{lower.contains($0)}
+    let incoming = ["зарахування","зараховано","надходження","поповнення","поповнено","credited","received","refund","повернення"].contains{lower.contains($0)}
+    guard purchase != incoming else {throw CaptureError.unsafeMessage}
+    // Ignore the available-balance suffix, not the transaction itself. Multiple amounts before it require manual entry.
+    let balancePattern = #"(?i)(?:\b(?:balance|available)\b|баланс|залишок|доступно|доступний ліміт|кредитний ліміт)"#
+    let payment = normalized.range(of:balancePattern, options:.regularExpression).map{String(normalized[..<$0.lowerBound])} ?? normalized
+    let pattern = #"(?i)(?<![\d.,])([+-]?\d+(?:[ ]\d{3})*(?:[.,]\d{1,2})?)\s*(UAH|USD|грн\.?|₴|\$)(?![\p{L}\d])"#
+    let regex = try NSRegularExpression(pattern:pattern)
+    let matches = regex.matches(in:payment,range:NSRange(payment.startIndex...,in:payment))
+    guard matches.count == 1, let match = matches.first, let ar = Range(match.range(at:1),in:payment), let cr = Range(match.range(at:2),in:payment), let minor = bankMinor(String(payment[ar])), minor != 0 else {throw CaptureError.ambiguous}
+    let code = String(payment[cr]).uppercased(); let currency = code == "USD" || code == "$" ? "USD":"UAH"
+    // Extract only an explicitly labelled merchant, never arbitrary private SMS contents.
+    let merchantPattern = #"(?i)(?:merchant|магазин|торговець|продавець)\s*[:=]\s*([^;|]+)"#
+    let merchantRegex = try NSRegularExpression(pattern:merchantPattern)
+    var merchant = ""
+    if let m = merchantRegex.firstMatch(in:payment,range:NSRange(payment.startIndex...,in:payment)), let r = Range(m.range(at:1),in:payment) {
+        let candidate = String(payment[r]); if !candidate.contains(where:{$0.isNumber}) {merchant = String(bankRedact(candidate).prefix(160))}
+    }
+    let paymentLower = payment.lowercased()
+    guard !incoming || minor > 0 else {throw CaptureError.ambiguous}
+    let transfer = ["переказ","transfer","погашення","repayment","готівк","withdrawal","кредит","loan","комісія","fee","авторизація","authorization","hold","заблоковано"].contains{paymentLower.contains($0)}
+    let explicitPurchase = ["покупка","купівля","purchase","оплата","сплачено","paid"].contains{paymentLower.contains($0)}
+    var event = CapturedPayment(account:account,currency:currency,minor:abs(minor),merchant:merchant,source:"Bank message",incoming:incoming,clearPurchase:purchase && explicitPurchase && !transfer)
+    event.messageFingerprint = captureMessageFingerprint(account:account, text:normalized)
+    return event
+}
+// SHA-256 for a stable, non-reversible duplicate hint. Never store the message body.
+// A digest is not a bank-issued transaction ID: identical legitimate payments can exist.
+func captureSHA256(_ bytes: [UInt8]) -> String {
+    let k: [UInt32] = [
+        0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+        0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+        0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+        0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+        0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+        0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+        0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+        0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2]
+    var h: [UInt32] = [0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19]
+    func rotate(_ x: UInt32, _ n: UInt32) -> UInt32 { (x >> n) | (x << (32-n)) }
+    var data = bytes; let bits = UInt64(bytes.count) * 8
+    data.append(0x80)
+    while data.count % 64 != 56 {data.append(0)}
+    for i in (0..<8).reversed() {data.append(UInt8(truncatingIfNeeded:bits >> (i*8)))}
+    for offset in stride(from:0,to:data.count,by:64) {
+        var w = [UInt32](repeating:0,count:64)
+        for i in 0..<16 {let j=offset+i*4;w[i]=(UInt32(data[j])<<24)|(UInt32(data[j+1])<<16)|(UInt32(data[j+2])<<8)|UInt32(data[j+3])}
+        for i in 16..<64 {
+            let x=w[i-15], y=w[i-2]
+            let s0=rotate(x,7)^rotate(x,18)^(x>>3), s1=rotate(y,17)^rotate(y,19)^(y>>10)
+            w[i]=w[i-16] &+ s0 &+ w[i-7] &+ s1
+        }
+        var a=h[0],b=h[1],c=h[2],d=h[3],e=h[4],f=h[5],g=h[6],z=h[7]
+        for i in 0..<64 {
+            let s1=rotate(e,6)^rotate(e,11)^rotate(e,25), ch=(e&f)^((~e)&g)
+            let t1=z &+ s1 &+ ch &+ k[i] &+ w[i]
+            let s0=rotate(a,2)^rotate(a,13)^rotate(a,22), maj=(a&b)^(a&c)^(b&c)
+            let t2=s0 &+ maj
+            z=g;g=f;f=e;e=d &+ t1;d=c;c=b;b=a;a=t1 &+ t2
+        }
+        for (i,v) in [a,b,c,d,e,f,g,z].enumerated() {h[i] = h[i] &+ v}
+    }
+    return h.map {String(format:"%08x",$0)}.joined()
+}
+func captureMessageFingerprint(account: String, text: String) -> String {
+    let normalized = bankClean(text).precomposedStringWithCanonicalMapping.lowercased()
+    return captureSHA256(Array(("izanami-message-v1|\(account.utf8.count)|\(account)|" + normalized).utf8))
+}
+// A fingerprint has no expiry: a delayed replay must never auto-post again. The user
+// may explicitly save a separate real payment even if the bank sends identical text.
+func captureRepeatedMessage(_ event: CapturedPayment, handled: [String]) -> Bool {
+    guard let fingerprint = event.messageFingerprint else {return false}
+    return handled.contains(fingerprint)
+}
+func captureRememberMessage(_ event: CapturedPayment, handled: [String]) -> [String] {
+    guard let fingerprint = event.messageFingerprint, !handled.contains(fingerprint) else {return handled}
+    return handled + [fingerprint]
+}
+func capturePossibleDuplicate(_ e: CapturedPayment, otherAccount: String, otherCurrency: String, otherAmount: Int64, otherIncoming: Bool, otherDate: Date, otherSource: String?, isBank: Bool) -> Bool {
+    guard e.currency == otherCurrency else {return false}
+    // Delayed delivery from a different source or posted bank statement gets a wider review window.
+    let window: TimeInterval = isBank || (otherSource != nil && otherSource != e.source) ? 36*3600 : 600
+    return captureSimilar(account:e.account,amount:e.minor,incoming:e.incoming,date:e.date,otherAccount:otherAccount,otherAmount:otherAmount,otherIncoming:otherIncoming,otherDate:otherDate,window:window)
+}
+func captureSimilar(account: String, amount: Int64, incoming: Bool, date: Date, otherAccount: String, otherAmount: Int64, otherIncoming: Bool, otherDate: Date, window: TimeInterval = 600) -> Bool {
+    account == otherAccount && amount == otherAmount && incoming == otherIncoming && abs(date.timeIntervalSince(otherDate)) <= window
+}
+// Each intent writes its own atomic file. Only the foreground Store writes Finora.json.
+enum CaptureInbox {
+    static func folder() throws -> URL {
+        let base = try FileManager.default.url(for:.applicationSupportDirectory,in:.userDomainMask,appropriateFor:nil,create:true)
+        let dir = base.appendingPathComponent("IzanamiInbox",isDirectory:true)
+        try FileManager.default.createDirectory(at:dir,withIntermediateDirectories:true)
+        return dir
+    }
+    static func enqueue(_ event: CapturedPayment, in dir: URL) throws {
+        try FileManager.default.createDirectory(at:dir,withIntermediateDirectories:true)
+        try JSONEncoder().encode(event).write(to:dir.appendingPathComponent(event.id+".json"),options:[.atomic,.completeFileProtectionUntilFirstUserAuthentication])
+    }
+    static func read(in dir: URL) throws -> [CapturedPayment] {
+        try FileManager.default.contentsOfDirectory(at:dir,includingPropertiesForKeys:nil).filter{$0.pathExtension == "json"}.map { url in
+            let event = try JSONDecoder().decode(CapturedPayment.self,from:Data(contentsOf:url))
+            guard UUID(uuidString:event.id) != nil, url.lastPathComponent == event.id+".json", event.minor > 0, event.minor <= 1_000_000_000_000 else {throw CaptureError.storage}
+            return event
+        }.sorted{$0.date < $1.date}
+    }
+    static func remove(_ event: CapturedPayment, in dir: URL) throws {
+        guard UUID(uuidString:event.id) != nil else {throw CaptureError.invalid}
+        let url = dir.appendingPathComponent(event.id+".json")
+        if FileManager.default.fileExists(atPath:url.path) {try FileManager.default.removeItem(at:url)}
+    }
+}

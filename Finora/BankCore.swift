@@ -16,6 +16,7 @@ struct BankRow: Codable, Identifiable, Hashable {
     var fee: Int64 = 0
     var reference: String? = nil
     var warning: String? = nil
+    var operationType: String? = nil
     var key: String { reference.map { source + ":" + $0 } ?? [source, String(Int64(date.timeIntervalSince1970)), String(signed), note.lowercased().split(whereSeparator: \.isWhitespace).joined(separator: " "), String(fee)].joined(separator: "|") }
 }
 struct BankBatch { var rows: [BankRow] = []; var rejected = 0; var reconciliation: String? = nil }
@@ -75,7 +76,7 @@ func pumbRow(_ c: [String]) -> BankRow? {
     guard positive || type.contains("покупка") || type.contains("списання") else { return nil }
     let fee = abs(commission.0), magnitude = abs(amount.0)
     // PUMB exposes fee separately; do not silently guess whether included. Review required when nonzero.
-    return BankRow(source: "ПУМБ", date: d, signed: positive ? magnitude : -magnitude, note: bankRedact(c[5]), original: abs(original.0), currency: original.1, fee: fee, warning: fee > 0 ? "Комісія окремо: перевірте фактичне списання." : (c[0].contains(":") ? nil : "Час відсутній"))
+    return BankRow(source: "ПУМБ", date: d, signed: positive ? magnitude : -magnitude, note: bankRedact(c[5]), original: abs(original.0), currency: original.1, fee: fee, warning: fee > 0 ? "Комісія окремо: перевірте фактичне списання." : (c[0].contains(":") ? nil : "Час відсутній"), operationType: bankClean(c[6]))
 }
 func abankRow(_ c: [String]) -> BankRow? {
     guard c.count == 9, ["UAH","USD","EUR","PLN","GBP","CHF","CAD"].contains(bankClean(c[6])), let d = bankDate(bankClean(c[0])), let amount = bankMinor(c[4]), amount != 0, let original = bankMinor(c[5]) else { return nil }
@@ -94,7 +95,7 @@ func otpRow(_ c: [String]) -> BankRow? {
     guard c.count >= 21, bankClean(c[20]).lowercased() == "підтверджено", let d = excelBankDate(c[0]), c[7] == "UAH", let n = bankMinor(c[6]), n != 0 else { return nil }
     let incoming = c[1] == "Поповнення"; guard incoming || c[1] == "Списання" else { return nil }
     guard (incoming && n > 0) || (!incoming && n < 0) else { return nil }
-    return BankRow(source: "ОТП", date: d, signed: n, note: bankRedact([c[13],c[19]].filter{ !$0.isEmpty }.joined(separator: " · ")), mcc: bankMCC(c[18]), original: bankMinor(c[8]).map(abs), currency: c[9], fee: abs(bankMinor(c[10]) ?? 0), warning: (bankMinor(c[10]) ?? 0) != 0 ? "Комісію не додано повторно; звірте суму." : nil)
+    return BankRow(source: "ОТП", date: d, signed: n, note: bankRedact([c[13],c[19]].filter{ !$0.isEmpty }.joined(separator: " · ")), mcc: bankMCC(c[18]), original: bankMinor(c[8]).map(abs), currency: c[9], fee: abs(bankMinor(c[10]) ?? 0), warning: (bankMinor(c[10]) ?? 0) != 0 ? "Комісію не додано повторно; звірте суму." : nil, operationType: c[1])
 }
 // XLSX XML parsing independent of zip library; only values, never evaluate formulas.
 final class BankXML: NSObject, XMLParserDelegate {
@@ -126,7 +127,7 @@ func otpBatch(_ rows: [[String]]) throws -> BankBatch {
     batch.reconciliation=bankReconcile(batch,debit:debit,credit:credit)
     return batch
 }
-struct MonoAccount: Codable, Identifiable { var id: String; var currencyCode: Int; var type: String?; var maskedPan: [String]?; var balance: Int64 }
+struct MonoAccount: Codable, Identifiable { var id: String; var currencyCode: Int; var type: String?; var maskedPan: [String]?; var balance: Int64; var creditLimit: Int64? = nil }
 struct MonoClient: Codable { var accounts: [MonoAccount] }
 struct MonoItem: Codable { var id: String; var time: Int64; var description: String; var mcc: Int; var amount: Int64; var operationAmount: Int64; var currencyCode: Int; var commissionRate: Int64; var hold: Bool? }
 func monoRows(_ items: [MonoItem], account: String) -> BankBatch {
@@ -148,4 +149,25 @@ func bankNewRows(_ incoming: [BankRow], existing: [String]) -> [BankRow] {
     var seen: [String:Int] = [:]; var result: [BankRow] = []
     for row in incoming { seen[row.key, default:0] += 1; if row.reference != nil && seen[row.key, default:0] > 1 { continue }; if seen[row.key, default:0] > counts[row.key, default:0] { result.append(row) } }
     return result
+}
+
+// Classification changes reporting, never the signed movement of funds. Ambiguous transfers stay unclassified.
+func bankKind(signed: Int64, note: String, mcc: Int?, operationType: String?, creditAccount: Bool) -> String {
+    let n = note.lowercased(), t = (operationType ?? "").lowercased()
+    func has(_ words: [String]) -> Bool { words.contains { n.contains($0) || t.contains($0) } }
+    let transfer = [4829, 6010, 6011, 6012, 6051, 6536, 6537, 6538, 6540].contains(mcc ?? -1) || has(["переказ", "transfer", "account ", "card*", "поповнення", "зняття готівки", "cash withdrawal"])
+    if signed > 0 {
+        if has(["повернення покупки", "повернення товару", "refund", "reversal"]) || t == "повернення" { return "refund" }
+        if has(["погашення кредиту", "погашення заборгованості", "repayment", "погашення кредитної"]) { return creditAccount ? "creditRepaymentIncoming" : "unclassifiedCredit" }
+        if has(["видача кредиту", "отримання кредиту", "кредитні кошти", "loan disbursement"]) { return "creditDraw" }
+        if has(["зарплата", "заробітна плата", "salary", "кешбек", "cashback", "виплата винагороди", "нарахування відсотків", "пенсія"]) { return "income" }
+        if transfer { return "unclassifiedCredit" }
+        return "unclassifiedCredit"
+    }
+    if has(["погашення кредиту", "погашення заборгованості", "loan repayment"]) { return "creditRepayment" }
+    if t.contains("покупка") { return "expense" }
+    if transfer { return "unclassifiedDebit" }
+    if t.contains("покупка") || mccCategory(mcc,incoming:false) != nil || has(["комісія", "відсотки за кредит", "fee", "uklon", "bolt.eu", "apteka", "thrash", "torba"]) { return "expense" }
+    if let mcc, (mcc >= 3000 && mcc < 9000) && ![4829,6010,6011,6012,6051,6536,6537,6538,6540].contains(mcc) { return "expense" }
+    return "unclassifiedDebit"
 }

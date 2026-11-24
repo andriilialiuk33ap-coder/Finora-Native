@@ -36,13 +36,24 @@ func monthName(_ d: Date) -> String {
   d.formatted(.dateTime.month(.wide).year().locale(Locale(identifier: "uk_UA")))
 }
 enum Kind: String, Codable, CaseIterable, Identifiable {
-  case expense, income, transfer
+  case expense, income, transfer, creditDraw, creditRepayment, creditRepaymentIncoming, movementIn, movementOut, refund, unclassifiedCredit, unclassifiedDebit
   var id: String { rawValue }
+  var incoming: Bool { [.income,.creditDraw,.creditRepaymentIncoming,.movementIn,.refund,.unclassifiedCredit].contains(self) }
+  var needsReview: Bool { self == .unclassifiedCredit || self == .unclassifiedDebit }
+  var isReportCategory: Bool { self == .income || self == .expense || self == .refund }
   var title: String {
     switch self {
     case .expense: return "Витрата"
     case .income: return "Дохід"
-    case .transfer: return "Переказ"
+    case .transfer: return "Переказ між рахунками"
+    case .creditDraw: return "Отримання кредиту"
+    case .creditRepayment: return "Погашення кредиту"
+    case .creditRepaymentIncoming: return "Поповнення кредитної картки"
+    case .movementIn: return "Переказ / поповнення +"
+    case .movementOut: return "Переказ / зняття −"
+    case .refund: return "Повернення покупки"
+    case .unclassifiedCredit: return "Зарахування: уточнити"
+    case .unclassifiedDebit: return "Списання: уточнити"
     }
   }
 }
@@ -51,7 +62,14 @@ struct Account: Codable, Identifiable {
   var name: String
   var opening: Int64 = 0
   var currency: String? = nil
+  var accountType: String? = nil
+  var bankName: String? = nil
+  var lastFour: String? = nil
+  var creditLimit: Int64? = nil
   var code: String { currency ?? "UAH" }
+  var isCredit: Bool { accountType == "credit" }
+  var limit: Int64 { isCredit ? max(0,creditLimit ?? 0) : 0 }
+  var typeName: String { isCredit ? "Кредитна картка" : accountType == "debit" ? "Дебетова картка" : id == cash || accountType == "cash" ? "Готівка" : "Інший рахунок" }
 }
 struct Operation: Codable, Identifiable {
   var id = UUID().uuidString
@@ -72,6 +90,18 @@ struct Operation: Codable, Identifiable {
   var entryCurrency: String? = nil
   var exchangeRate: String? = nil
   var importBatch: String? = nil
+  var bankMCC: Int? = nil
+  var bankType: String? = nil
+  var classificationReviewed: Bool? = nil
+  var captureSource: String? = nil
+  var signedNative: Int64 { kind.incoming ? (sourceMinor ?? amount) : -(sourceMinor ?? amount) }
+  // Only count an embedded fee separately when it is demonstrably part of a non-expense debit.
+  var neutralFee: Int64 {
+    guard !kind.incoming, kind != .expense, kind != .transfer, sourceBank == "А-БАНК", originalCurrency == "UAH", let originalAmount, let bankFee, bankFee > 0, originalAmount == amount - bankFee else {return 0}
+    return bankFee
+  }
+  var expenseValue: Int64 { kind == .expense ? amount : kind == .refund ? -amount : neutralFee }
+  var expenseGroup: String { kind == .expense || kind == .refund ? category : "🏦 Комісії" }
 }
 enum ObligationKind: String, Codable, CaseIterable, Identifiable {
   case installment, owe, owed, recurring, goal
@@ -111,6 +141,9 @@ struct Database: Codable {
   var forecast: ForecastPreferences? = nil
   var merchantRules: [String: String]? = nil
   var currencyPreferences: CurrencyPreferences? = nil
+  var capturePreferences: CapturePreferences? = nil
+  var captureHandled: [String]? = nil
+  var captureMessageFingerprints: [String]? = nil
 }
 struct Legacy: Decodable {
   struct Entry: Decodable {
@@ -137,6 +170,8 @@ struct DataFile: FileDocument {
 @MainActor final class Store: ObservableObject {
   @Published private(set) var db = Database()
   @Published var error: String? = nil
+  @Published var capturePending: [CapturedPayment] = []
+  @Published var captureWarning: String? = nil
   private var ready = true
   private let url = FileManager.default.urls(
     for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Finora.json")
@@ -186,20 +221,26 @@ struct DataFile: FileDocument {
     }
   }
   func totals(_ operations: [Operation], _ kind: Kind) -> Int64 {
-    operations.filter { $0.kind == kind }.reduce(0) { $0 + $1.amount }
+    if kind == .expense {return operations.reduce(0) { $0 + $1.expenseValue }}
+    return operations.filter { $0.kind == kind }.reduce(0) { $0 + $1.amount }
   }
   func month(_ date: Date) -> [Operation] { db.operations.filter { sameMonth($0.date, date) } }
   var currentRate: Decimal? { fxRate(db.currencyPreferences?.usdRate ?? "") }
   func nativeBalance(_ a: Account) -> Int64 {
     db.operations.reduce(a.opening) { n, o in
-      switch o.kind {
-      case .income: return n + (o.account == a.id ? (o.sourceMinor ?? o.amount) : 0)
-      case .expense: return n - (o.account == a.id ? (o.sourceMinor ?? o.amount) : 0)
-      case .transfer:
+      if o.kind == .transfer {
         return n - (o.account == a.id ? (o.sourceMinor ?? o.amount) : 0) + (o.destination == a.id ? (o.destinationMinor ?? o.amount) : 0)
       }
+      return n + (o.account == a.id ? o.signedNative : 0)
     }
   }
+  func ownFunds(_ a: Account) -> Int64 { CardPosition(net:nativeBalance(a),limit:a.limit).own }
+  func debt(_ a: Account) -> Int64 { CardPosition(net:nativeBalance(a),limit:a.limit).used }
+  func available(_ a: Account) -> Int64 { CardPosition(net:nativeBalance(a),limit:a.limit).available }
+  func uah(_ n: Int64, account a: Account) -> Int64 { a.code == "USD" ? currentRate.flatMap{fxMinor(n,rate:$0)} ?? 0 : n }
+  var totalOwnFunds: Int64 { db.accounts.reduce(0){$0+uah(ownFunds($1),account:$1)} }
+  var totalAvailableCredit: Int64 { db.accounts.reduce(0){$0+uah(max(0,$1.limit-debt($1)),account:$1)} }
+  var totalAccountDebt: Int64 { db.accounts.reduce(0){$0+uah(debt($1),account:$1)} }
   func balance(_ a: Account) -> Int64 {
     let n=nativeBalance(a)
     guard a.code == "USD" else{return n}
@@ -219,7 +260,7 @@ struct DataFile: FileDocument {
       let decoded = try JSONDecoder().decode(Database.self, from: data)
       guard !decoded.accounts.isEmpty,
         Set(decoded.accounts.map(\.id)).count == decoded.accounts.count,
-        decoded.accounts.allSatisfy({ ["UAH","USD"].contains($0.code) && $0.opening >= -1_000_000_000_000 && $0.opening <= 1_000_000_000_000 }),
+        decoded.accounts.allSatisfy({ ["UAH","USD"].contains($0.code) && $0.opening >= -1_000_000_000_000 && $0.opening <= 1_000_000_000_000 && ($0.creditLimit ?? 0) >= 0 && ($0.creditLimit ?? 0) <= 1_000_000_000_000 }),
         (!decoded.accounts.contains(where:{$0.code=="USD"}) || fxRate(decoded.currencyPreferences?.usdRate ?? "") != nil),
         Set(decoded.operations.map(\.id)).count == decoded.operations.count,
         decoded.operations.allSatisfy({ o in
@@ -333,6 +374,12 @@ struct Root: View {
           }
           NavigationStack { Reports() }.tabItem { Label("Звіти", systemImage: "chart.bar.xaxis") }
           NavigationStack { More() }.tabItem { Label("Ще", systemImage: "ellipsis.circle") }
+        }.task(id: phase) {
+          guard phase == .active else {return}
+          while !Task.isCancelled {
+            store.refreshCaptures()
+            do {try await Task.sleep(nanoseconds: 3_000_000_000)} catch {break}
+          }
         }
       }
     }.onChange(of: phase) { p in if p == .background && lockEnabled { unlocked = false } }.alert(
@@ -429,7 +476,7 @@ struct Home: View {
         if s.db.budget > 0 {
           Panel {
             Text("Бюджет місяця").font(.headline)
-            ProgressView(value: min(1, Double(exp) / Double(s.db.budget))).tint(
+            ProgressView(value: max(0, min(1, Double(exp) / Double(s.db.budget)))).tint(
               exp > s.db.budget ? .red : finoraAccent)
             Text("\(money(exp)) / \(money(s.db.budget))").font(.subheadline)
             Text(exp > s.db.budget ? "Ліміт перевищено" : "Залишок \(money(s.db.budget-exp))")
@@ -454,8 +501,8 @@ struct Home: View {
 struct Breakdown: View {
   var ops: [Operation]
   var body: some View {
-    let groups = Dictionary(grouping: ops.filter { $0.kind == .expense }, by: { $0.category })
-      .mapValues { $0.reduce(Int64(0)) { $0 + $1.amount } }.sorted { $0.value > $1.value }
+    let groups = Dictionary(grouping: ops.filter { $0.expenseValue != 0 }, by: { $0.expenseGroup })
+      .mapValues { $0.reduce(Int64(0)) { $0 + $1.expenseValue } }.filter { $0.value > 0 }.sorted { $0.value > $1.value }
     let total = groups.reduce(Int64(0)) { $0 + $1.value }
     if total == 0 {
       Text("Немає витрат за період").foregroundStyle(.secondary)
@@ -478,21 +525,21 @@ struct OperationRow: View {
   var body: some View {
     HStack {
       Image(
-        systemName: o.kind == .income
+        systemName: o.kind.incoming
           ? "arrow.down.left.circle.fill"
           : o.kind == .transfer
             ? "arrow.left.arrow.right.circle.fill" : "arrow.up.right.circle.fill"
       ).font(.title2).foregroundStyle(
-        o.kind == .income ? Color.green : o.kind == .transfer ? Color.blue : Color.orange)
+        o.kind == .income ? Color.green : o.kind == .expense ? Color.orange : Color.blue)
       VStack(alignment: .leading) {
         Text(o.note.isEmpty ? (o.kind == .transfer ? "Переказ" : o.category) : o.note).font(
           .subheadline.bold())
-        Text("\(s.accountName(o.account)) · \(o.date.formatted(date:.abbreviated,time:.omitted))")
+        Text("\(o.kind.title) · \(s.accountName(o.account)) · \(o.date.formatted(date:.abbreviated,time:.omitted))")
           .font(.caption).foregroundStyle(.secondary)
       }
       Spacer()
       VStack(alignment:.trailing) {
-        Text((o.kind == .income ? "+" : o.kind == .expense ? "−" : "") + money(o.amount)).font(.subheadline.bold()).foregroundStyle(o.kind == .income ? Color.green : Color.primary)
+        Text((o.kind == .transfer ? "" : o.kind.incoming ? "+" : "−") + money(o.amount)).font(.subheadline.bold()).foregroundStyle(o.kind == .income ? Color.green : Color.primary)
         if let n=o.originalAmount, let code=o.originalCurrency, code != "UAH" { Text(currencyMoney(n,code)).font(.caption).foregroundStyle(.secondary) }
       }
     }
@@ -509,7 +556,7 @@ struct Operations: View {
       Picker("Тип", selection: $filter) {
         Text("Усі").tag("all")
         ForEach(Kind.allCases) { Text($0.title).tag($0.rawValue) }
-      }.pickerStyle(.segmented)
+      }.pickerStyle(.menu)
       Picker("Сортування", selection: $sort) { ForEach(OperationSort.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
       ForEach(
         s.db.operations.filter { o in
@@ -552,6 +599,10 @@ struct OpEditor: View {
     _rate = State(initialValue: original.exchangeRate ?? "")
   }
   var categories: [String] { let list = o.kind == .income ? s.db.incomeCategories : s.db.expenseCategories; return list.contains("Без категорії") ? list : list + ["Без категорії"] }
+  var allowedKinds: [Kind] {
+    if o.sourceBank != nil && o.kind != .transfer {return Kind.allCases.filter{$0 != .transfer && $0.incoming == o.kind.incoming}}
+    return Kind.allCases
+  }
   var sourceCode:String { s.db.accounts.first(where:{$0.id==o.account})?.code ?? "UAH" }
   var destinationCode:String { s.db.accounts.first(where:{$0.id==o.destination})?.code ?? "UAH" }
   var requiresRate:Bool { entryCurrency == "USD" || (o.kind == .transfer && destinationCode == "USD") }
@@ -574,8 +625,9 @@ struct OpEditor: View {
   var body: some View {
     NavigationStack {
       Form {
-        Picker("Тип", selection: $o.kind) { ForEach(Kind.allCases) { Text($0.title).tag($0) } }
-          .pickerStyle(.segmented)
+        Picker("Тип", selection: $o.kind) { ForEach(allowedKinds) { Text($0.title).tag($0) } }
+          .pickerStyle(.menu)
+        if o.kind.needsReview { Text("Не входить у доходи чи витрати до уточнення. Баланс враховує рух коштів.").font(.caption) }
         TextField("Сума, \(entryCurrency)", text: $amount).keyboardType(.decimalPad)
         if o.kind != .transfer && sourceCode == "UAH" && o.sourceBank == nil {
           Picker("Валюта введення",selection:$entryCurrency){Text("Гривня").tag("UAH");Text("Долар").tag("USD")}
@@ -591,16 +643,17 @@ struct OpEditor: View {
             ForEach(s.db.accounts) { Text($0.name).tag($0.id) }
           }
           if let n=received, !o.destination.isEmpty { LabeledContent("Зарахувати",value:currencyMoney(n,destinationCode)) }
-        } else {
+        } else if o.kind.isReportCategory {
           Picker("Категорія", selection: $o.category) {
             ForEach(categories, id: \.self) { Text($0).tag($0) }
           }
         }
         TextField("Магазин / примітка / теги", text: $o.note)
         if let bank = o.sourceBank { LabeledContent("Джерело", value: bank) }
+        if let capture = o.captureSource { LabeledContent("Автоматизація", value: capture) }
         if let n = o.originalAmount, let c = o.originalCurrency { LabeledContent("Оригінальна сума", value: currencyMoney(n,c)) }
         if let fee = o.bankFee, fee > 0 { LabeledContent("Комісія у виписці", value: money(fee)) }
-        if o.kind != .transfer {
+        if o.kind == .expense || o.kind == .income {
           Button("Визначити категорію") { o.category = suggestedCategory(o.note, kind: o.kind, database: s.db) }
           Toggle("Запам’ятати категорію для цього продавця", isOn: $learnRule)
         }
@@ -613,6 +666,8 @@ struct OpEditor: View {
           Button("Зберегти") {
             guard let n=converted, let entered=bankMinor(amount), valid else {return}
             o.amount=n
+            if o.sourceBank != nil {o.classificationReviewed=true}
+            if !o.kind.isReportCategory {o.category="Без категорії"}
             o.sourceMinor=sourceCode == "USD" ? entered : n
             o.destinationMinor=o.kind == .transfer ? received : nil
             o.entryCurrency=entryCurrency
@@ -621,7 +676,7 @@ struct OpEditor: View {
             if s.change({ d in
               d.operations.removeAll { $0.id == o.id }
               d.operations.append(o)
-              if learnRule && o.kind != .transfer && !o.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+              if learnRule && (o.kind == .expense || o.kind == .income) && !o.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 var rules = d.merchantRules ?? [:]; rules[ruleKey(o.note, kind: o.kind)] = o.category; d.merchantRules = rules
               }
             }) {
@@ -647,23 +702,24 @@ struct Accounts: View {
   @State private var edit: Account?
   var body: some View {
     List {
-      Section("Загальний залишок") {
-        Text(s.displayed(s.db.accounts.reduce(0) { $0 + s.balance($1) })).font(.largeTitle.bold())
-          .foregroundStyle(finoraAccent)
+      Section("Власні кошти та кредит") {
+        LabeledContent("Власні кошти", value:s.displayed(s.totalOwnFunds))
+        LabeledContent("Борг за рахунками", value:s.displayed(s.totalAccountDebt))
+        LabeledContent("Чистий залишок", value:s.displayed(s.totalOwnFunds-s.totalAccountDebt))
+        LabeledContent("Доступно кредиту", value:s.displayed(s.totalAvailableCredit))
+        Text("Кредитний ліміт не входить до власних коштів і доходів.").font(.caption)
       }
       Section("Рахунки у власній валюті") {
         ForEach(s.db.accounts) { a in
           Button {
             edit = a
           } label: {
-            HStack {
-              Image(systemName: "creditcard.fill").foregroundStyle(finoraAccent)
-              Text(a.name)
-              Spacer()
-              Text(currencyMoney(s.nativeBalance(a),a.code)).bold()
-            }
+            CreditAccountRow(a:a)
           }.buttonStyle(.plain)
         }
+      }
+      Section("Виправлення обліку") {
+        NavigationLink("Перевірити старі імпортовані операції") { CreditImportCorrection() }
       }
       Text(
         "Перекази додаються в меню «Операції». Початковий баланс можна змінювати в налаштуваннях рахунку."
@@ -677,29 +733,102 @@ struct Accounts: View {
     }.sheet(item: $edit) { AccountEditor(a: $0) }
   }
 }
+struct CreditAccountRow: View {
+  @EnvironmentObject var s:Store
+  let a:Account
+  var body:some View {
+    VStack(alignment:.leading,spacing:8) {
+      HStack {
+        Image(systemName:a.isCredit ? "creditcard.fill" : "wallet.pass.fill").font(.title2).foregroundStyle(finoraAccent)
+        VStack(alignment:.leading) {Text(a.name).bold();Text(a.typeName + (a.lastFour.map{" · •••• " + $0} ?? "")).font(.caption).foregroundStyle(.secondary)}
+        Spacer()
+        Text(currencyMoney(s.nativeBalance(a),a.code)).bold()
+      }
+      if a.isCredit {
+        LabeledContent("Власні кошти",value:currencyMoney(s.ownFunds(a),a.code))
+        LabeledContent("Кредитний ліміт",value:currencyMoney(a.limit,a.code))
+        LabeledContent("Використано / борг",value:currencyMoney(s.debt(a),a.code))
+        LabeledContent("Доступно кредиту",value:currencyMoney(max(0,a.limit-s.debt(a)),a.code))
+        LabeledContent("Доступно загалом",value:currencyMoney(s.available(a),a.code))
+        if a.limit > 0 {ProgressView(value:min(1,Double(s.debt(a))/Double(a.limit))).tint(.red)}
+        if s.debt(a)>a.limit {Text("Борг перевищує ліміт").foregroundStyle(.orange).font(.caption)}
+      }
+    }.padding(.vertical,4)
+  }
+}
 struct AccountEditor: View {
   @EnvironmentObject var s: Store
   @Environment(\.dismiss) var dismiss
   @State var a: Account
   @State var opening: String
+  @State private var limitText: String = ""
+  @State private var actualText: String = ""
+  @State private var correctBalance = false
+  @State private var actualMode = "net"
+  @State private var ownText = "0"
+  @State private var usedText = "0"
+  var validLimit: Bool { !a.isCredit || (bankMinor(limitText).map{$0>=0} ?? false) }
+  var newOpening: Int64? {
+    guard correctBalance else {
+      if a.isCredit && !s.db.accounts.contains(where:{$0.id==a.id}) { return enteredCardNet }
+      return bankMinor(opening)
+    }
+    let net: Int64
+    if a.isCredit && actualMode == "components" { guard let n=enteredCardNet else{return nil}; net=n }
+    else { guard let actual=bankMinor(actualText), actualMode != "available" || actual>=0 else{return nil}; net=actualMode == "available" && a.isCredit ? actual-(bankMinor(limitText) ?? 0) : actual }
+    let old=s.db.accounts.first{$0.id==a.id}
+    let history=old.map{s.nativeBalance($0)-$0.opening} ?? 0
+    let result=net-history
+    return abs(result)<=1_000_000_000_000 ? result : nil
+  }
+  var enteredCardNet: Int64? {
+    guard let own=bankMinor(ownText), let used=bankMinor(usedText) else {return nil}
+    return CardPosition.netFrom(own:own,used:used)
+  }
+  var existingAccount: Bool {s.db.accounts.contains(where:{$0.id==a.id})}
+  @ViewBuilder var componentFields: some View {
+    TextField("Власні кошти, \(a.code)",text:$ownText).keyboardType(.decimalPad)
+    TextField("Використано кредиту, \(a.code)",text:$usedText).keyboardType(.decimalPad)
+    Text("Для одного чистого балансу введи власні кошти або використаний кредит; друге поле залиш нульовим. Для окремих кредитних договорів потрібен окремий рахунок.").font(.caption)
+  }
   init(a: Account) {
     _a = State(initialValue: a)
     _opening = State(initialValue: amountText(a.opening))
+    _limitText = State(initialValue:amountText(a.limit))
   }
   var body: some View {
     NavigationStack {
       Form {
         TextField("Назва", text: $a.name)
+        Picker("Тип рахунку",selection:Binding(get:{a.accountType ?? (a.id == cash ? "cash" : "other")},set:{a.accountType=$0;if $0 != "credit" {actualMode="net"}})) {
+          Text("Готівка").tag("cash");Text("Дебетова картка").tag("debit");Text("Кредитна картка").tag("credit");Text("Інший рахунок").tag("other")
+        }
+        TextField("Банк (необов’язково)",text:Binding(get:{a.bankName ?? ""},set:{a.bankName=$0}))
+        TextField("Останні 4 цифри (необов’язково)",text:Binding(get:{a.lastFour ?? ""},set:{a.lastFour=String($0.filter{$0.isASCII && $0.isNumber}.prefix(4))})).keyboardType(.numberPad)
+        if a.isCredit {TextField("Кредитний ліміт, \(a.code)",text:$limitText).keyboardType(.decimalPad)}
         Picker("Валюта рахунку",selection:Binding(get:{a.code},set:{a.currency=$0})){Text("UAH").tag("UAH");Text("USD").tag("USD")}.disabled(s.db.operations.contains{$0.account==a.id || $0.destination==a.id})
-        TextField("Початковий баланс, \(a.code)", text: $opening).keyboardType(.numbersAndPunctuation)
+        Toggle("Звірити з поточним балансом банку",isOn:$correctBalance)
+        if correctBalance {
+          if a.isCredit {Picker("Яку суму показує банк",selection:$actualMode){Text("Чистий баланс (+ власні / − борг)").tag("net");Text("Доступно разом з кредитом").tag("available");Text("Власні кошти та використаний кредит").tag("components")}}
+          if a.isCredit && actualMode == "components" {componentFields} else {TextField("Поточна сума, \(a.code)",text:$actualText).keyboardType(.numbersAndPunctuation)}
+          Text("Початковий залишок буде скориговано з урахуванням усієї записаної історії. Це не створює дохід. Не застосовуй до неповної історії без звірки.").font(.caption)
+        } else if a.isCredit && !existingAccount {
+          componentFields
+        } else {
+          TextField("Початковий чистий баланс, \(a.code)", text: $opening).keyboardType(.numbersAndPunctuation)
+        }
         if a.code == "USD" && s.currentRate == nil {Text("Спочатку вкажи поточний курс у Ще → Валюти.").foregroundStyle(.orange)}
-        Text("Для кредитного рахунку можна вказати від’ємну суму.").font(.caption)
-      }.navigationTitle("Рахунок").toolbar {
+        Text("Якщо вже винен банку, введи від’ємний чистий баланс. Невикористаний ліміт не є початковим балансом.").font(.caption)
+      }.navigationTitle("Рахунок").onAppear {
+        if let old=s.db.accounts.first(where:{$0.id==a.id}) {let n=s.nativeBalance(old);actualText=amountText(n);ownText=amountText(max(0,n));usedText=amountText(max(0,-n))}
+        else if a.bankName == nil && a.accountType == nil {a.accountType="debit"}
+      }.toolbar {
         ToolbarItem(placement: .cancellationAction) { Button("Скасувати") { dismiss() } }
         ToolbarItem(placement: .confirmationAction) {
           Button("Зберегти") {
-            guard let n = cents(opening) else { return }
+            guard let n = newOpening, validLimit else { return }
             a.opening = n
+            a.creditLimit = a.isCredit ? bankMinor(limitText) : nil
             if s.change({ d in
               if let i = d.accounts.firstIndex(where: { $0.id == a.id }) {
                 d.accounts[i] = a
@@ -710,7 +839,7 @@ struct AccountEditor: View {
               dismiss()
             }
           }.disabled(
-            a.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || cents(opening) == nil || (a.code == "USD" && s.currentRate == nil))
+            a.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || newOpening == nil || !validLimit || (a.code == "USD" && s.currentRate == nil))
         }
       }
     }
@@ -785,6 +914,8 @@ struct Reports: View {
           Text(money(inc - exp)).font(.title.bold())
           Text("Доходи: \(money(inc))").foregroundStyle(.green)
           Text("Витрати: \(money(exp))")
+          Text("Повернення покупок: \(money(s.totals(ops,.refund)))").font(.caption)
+          Text("Неуточнені рухи: \(ops.filter{$0.kind.needsReview}.count)").font(.caption)
         }
         Panel {
           Text("Доходи та витрати").font(.headline)
@@ -849,7 +980,10 @@ struct More: View {
           Label("Фінансовий помічник", systemImage: "sparkles")
         }
       }
-      Section("Банки") { NavigationLink { BankCenter() } label: { IzanamiLabel(title: "Банки та імпорт", icon: "building.columns.fill", color: .cyan) } }
+      Section("Банки") {
+        NavigationLink { BankCenter() } label: { IzanamiLabel(title: "Банки та імпорт", icon: "building.columns.fill", color: .cyan) }
+        NavigationLink { AutomationCenter() } label: { IzanamiLabel(title: "Автоматизація · Apple Pay / SMS (\(s.capturePending.count))", icon: "bolt.fill", color: .orange) }
+      }
       Section("Керування") {
         NavigationLink { DashboardSettings() } label: { IzanamiLabel(title: "Блоки огляду", icon: "square.grid.2x2.fill", color: .orange) }
         NavigationLink { AppearanceView() } label: { IzanamiLabel(title: "Оформлення", icon: "paintpalette.fill", color: .pink) }
@@ -865,7 +999,7 @@ struct More: View {
         }
       }
       Section {
-        Text("Izanami · 4.0 Preview\nБез реклами, серверів та платних API.").font(.footnote)
+        Text("Izanami · 4.0.4 Preview\nБез реклами, серверів та платних API.").font(.footnote)
           .foregroundStyle(.secondary)
       }
     }.navigationTitle("Ще")
@@ -901,7 +1035,7 @@ struct Budgets: View {
             editing = true
           } label: {
             BudgetRow(
-              name: c, used: s.totals(s.month(Date()).filter { $0.category == c }, .expense),
+              name: c, used: s.totals(s.month(Date()).filter { $0.expenseGroup == c }, .expense),
               limit: s.db.limits[c] ?? 0)
           }.buttonStyle(.plain)
         }
@@ -932,7 +1066,7 @@ struct BudgetRow: View {
         Text(money(used)).font(.subheadline.bold())
       }
       if limit > 0 {
-        ProgressView(value: min(1, Double(used) / Double(limit))).tint(used > limit ? .red : finoraAccent)
+        ProgressView(value: max(0,min(1, Double(used) / Double(limit)))).tint(used > limit ? .red : finoraAccent)
         Text("Ліміт: \(money(limit))").font(.caption).foregroundStyle(.secondary)
       } else {
         Text("Без ліміту").font(.caption).foregroundStyle(.secondary)
@@ -1054,7 +1188,7 @@ struct ObligationEditor: View {
               if extra > 0 && log && o.kind != .goal && d.accounts.contains(where:{$0.id==account && $0.code=="UAH"}) {
                 d.operations.append(
                   Operation(
-                    kind: o.kind == .owed ? .income : .expense, amount: extra, category: "Інше",
+                    kind: o.kind == .owed ? .movementIn : o.kind == .recurring ? .expense : .creditRepayment, amount: extra, category: "Інше",
                     note: o.name, account: account))
               }
             }) {
