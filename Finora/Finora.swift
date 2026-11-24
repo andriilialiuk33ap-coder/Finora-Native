@@ -1,4 +1,3 @@
-// Finora 3.0.1 - SwiftUI build fix
 import Charts
 import LocalAuthentication
 import SwiftUI
@@ -10,14 +9,14 @@ let expenseDefaults = [
   "🧾 Комунальні", "🔑 Оренда", "🛠️ Ремонт", "👕 Одяг", "💇 Краса", "💊 Здоров’я", "🏋️ Спорт", "🎬 Розваги",
   "📺 Підписки", "💻 Техніка", "📱 Зв’язок", "✈️ Подорожі", "📚 Освіта", "🐾 Тварини", "👶 Діти",
   "🎁 Подарунки", "💳 Розстрочка", "🛡️ Страхування", "🏦 Комісії", "📦 Доставка", "❤️ Благодійність",
-  "Інше",
+  "Без категорії", "Інше",
 ]
 let incomeDefaults = [
   "💼 Зарплата", "💻 Підробіток", "🏢 Бізнес", "🎁 Подарунок", "↩️ Повернення", "💵 Кешбек", "📈 Відсотки",
-  "Інше",
+  "Без категорії", "Інше",
 ]
 let cash = "cash"
-let finoraAccent = Color(red: 0.04, green: 0.48, blue: 0.36)
+let finoraAccent = Color(red: 0.85, green: 0.12, blue: 0.25)
 func money(_ n: Int64) -> String {
   (Double(n) / 100).formatted(.currency(code: "UAH").locale(Locale(identifier: "uk_UA")))
 }
@@ -51,6 +50,8 @@ struct Account: Codable, Identifiable {
   var id = UUID().uuidString
   var name: String
   var opening: Int64 = 0
+  var currency: String? = nil
+  var code: String { currency ?? "UAH" }
 }
 struct Operation: Codable, Identifiable {
   var id = UUID().uuidString
@@ -61,6 +62,16 @@ struct Operation: Codable, Identifiable {
   var note = ""
   var account = cash
   var destination = ""
+  var bankKey: String? = nil
+  var sourceBank: String? = nil
+  var originalAmount: Int64? = nil
+  var originalCurrency: String? = nil
+  var bankFee: Int64? = nil
+  var sourceMinor: Int64? = nil
+  var destinationMinor: Int64? = nil
+  var entryCurrency: String? = nil
+  var exchangeRate: String? = nil
+  var importBatch: String? = nil
 }
 enum ObligationKind: String, Codable, CaseIterable, Identifiable {
   case installment, owe, owed, recurring, goal
@@ -93,6 +104,13 @@ struct Database: Codable {
   var incomeCategories = incomeDefaults
   var budget: Int64 = 0
   var limits: [String: Int64] = [:]
+  var dashboard: [DashboardItem]? = nil
+  var preferences: AppearancePreferences? = nil
+  var subscriptions: [SubscriptionRecord]? = nil
+  var reminders: [PersonalReminder]? = nil
+  var forecast: ForecastPreferences? = nil
+  var merchantRules: [String: String]? = nil
+  var currencyPreferences: CurrencyPreferences? = nil
 }
 struct Legacy: Decodable {
   struct Entry: Decodable {
@@ -147,6 +165,16 @@ struct DataFile: FileDocument {
   private func write(_ copy: Database) -> Bool {
     do {
       let data = try JSONEncoder().encode(copy)
+      // Keep previous local snapshots before replacing the live database.
+      if FileManager.default.fileExists(atPath: url.path) && ready {
+        let folder = url.deletingLastPathComponent().appendingPathComponent("IzanamiSnapshots", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let snapshot = folder.appendingPathComponent(UUID().uuidString + ".json")
+        let previous = try Data(contentsOf: url)
+        try previous.write(to: snapshot, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        let files = snapshotURLs()
+        for old in files.dropFirst(12) { try? FileManager.default.removeItem(at: old) }
+      }
       try data.write(
         to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
       db = copy
@@ -161,15 +189,29 @@ struct DataFile: FileDocument {
     operations.filter { $0.kind == kind }.reduce(0) { $0 + $1.amount }
   }
   func month(_ date: Date) -> [Operation] { db.operations.filter { sameMonth($0.date, date) } }
-  func balance(_ a: Account) -> Int64 {
+  var currentRate: Decimal? { fxRate(db.currencyPreferences?.usdRate ?? "") }
+  func nativeBalance(_ a: Account) -> Int64 {
     db.operations.reduce(a.opening) { n, o in
       switch o.kind {
-      case .income: return n + (o.account == a.id ? o.amount : 0)
-      case .expense: return n - (o.account == a.id ? o.amount : 0)
+      case .income: return n + (o.account == a.id ? (o.sourceMinor ?? o.amount) : 0)
+      case .expense: return n - (o.account == a.id ? (o.sourceMinor ?? o.amount) : 0)
       case .transfer:
-        return n - (o.account == a.id ? o.amount : 0) + (o.destination == a.id ? o.amount : 0)
+        return n - (o.account == a.id ? (o.sourceMinor ?? o.amount) : 0) + (o.destination == a.id ? (o.destinationMinor ?? o.amount) : 0)
       }
     }
+  }
+  func balance(_ a: Account) -> Int64 {
+    let n=nativeBalance(a)
+    guard a.code == "USD" else{return n}
+    guard let rate=currentRate else{return 0}
+    return fxMinor(n,rate:rate) ?? 0
+  }
+  func displayed(_ n:Int64)->String {
+    let mode=db.currencyPreferences?.display ?? "dual"
+    guard let rate=currentRate, let usd=fxMinor(n,rate:rate,divide:true) else{return money(n)}
+    if mode == "USD" {return "≈ "+currencyMoney(usd,"USD")}
+    if mode == "dual" {return money(n)+" · ≈ "+currencyMoney(usd,"USD")}
+    return money(n)
   }
   func accountName(_ id: String) -> String { db.accounts.first { $0.id == id }?.name ?? "Рахунок" }
   func restore(_ data: Data) {
@@ -177,8 +219,15 @@ struct DataFile: FileDocument {
       let decoded = try JSONDecoder().decode(Database.self, from: data)
       guard !decoded.accounts.isEmpty,
         Set(decoded.accounts.map(\.id)).count == decoded.accounts.count,
+        decoded.accounts.allSatisfy({ ["UAH","USD"].contains($0.code) && $0.opening >= -1_000_000_000_000 && $0.opening <= 1_000_000_000_000 }),
+        (!decoded.accounts.contains(where:{$0.code=="USD"}) || fxRate(decoded.currencyPreferences?.usdRate ?? "") != nil),
+        Set(decoded.operations.map(\.id)).count == decoded.operations.count,
         decoded.operations.allSatisfy({ o in
           o.amount > 0 && o.amount <= 1_000_000_000_000
+            && (o.sourceMinor.map { $0 > 0 && $0 <= 1_000_000_000_000 } ?? true)
+            && (o.destinationMinor.map { $0 > 0 && $0 <= 1_000_000_000_000 } ?? true)
+            && (decoded.accounts.first(where:{$0.id==o.account})?.code != "USD" || (o.sourceMinor != nil && fxRate(o.exchangeRate ?? "") != nil))
+            && (o.kind != .transfer || decoded.accounts.first(where:{$0.id==o.destination})?.code != "USD" || o.destinationMinor != nil)
             && decoded.accounts.contains(where: { a in a.id == o.account })
             && (o.kind != .transfer
               || (o.account != o.destination
@@ -200,7 +249,7 @@ struct DataFile: FileDocument {
             Operation(
               kind: kind, amount: Int64((row.amt * 100).rounded()),
               date: Date(timeIntervalSince1970: row.ts / 1000), category: row.cat ?? "Інше",
-              note: row.note ?? "", account: db.accounts.first?.id ?? cash))
+              note: row.note ?? "", account: db.accounts.first(where:{$0.code=="UAH"})?.id ?? cash))
         }
       }
       var count = 0
@@ -230,6 +279,13 @@ struct DataFile: FileDocument {
       }
     } catch { self.error = "Не вдалося прочитати стару базу: \(error.localizedDescription)" }
   }
+  func snapshotURLs() -> [URL] {
+    let folder = url.deletingLastPathComponent().appendingPathComponent("IzanamiSnapshots", isDirectory: true)
+    let files = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.creationDateKey], options: [.skipsHiddenFiles])) ?? []
+    return files.filter { $0.pathExtension == "json" }.sorted {
+      (($0.resourceValuesDate) ?? .distantPast) > (($1.resourceValuesDate) ?? .distantPast)
+    }
+  }
   func backup() -> DataFile { DataFile(data: (try? JSONEncoder().encode(db)) ?? Data()) }
   func csv() -> DataFile {
     func q(_ s: String) -> String { "\"" + s.replacingOccurrences(of: "\"", with: "\"\"") + "\"" }
@@ -238,18 +294,18 @@ struct DataFile: FileDocument {
       [
         f.string(from: o.date), o.kind.title, amountText(o.amount), q(o.category),
         q(accountName(o.account)), q(o.destination.isEmpty ? "" : accountName(o.destination)),
-        q(o.note),
+        q(o.note), q(o.entryCurrency ?? "UAH"), q(o.originalCurrency ?? "UAH"), amountText(o.originalAmount ?? o.amount), q(o.exchangeRate ?? ""), amountText(o.bankFee ?? 0), q(o.sourceBank ?? ""),
       ].joined(separator: ";")
     }
     return DataFile(
       data: Data(
-        ("\u{FEFF}Дата;Тип;Сума;Категорія;Рахунок;Куди;Примітка\n" + rows.joined(separator: "\n"))
+        ("\u{FEFF}Дата;Тип;Сума UAH;Категорія;Рахунок;Куди;Примітка;Валюта введення;Оригінальна валюта;Оригінальна сума;Курс;Комісія UAH;Банк\n" + rows.joined(separator: "\n"))
           .utf8))
   }
 }
 @main @MainActor struct FinoraApp: App {
   @StateObject private var store = Store()
-  var body: some Scene { WindowGroup { Root().environmentObject(store).tint(finoraAccent) } }
+  var body: some Scene { WindowGroup { IzanamiShell().environmentObject(store) } }
 }
 struct Root: View {
   @EnvironmentObject var store: Store
@@ -262,13 +318,13 @@ struct Root: View {
       if lockEnabled && !unlocked {
         VStack(spacing: 18) {
           Image(systemName: "lock.shield.fill").font(.system(size: 64)).foregroundStyle(finoraAccent)
-          Text("Finora").font(.largeTitle.bold())
+          Text("Izanami").font(.largeTitle.bold())
           Text(authError).foregroundStyle(.secondary)
           Button("Розблокувати", action: unlock).buttonStyle(.borderedProminent)
         }.onAppear(perform: unlock)
       } else {
         TabView {
-          NavigationStack { Home() }.tabItem { Label("Огляд", systemImage: "house.fill") }
+          NavigationStack { CustomDashboard() }.tabItem { Label("Огляд", systemImage: "house.fill") }
           NavigationStack { Operations() }.tabItem {
             Label("Операції", systemImage: "arrow.left.arrow.right")
           }
@@ -280,7 +336,7 @@ struct Root: View {
         }
       }
     }.onChange(of: phase) { p in if p == .background && lockEnabled { unlocked = false } }.alert(
-      "Finora",
+      "Izanami",
       isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.error = nil } })
     ) {
       Button("OK") { store.error = nil }
@@ -390,7 +446,7 @@ struct Home: View {
           if ops.isEmpty { Text("Додай першу операцію").foregroundStyle(.secondary) }
         }
       }.padding()
-    }.background(Color(uiColor: .systemGroupedBackground)).navigationTitle("Finora").sheet(
+    }.background(Color(uiColor: .systemGroupedBackground)).navigationTitle("Izanami").sheet(
       isPresented: $add
     ) { OpEditor(original: Operation(account: s.db.accounts.first?.id ?? cash)) }
   }
@@ -435,9 +491,10 @@ struct OperationRow: View {
           .font(.caption).foregroundStyle(.secondary)
       }
       Spacer()
-      Text((o.kind == .income ? "+" : o.kind == .expense ? "−" : "") + money(o.amount)).font(
-        .subheadline.bold()
-      ).foregroundStyle(o.kind == .income ? Color.green : Color.primary)
+      VStack(alignment:.trailing) {
+        Text((o.kind == .income ? "+" : o.kind == .expense ? "−" : "") + money(o.amount)).font(.subheadline.bold()).foregroundStyle(o.kind == .income ? Color.green : Color.primary)
+        if let n=o.originalAmount, let code=o.originalCurrency, code != "UAH" { Text(currencyMoney(n,code)).font(.caption).foregroundStyle(.secondary) }
+      }
     }
   }
 }
@@ -446,19 +503,21 @@ struct Operations: View {
   @State private var search = ""
   @State private var edit: Operation?
   @State private var filter = "all"
+  @State private var sort = OperationSort.newest
   var body: some View {
     List {
       Picker("Тип", selection: $filter) {
         Text("Усі").tag("all")
         ForEach(Kind.allCases) { Text($0.title).tag($0.rawValue) }
       }.pickerStyle(.segmented)
+      Picker("Сортування", selection: $sort) { ForEach(OperationSort.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
       ForEach(
         s.db.operations.filter { o in
           (filter == "all" || o.kind.rawValue == filter)
             && (search.isEmpty
               || (o.note + " " + o.category + " " + amountText(o.amount) + " "
                 + s.accountName(o.account)).localizedCaseInsensitiveContains(search))
-        }.sorted { $0.date > $1.date }
+        }.sorted { sort.orders($0, $1) }
       ) { o in
         Button {
           edit = o
@@ -482,37 +541,69 @@ struct OpEditor: View {
   @State var o: Operation
   @State var amount: String
   @State private var confirm = false
+  @State private var learnRule = false
+  @State private var entryCurrency = "UAH"
+  @State private var rate = ""
   init(original: Operation) {
     _o = State(initialValue: original)
-    _amount = State(initialValue: original.amount == 0 ? "" : amountText(original.amount))
+    let input = original.entryCurrency == "USD" ? (original.originalAmount ?? original.sourceMinor ?? original.amount) : original.amount
+    _amount = State(initialValue: input == 0 ? "" : amountText(input))
+    _entryCurrency = State(initialValue: original.entryCurrency ?? "UAH")
+    _rate = State(initialValue: original.exchangeRate ?? "")
   }
-  var categories: [String] { o.kind == .income ? s.db.incomeCategories : s.db.expenseCategories }
+  var categories: [String] { let list = o.kind == .income ? s.db.incomeCategories : s.db.expenseCategories; return list.contains("Без категорії") ? list : list + ["Без категорії"] }
+  var sourceCode:String { s.db.accounts.first(where:{$0.id==o.account})?.code ?? "UAH" }
+  var destinationCode:String { s.db.accounts.first(where:{$0.id==o.destination})?.code ?? "UAH" }
+  var requiresRate:Bool { entryCurrency == "USD" || (o.kind == .transfer && destinationCode == "USD") }
+  var usedRate:Decimal? {fxRate(rate)}
+  var converted:Int64? {
+    guard let n=bankMinor(amount), n>0 else{return nil}
+    if entryCurrency == "USD" {guard let r=usedRate else{return nil};return fxMinor(n,rate:r)}
+    return n
+  }
+  var received:Int64? {
+    guard let uah=converted else{return nil}
+    if destinationCode == "USD" {if sourceCode == "USD" {return bankMinor(amount)};guard let r=usedRate else{return nil};return fxMinor(uah,rate:r,divide:true)}
+    return uah
+  }
   var valid: Bool {
-    (cents(amount) ?? 0) > 0 && s.db.accounts.contains { $0.id == o.account }
-      && (o.kind != .transfer
-        || (o.account != o.destination && s.db.accounts.contains { $0.id == o.destination }))
+    (converted ?? 0)>0 && s.db.accounts.contains { $0.id == o.account } && (!requiresRate || usedRate != nil)
+      && (sourceCode != "USD" || entryCurrency == "USD")
+      && (o.kind != .transfer || (o.account != o.destination && s.db.accounts.contains { $0.id == o.destination } && (received ?? 0)>0 && entryCurrency == sourceCode))
   }
   var body: some View {
     NavigationStack {
       Form {
         Picker("Тип", selection: $o.kind) { ForEach(Kind.allCases) { Text($0.title).tag($0) } }
           .pickerStyle(.segmented)
-        TextField("Сума, ₴", text: $amount).keyboardType(.decimalPad)
-        DatePicker("Дата", selection: $o.date, displayedComponents: .date)
+        TextField("Сума, \(entryCurrency)", text: $amount).keyboardType(.decimalPad)
+        if o.kind != .transfer && sourceCode == "UAH" && o.sourceBank == nil {
+          Picker("Валюта введення",selection:$entryCurrency){Text("Гривня").tag("UAH");Text("Долар").tag("USD")}
+        }
+        if requiresRate { TextField("Курс UAH за 1 USD",text:$rate).keyboardType(.decimalPad); if let n=converted { LabeledContent("Сума у гривнях",value:money(n)) } }
+        DatePicker("Дата і час", selection: $o.date, displayedComponents: [.date,.hourAndMinute])
         Picker("Рахунок", selection: $o.account) {
-          ForEach(s.db.accounts) { Text($0.name).tag($0.id) }
+          ForEach(s.db.accounts.filter{o.sourceBank == nil || $0.code == "UAH"}) { Text($0.name).tag($0.id) }
         }
         if o.kind == .transfer {
           Picker("Куди", selection: $o.destination) {
             Text("Вибрати").tag("")
             ForEach(s.db.accounts) { Text($0.name).tag($0.id) }
           }
+          if let n=received, !o.destination.isEmpty { LabeledContent("Зарахувати",value:currencyMoney(n,destinationCode)) }
         } else {
           Picker("Категорія", selection: $o.category) {
             ForEach(categories, id: \.self) { Text($0).tag($0) }
           }
         }
         TextField("Магазин / примітка / теги", text: $o.note)
+        if let bank = o.sourceBank { LabeledContent("Джерело", value: bank) }
+        if let n = o.originalAmount, let c = o.originalCurrency { LabeledContent("Оригінальна сума", value: currencyMoney(n,c)) }
+        if let fee = o.bankFee, fee > 0 { LabeledContent("Комісія у виписці", value: money(fee)) }
+        if o.kind != .transfer {
+          Button("Визначити категорію") { o.category = suggestedCategory(o.note, kind: o.kind, database: s.db) }
+          Toggle("Запам’ятати категорію для цього продавця", isOn: $learnRule)
+        }
         if s.db.operations.contains(where: { $0.id == o.id }) {
           Button("Видалити операцію", role: .destructive) { confirm = true }
         }
@@ -520,17 +611,28 @@ struct OpEditor: View {
         ToolbarItem(placement: .cancellationAction) { Button("Скасувати") { dismiss() } }
         ToolbarItem(placement: .confirmationAction) {
           Button("Зберегти") {
-            guard let n = cents(amount), valid else { return }
-            o.amount = n
+            guard let n=converted, let entered=bankMinor(amount), valid else {return}
+            o.amount=n
+            o.sourceMinor=sourceCode == "USD" ? entered : n
+            o.destinationMinor=o.kind == .transfer ? received : nil
+            o.entryCurrency=entryCurrency
+            o.exchangeRate=requiresRate ? rate : nil
+            if o.sourceBank == nil {o.originalAmount=entered;o.originalCurrency=entryCurrency}
             if s.change({ d in
               d.operations.removeAll { $0.id == o.id }
               d.operations.append(o)
+              if learnRule && o.kind != .transfer && !o.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                var rules = d.merchantRules ?? [:]; rules[ruleKey(o.note, kind: o.kind)] = o.category; d.merchantRules = rules
+              }
             }) {
               dismiss()
             }
           }.disabled(!valid)
         }
-      }.onChange(of: o.kind) { _ in
+      }.onAppear {if sourceCode == "USD" {entryCurrency="USD"};if rate.isEmpty {rate=s.db.currencyPreferences?.usdRate ?? ""}}
+      .onChange(of:o.account) { _ in entryCurrency=sourceCode }
+      .onChange(of: o.kind) { _ in
+        if o.kind == .transfer {entryCurrency=sourceCode}
         if !categories.contains(o.category) { o.category = categories.first ?? "Інше" }
       }.confirmationDialog("Видалити запис?", isPresented: $confirm, titleVisibility: .visible) {
         Button("Видалити", role: .destructive) {
@@ -546,10 +648,10 @@ struct Accounts: View {
   var body: some View {
     List {
       Section("Загальний залишок") {
-        Text(money(s.db.accounts.reduce(0) { $0 + s.balance($1) })).font(.largeTitle.bold())
+        Text(s.displayed(s.db.accounts.reduce(0) { $0 + s.balance($1) })).font(.largeTitle.bold())
           .foregroundStyle(finoraAccent)
       }
-      Section("Рахунки в гривнях") {
+      Section("Рахунки у власній валюті") {
         ForEach(s.db.accounts) { a in
           Button {
             edit = a
@@ -558,7 +660,7 @@ struct Accounts: View {
               Image(systemName: "creditcard.fill").foregroundStyle(finoraAccent)
               Text(a.name)
               Spacer()
-              Text(money(s.balance(a))).bold()
+              Text(currencyMoney(s.nativeBalance(a),a.code)).bold()
             }
           }.buttonStyle(.plain)
         }
@@ -588,7 +690,9 @@ struct AccountEditor: View {
     NavigationStack {
       Form {
         TextField("Назва", text: $a.name)
-        TextField("Початковий баланс, ₴", text: $opening).keyboardType(.numbersAndPunctuation)
+        Picker("Валюта рахунку",selection:Binding(get:{a.code},set:{a.currency=$0})){Text("UAH").tag("UAH");Text("USD").tag("USD")}.disabled(s.db.operations.contains{$0.account==a.id || $0.destination==a.id})
+        TextField("Початковий баланс, \(a.code)", text: $opening).keyboardType(.numbersAndPunctuation)
+        if a.code == "USD" && s.currentRate == nil {Text("Спочатку вкажи поточний курс у Ще → Валюти.").foregroundStyle(.orange)}
         Text("Для кредитного рахунку можна вказати від’ємну суму.").font(.caption)
       }.navigationTitle("Рахунок").toolbar {
         ToolbarItem(placement: .cancellationAction) { Button("Скасувати") { dismiss() } }
@@ -606,7 +710,7 @@ struct AccountEditor: View {
               dismiss()
             }
           }.disabled(
-            a.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || cents(opening) == nil)
+            a.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || cents(opening) == nil || (a.code == "USD" && s.currentRate == nil))
         }
       }
     }
@@ -714,6 +818,11 @@ struct More: View {
   var body: some View {
     List {
       Section("Планування") {
+        NavigationLink { SubscriptionsView() } label: { IzanamiLabel(title: "Підписки", icon: "repeat", color: .purple) }
+        NavigationLink { ReminderList() } label: { IzanamiLabel(title: "Нагадування", icon: "bell.badge.fill", color: .red) }
+        NavigationLink { CurrencySettings() } label: { IzanamiLabel(title: "Валюти та курси", icon: "dollarsign.circle.fill", color: .green) }
+        NavigationLink { CurrencyCalculator() } label: { IzanamiLabel(title: "Конвертер валют", icon: "dollarsign.arrow.circlepath", color: .cyan) }
+        NavigationLink { ForecastView() } label: { IzanamiLabel(title: "Фінансовий прогноз", icon: "chart.line.uptrend.xyaxis", color: .green) }
         NavigationLink {
           Budgets()
         } label: {
@@ -740,7 +849,10 @@ struct More: View {
           Label("Фінансовий помічник", systemImage: "sparkles")
         }
       }
+      Section("Банки") { NavigationLink { BankCenter() } label: { IzanamiLabel(title: "Банки та імпорт", icon: "building.columns.fill", color: .cyan) } }
       Section("Керування") {
+        NavigationLink { DashboardSettings() } label: { IzanamiLabel(title: "Блоки огляду", icon: "square.grid.2x2.fill", color: .orange) }
+        NavigationLink { AppearanceView() } label: { IzanamiLabel(title: "Оформлення", icon: "paintpalette.fill", color: .pink) }
         NavigationLink {
           Categories()
         } label: {
@@ -753,7 +865,7 @@ struct More: View {
         }
       }
       Section {
-        Text("Finora Native · 3.0\nБез реклами, серверів та платних API.").font(.footnote)
+        Text("Izanami · 4.0 Preview\nБез реклами, серверів та платних API.").font(.footnote)
           .foregroundStyle(.secondary)
       }
     }.navigationTitle("Ще")
@@ -897,7 +1009,10 @@ struct ObligationEditor: View {
           TextField("Загальна сума, ₴", text: $target).keyboardType(.decimalPad)
           TextField("Вже сплачено / накопичено", text: $paid).keyboardType(.decimalPad)
           TextField("Регулярний платіж, ₴", text: $monthly).keyboardType(.decimalPad)
-          DatePicker("Наступна дата / термін", selection: $o.due, displayedComponents: .date)
+          DatePicker("Наступна дата / термін", selection: $o.due, displayedComponents: [.date, .hourAndMinute])
+          if s.db.obligations.contains(where: { $0.id == o.id }) {
+            NavigationLink("Нагадування") { ReminderEditor(original: PersonalReminder(title: o.name, date: o.due, linkedID: o.id)) }
+          }
         }
         Section("Додати платіж або накопичення") {
           TextField("Сума", text: $payment).keyboardType(.decimalPad)
@@ -905,7 +1020,7 @@ struct ObligationEditor: View {
             Toggle("Також записати операцію", isOn: $log)
             if log {
               Picker("Рахунок", selection: $account) {
-                ForEach(s.db.accounts) { Text($0.name).tag($0.id) }
+                ForEach(s.db.accounts.filter{$0.code == "UAH"}) { Text($0.name).tag($0.id) }
               }
             }
           }
@@ -936,7 +1051,7 @@ struct ObligationEditor: View {
               } else {
                 d.obligations.append(o)
               }
-              if extra > 0 && log && o.kind != .goal {
+              if extra > 0 && log && o.kind != .goal && d.accounts.contains(where:{$0.id==account && $0.code=="UAH"}) {
                 d.operations.append(
                   Operation(
                     kind: o.kind == .owed ? .income : .expense, amount: extra, category: "Інше",
@@ -949,7 +1064,8 @@ struct ObligationEditor: View {
         }
       }.confirmationDialog("Видалити запис?", isPresented: $confirm) {
         Button("Видалити", role: .destructive) {
-          if s.change({ $0.obligations.removeAll { $0.id == o.id } }) { dismiss() }
+          let linked=(s.db.reminders ?? []).filter{$0.linkedID==o.id}
+        if s.change({d in d.obligations.removeAll{$0.id==o.id};d.reminders?.removeAll{$0.linkedID==o.id}}) {linked.forEach{ReminderScheduler.cancel($0)};dismiss()}
         }
       }
     }
@@ -971,7 +1087,7 @@ struct CalendarView: View {
           }
           Text("\(o.kind.title) · \(money(o.monthly>0 ? min(o.monthly,o.remaining):o.remaining))")
             .font(.caption)
-          Button("Нагадати за день") { notify(o) }.buttonStyle(.bordered)
+          NavigationLink { ReminderEditor(original: PersonalReminder(title: o.name, date: o.due, linkedID: o.id)) } label: { Label("Налаштувати нагадування", systemImage: "bell") }
         }
       }
     }.navigationTitle("Календар")
@@ -984,7 +1100,7 @@ struct CalendarView: View {
         return
       }
       let c = UNMutableNotificationContent()
-      c.title = "Finora: платіж"
+      c.title = "Izanami: платіж"
       c.body = o.name
       c.sound = .default
       let due = max(60, o.due.timeIntervalSinceNow - 86400)
@@ -1012,7 +1128,7 @@ struct Categories: View {
       }.pickerStyle(.segmented)
       ForEach(cats, id: \.self) { c in
         Text(c).swipeActions {
-          if c != "Інше" {
+          if c != "Інше" && c != "Без категорії" {
             Button(role: .destructive) {
               s.change { d in
                 if income {
@@ -1104,7 +1220,7 @@ struct Settings: View {
   @State private var legacy = false
   @State private var doc: DataFile?
   @State private var format: UTType = .json
-  @State private var fileName = "Finora-backup"
+  @State private var fileName = "Izanami-backup"
   @State private var confirm = false
   @State private var pending: Data?
   var body: some View {
@@ -1116,15 +1232,17 @@ struct Settings: View {
         ).font(.caption)
       }
       Section("Резервні копії") {
+        NavigationLink("Локальні попередні копії") { SnapshotView() }
+        Text("Зберігай експорт JSON у «Файли» / iCloud Drive. Автоматична хмарна синхронізація ще не підключена.").font(.caption)
         Button("Експорт JSON") {
           format = .json
-          fileName = "Finora-backup"
+          fileName = "Izanami-backup"
           doc = s.backup()
           exporting = true
         }
         Button("Експорт CSV для Excel") {
           format = .commaSeparatedText
-          fileName = "Finora-operations"
+          fileName = "Izanami-operations"
           doc = s.csv()
           exporting = true
         }
