@@ -534,7 +534,7 @@ struct OperationRow: View {
       VStack(alignment: .leading) {
         Text(o.note.isEmpty ? (o.kind == .transfer ? "Переказ" : o.category) : o.note).font(
           .subheadline.bold())
-        Text("\(o.kind.title) · \(s.accountName(o.account)) · \(o.date.formatted(date:.abbreviated,time:.omitted))")
+        Text("\(o.kind.title) · \(s.accountName(o.account)) · \(o.date.formatted(.dateTime.day().month(.abbreviated).year().locale(Locale(identifier: "uk_UA"))))")
           .font(.caption).foregroundStyle(.secondary)
       }
       Spacer()
@@ -946,6 +946,12 @@ struct Reports: View {
 }
 struct More: View {
   @EnvironmentObject var s: Store
+  func obligationIcon(_ kind: ObligationKind) -> String {
+    switch kind { case .installment: return "creditcard.fill"; case .owe: return "arrow.up.right"; case .owed: return "arrow.down.left"; case .recurring: return "repeat"; case .goal: return "target" }
+  }
+  func obligationColor(_ kind: ObligationKind) -> Color {
+    switch kind { case .installment: return .blue; case .owe: return .orange; case .owed: return .green; case .recurring: return .purple; case .goal: return .teal }
+  }
   var body: some View {
     List {
       Section("Планування") {
@@ -957,27 +963,24 @@ struct More: View {
         NavigationLink {
           Budgets()
         } label: {
-          Label("Бюджети", systemImage: "chart.pie")
+          IzanamiLabel(title: "Бюджети", icon: "chart.pie.fill", color: .indigo)
         }
         ForEach(ObligationKind.allCases) { k in
           NavigationLink {
             Obligations(kind: k)
           } label: {
-            Label(
-              k.title,
-              systemImage: k == .goal
-                ? "target" : k == .recurring ? "repeat" : "calendar.badge.clock")
+            IzanamiLabel(title: k.title, icon: obligationIcon(k), color: obligationColor(k))
           }
         }
         NavigationLink {
           CalendarView()
         } label: {
-          Label("Календар платежів", systemImage: "calendar")
+          IzanamiLabel(title: "Календар платежів", icon: "calendar", color: .cyan)
         }
         NavigationLink {
           Insights()
         } label: {
-          Label("Фінансовий помічник", systemImage: "sparkles")
+          IzanamiLabel(title: "Фінансовий помічник", icon: "sparkles", color: .purple)
         }
       }
       Section("Банки") {
@@ -990,16 +993,16 @@ struct More: View {
         NavigationLink {
           Categories()
         } label: {
-          Label("Категорії", systemImage: "tag")
+          IzanamiLabel(title: "Категорії", icon: "tag.fill", color: .teal)
         }
         NavigationLink {
           Settings()
         } label: {
-          Label("Захист та резервні копії", systemImage: "lock.shield")
+          IzanamiLabel(title: "Захист та резервні копії", icon: "lock.shield.fill", color: .green)
         }
       }
       Section {
-        Text("Izanami · 4.0.4 Preview\nБез реклами, серверів та платних API.").font(.footnote)
+        Text("Izanami · 4.0.5 Preview\nБез реклами, серверів та платних API.").font(.footnote)
           .foregroundStyle(.secondary)
       }
     }.navigationTitle("Ще")

@@ -33,17 +33,33 @@ struct IzanamiShell: View {
         Root().tint(accent).preferredColorScheme(scheme).environment(\.font, .system(.body, design: design))
     }
 }
+// A single visual vocabulary for menus and overview cards.
+struct IzanamiGlyph: View {
+    @EnvironmentObject var s: Store
+    var icon: String
+    var color: Color
+    var compact = false
+    var body: some View {
+        let p = s.db.preferences ?? .init()
+        let side: CGFloat = compact ? 30 : (p.largeIcons ? 42 : 34)
+        Image(systemName: icon)
+            .font(.system(size: side * 0.48, weight: .semibold))
+            .foregroundStyle(color)
+            .frame(width: side, height: side)
+            .background(color.opacity(p.glow ? 0.19 : 0.09), in: RoundedRectangle(cornerRadius: side * 0.28))
+            .accessibilityHidden(true)
+    }
+}
 struct IzanamiLabel: View {
     @EnvironmentObject var s: Store
     var title: String; var icon: String; var color: Color
     var body: some View {
         let p = s.db.preferences ?? .init()
+        let tint = (p.colorfulDashboard ?? true) ? color : (IzanamiTheme.all.first(where: { $0.name == p.theme })?.color ?? finoraAccent)
         HStack(spacing: 12) {
-            Image(systemName: icon).font(.system(size: p.largeIcons ? 25 : 19, weight: .semibold))
-                .foregroundStyle(color).frame(width: p.largeIcons ? 48 : 36, height: p.largeIcons ? 48 : 36)
-                .background(color.opacity(p.glow ? 0.22 : 0.08), in: RoundedRectangle(cornerRadius: 12))
-            Text(title).foregroundStyle(.primary)
-        }
+            IzanamiGlyph(icon: icon, color: tint)
+            Text(title).font(.body).foregroundStyle(.primary).fixedSize(horizontal: false, vertical: true)
+        }.frame(minHeight: 46, alignment: .leading).padding(.vertical, 2)
     }
 }
 struct AppearanceView: View {
@@ -66,7 +82,7 @@ struct AppearanceView: View {
             Picker("Шрифт", selection: binding(\.font)) { Text("Системний").tag("default"); Text("Rounded").tag("rounded"); Text("Serif").tag("serif"); Text("Monospaced").tag("monospaced") }
             Toggle("Великі іконки", isOn: binding(\.largeIcons))
             Toggle("Яскраве підсвічування", isOn: binding(\.glow))
-            Toggle("Різнокольорові блоки", isOn: Binding(get:{s.db.preferences?.colorfulDashboard ?? true},set:{binding(\.colorfulDashboard).wrappedValue=$0}))
+            Toggle("Кольорові акценти", isOn: Binding(get:{s.db.preferences?.colorfulDashboard ?? true},set:{binding(\.colorfulDashboard).wrappedValue=$0}))
         }.navigationTitle("Оформлення")
     }
 }
@@ -195,18 +211,19 @@ struct CustomDashboard: View {
     @State private var date = Date()
     @State private var add = false
     @State private var configure = false
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     var items: [DashboardItem] { (DashboardItem.merged(s.db.dashboard)).filter(\.enabled) }
     var rows: [[DashboardItem]] {
         var result: [[DashboardItem]] = []; var pair: [DashboardItem] = []
         for item in items {
-            if item.size == .small { pair.append(item); if pair.count == 2 { result.append(pair); pair = [] } }
+            if item.size == .small && !dynamicTypeSize.isAccessibilitySize { pair.append(item); if pair.count == 2 { result.append(pair); pair = [] } }
             else { if !pair.isEmpty { result.append(pair); pair = [] }; result.append([item]) }
         }
         if !pair.isEmpty { result.append(pair) }; return result
     }
     var body: some View {
         ScrollView {
-            VStack(spacing: 12) {
+            VStack(spacing: 14) {
                 MonthControl(date: $date)
                 if items.isEmpty { Panel { Text("Немає видимих блоків"); Button("Налаштувати огляд") { configure = true } } }
                 ForEach(Array(rows.enumerated()), id: \.offset) { entry in
@@ -218,67 +235,198 @@ struct CustomDashboard: View {
         }.background(Color(uiColor: .systemGroupedBackground)).navigationTitle("Izanami")
             .toolbar { Button { configure = true } label: { Image(systemName: "slider.horizontal.3").font(.title2) }.accessibilityLabel("Налаштувати блоки") }
             .safeAreaInset(edge: .bottom) {
-                Button { add = true } label: { Label("Додати операцію", systemImage: "plus.circle.fill").font(.headline).frame(maxWidth: .infinity).padding(.vertical, 9) }.buttonStyle(.borderedProminent).padding(.horizontal).padding(.vertical, 5).background(.regularMaterial)
+                Button { add = true } label: { Label("Додати операцію", systemImage: "plus.circle.fill").font(.headline).frame(maxWidth: .infinity).padding(.vertical, 5) }.buttonStyle(.borderedProminent).padding(.horizontal).padding(.vertical, 5).background(.regularMaterial)
             }.sheet(isPresented: $add) { OpEditor(original: Operation(category: "Без категорії", account: s.db.accounts.first?.id ?? cash)) }
             .sheet(isPresented: $configure) { NavigationStack { DashboardSettings().toolbar { ToolbarItem(placement: .cancellationAction) { Button("Готово") { configure = false } } } } }
     }
 }
 struct DashboardTile: View {
     @EnvironmentObject var s: Store
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     var item: DashboardItem; var date: Date
     var ops: [Operation] { s.month(date) }
     var inc: Int64 { s.totals(ops,.income) }
     var exp: Int64 { s.totals(ops,.expense) }
     var balance: Int64 { s.db.accounts.reduce(0) { $0 + s.balance($1) } }
+    var small: Bool { item.size == .small && !dynamicTypeSize.isAccessibilitySize }
+    var detailed: Bool { item.size == .large }
     var color: Color {
-        let p=s.db.preferences ?? .init()
+        let p = s.db.preferences ?? .init()
         return (p.colorfulDashboard ?? true) ? item.kind.tileColor : (IzanamiTheme.all.first(where:{$0.name==p.theme})?.color ?? finoraAccent)
     }
     var body: some View {
-        let p=s.db.preferences ?? .init()
-        VStack(alignment:.leading,spacing:10) {
-            Image(systemName:item.kind.icon)
-                .font(.system(size:p.largeIcons ? 29:22,weight:.semibold))
-                .foregroundStyle(color)
-                .frame(width:p.largeIcons ? 52:40,height:p.largeIcons ? 52:40)
-                .background(color.opacity(p.glow ? 0.24:0.10),in:RoundedRectangle(cornerRadius:14))
-                .accessibilityHidden(true)
-            Text(item.kind.title).font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
-            content.font(.system(.title3,design:.default).weight(.semibold))
-                .monospacedDigit().minimumScaleFactor(0.55)
-        }.frame(maxWidth:.infinity,minHeight:item.size == .large ? 150:item.size == .medium ? 120:110,alignment:.topLeading)
-            .padding(14)
-            .background(RoundedRectangle(cornerRadius:20).fill(Color(uiColor:.secondarySystemGroupedBackground)))
-            .background(RoundedRectangle(cornerRadius:20).fill(color.opacity(0.1)))
-            .overlay(RoundedRectangle(cornerRadius:20).strokeBorder(color.opacity(p.glow ? 0.50:0.16),lineWidth:p.glow ? 1.5:1))
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .center, spacing: 9) {
+                IzanamiGlyph(icon: item.kind.icon, color: color, compact: small)
+                Text(item.kind.title).font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+            content
+        }
+        .frame(maxWidth: .infinity, minHeight: small ? 94 : nil, alignment: .topLeading)
+        .padding(small ? 12 : 16)
+        .background(cardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+    }
+    var cardBackground: some View {
+        ZStack {
+            Color(uiColor: .secondarySystemGroupedBackground)
+            if item.kind == .balance {
+                LinearGradient(colors: [color.opacity(0.18), color.opacity(0.025)], startPoint: .topLeading, endPoint: .bottomTrailing)
+            }
+        }
+    }
+    func value(_ text: String) -> some View {
+        Text(text).font(small ? .title3.weight(.semibold) : .title.weight(.bold))
+            .monospacedDigit().lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2).minimumScaleFactor(0.68)
+            .foregroundStyle(.primary).accessibilityAddTraits(.isHeader)
+    }
+    @ViewBuilder func amount(_ n: Int64) -> some View {
+        let pieces = s.displayed(n).components(separatedBy: " · ")
+        value(pieces.first ?? money(n))
+        if pieces.count > 1 {
+            Text(pieces[1]).font(.caption).monospacedDigit().foregroundStyle(.secondary)
+        }
+    }
+    func detail(_ text: String) -> some View {
+        Text(text).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+    }
+    func metric(_ title: String, _ n: Int64, _ tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.caption).foregroundStyle(.secondary)
+            Text(s.displayed(n)).font(.headline).monospacedDigit().foregroundStyle(tint)
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2).minimumScaleFactor(0.7)
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+    var cashFlow: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if small || dynamicTypeSize.isAccessibilitySize {
+                metric("Доходи", inc, .green)
+                metric("Витрати", exp, .orange)
+            } else {
+                HStack(alignment: .top, spacing: 12) {
+                    metric("Доходи", inc, .green)
+                    metric("Витрати", exp, .orange)
+                }
+            }
+            if !small {
+                let positive = Double(max(0, inc)), negative = Double(max(0, exp))
+                if positive + negative > 0 {
+                    GeometryReader { g in
+                        HStack(spacing: 0) {
+                            Rectangle().fill(Color.green).frame(width: g.size.width * CGFloat(positive / (positive + negative)))
+                            Rectangle().fill(Color.orange)
+                        }
+                    }.frame(height: 7).clipShape(Capsule()).accessibilityHidden(true)
+                }
+                HStack { detail("Грошовий потік"); Spacer(minLength: 4); Text(s.displayed(inc-exp)).font(.subheadline.weight(.semibold)).monospacedDigit() }
+            }
+        }
+    }
+    var categoryGroups: [(key: String, value: Int64)] {
+        Dictionary(grouping: ops.filter { $0.expenseValue != 0 }, by: { $0.expenseGroup })
+            .mapValues { $0.reduce(Int64(0)) { $0 + $1.expenseValue } }
+            .filter { $0.value > 0 }.sorted { $0.value > $1.value }
+    }
+    var categories: some View {
+        let groups = categoryGroups
+        let total = groups.reduce(Int64(0)) { $0 + $1.value }
+        return VStack(alignment: .leading, spacing: 11) {
+            if groups.isEmpty { detail("Немає витрат за період") }
+            else if small { value("\(groups.count)"); detail("Категорій з витратами") }
+            else {
+                amount(exp)
+                ForEach(Array(groups.prefix(detailed ? 10 : 4).enumerated()), id: \.element.key) { entry in
+                    DashboardCategoryLine(title: entry.element.key, amount: entry.element.value, total: total, color: categoryColor(entry.offset))
+                }
+                if groups.count > (detailed ? 10 : 4) { detail("Показано найбільші категорії") }
+            }
+        }
+    }
+    func categoryColor(_ index: Int) -> Color {
+        let palette: [Color] = [.purple, .teal, .blue, .orange, .pink, .green, .indigo, .cyan]
+        return (s.db.preferences?.colorfulDashboard ?? true) ? palette[index % palette.count] : color
+    }
+    @ViewBuilder var accounts: some View {
+        let shown = Array(s.db.accounts.prefix(detailed ? 6 : 2))
+        if shown.isEmpty { detail("Немає рахунків") }
+        ForEach(shown) { a in
+            HStack(alignment: .center, spacing: 8) {
+                if !small { IzanamiGlyph(icon: a.isCredit ? "creditcard.fill" : a.id == cash ? "banknote.fill" : "wallet.pass.fill", color: color, compact: true) }
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(a.name).font(.subheadline.weight(.medium)).lineLimit(2)
+                    if !small { detail(a.typeName) }
+                }
+                Spacer(minLength: 4)
+                Text(currencyMoney(s.nativeBalance(a), a.code)).font(.subheadline.weight(.semibold)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.65)
+            }
+            if a.id != shown.last?.id { Divider() }
+        }
+        if s.db.accounts.count > shown.count { detail("Ще \(s.db.accounts.count-shown.count) рах.") }
     }
     @ViewBuilder var content: some View {
         switch item.kind {
-        case .balance: Text(s.displayed(balance)).font(.title3.bold()).minimumScaleFactor(0.45)
-        case .cashflow: Text("↓ \(s.displayed(inc))").foregroundStyle(.green).bold(); Text("↑ \(s.displayed(exp))").foregroundStyle(.orange).bold()
-        case .categories: if item.size == .small { Text("\(Set(ops.filter{$0.kind == .expense}.map(\.category)).count) категорій") } else { Breakdown(ops: ops) }
-        case .recent: if ops.isEmpty { Text("Немає операцій") } else { ForEach(ops.sorted{$0.date > $1.date}.prefix(item.size == .large ? 5 : 2)) { o in if item.size == .small { Text(money(o.amount)).font(.caption) } else { OperationRow(o: o) } } }
-        case .accounts: ForEach(s.db.accounts.prefix(item.size == .large ? 6 : 2)) { a in Text("\(a.name): \(currencyMoney(s.nativeBalance(a),a.code))").font(.subheadline) }
-        case .budget: if s.db.budget > 0 { Text(money(max(0,s.db.budget-exp))).bold(); ProgressView(value: max(0,min(1, Double(exp)/Double(s.db.budget)))) } else { Text("Не задано") }
-        case .obligations: ForEach(s.db.obligations.filter{$0.remaining > 0 && $0.kind != .goal}.sorted{$0.due < $1.due}.prefix(3)) { o in Text("\(o.name) · \(o.due.formatted(date:.abbreviated,time:.omitted))").font(.caption) }; if !s.db.obligations.contains(where: {$0.remaining > 0 && $0.kind != .goal}) { Text("Немає платежів") }
-        case .subscriptions: Text("\((s.db.subscriptions ?? []).filter{$0.active}.count) активних").bold(); if let next = (s.db.subscriptions ?? []).filter({$0.active}).sorted(by: {$0.next < $1.next}).first { Text(next.name).font(.caption); Text(next.next, style: .date).font(.caption) }
-        case .reminders: Text("\((s.db.reminders ?? []).filter{$0.enabled && $0.date > Date()}.count) майбутніх").bold()
-        case .forecast: if let f = s.db.forecast { Text(money(s.totalOwnFunds + f.expected - f.reserve - f.planned)).bold() } else { Text("За бажанням") }
-        case .uncategorized: Text("\(ops.filter{$0.category == "Без категорії"}.count) операцій").bold()
+        case .balance: amount(balance); detail("Чистий баланс рахунків · без невикористаного кредиту")
+        case .cashflow: cashFlow
+        case .categories: categories
+        case .recent:
+            if ops.isEmpty { detail("Немає операцій") }
+            else {
+                let shown = Array(ops.sorted{$0.date > $1.date}.prefix(detailed ? 5 : 2))
+                ForEach(shown) { o in
+                    if small { Text(money(o.amount)).font(.subheadline.weight(.semibold)).monospacedDigit(); detail(o.note.isEmpty ? o.category : o.note) }
+                    else { OperationRow(o: o) }
+                    if o.id != shown.last?.id { Divider() }
+                }
+            }
+        case .accounts: accounts
+        case .budget:
+            if s.db.budget > 0 {
+                amount(max(0,s.db.budget-exp)); detail("Залишок бюджету · з \(money(s.db.budget))")
+                ProgressView(value: max(0,min(1, Double(exp)/Double(s.db.budget)))).tint(color)
+            } else { detail("Не задано") }
+        case .obligations:
+            let due = s.db.obligations.filter{$0.remaining > 0 && $0.kind != .goal}.sorted{$0.due < $1.due}
+            if due.isEmpty { detail("Немає платежів") }
+            else { ForEach(due.prefix(small ? 1 : detailed ? 3 : 2)) { o in Text(o.name).font(.subheadline.weight(.semibold)); detail(o.due.formatted(.dateTime.day().month(.wide).locale(Locale(identifier: "uk_UA")))) } }
+        case .subscriptions:
+            value(String((s.db.subscriptions ?? []).filter{$0.active}.count)); detail("Активних підписок")
+            if let next = (s.db.subscriptions ?? []).filter({$0.active}).sorted(by: {$0.next < $1.next}).first { Text(next.name).font(.subheadline.weight(.medium)); detail(next.next.formatted(.dateTime.day().month(.wide).locale(Locale(identifier: "uk_UA")))) }
+        case .reminders: value(String((s.db.reminders ?? []).filter{$0.enabled && $0.date > Date()}.count)); detail("Майбутніх нагадувань")
+        case .forecast: if let f = s.db.forecast { amount(s.totalOwnFunds + f.expected - f.reserve - f.planned); detail("Прогнозований залишок") } else { detail("За бажанням") }
+        case .uncategorized: value(String(ops.filter{$0.category == "Без категорії"}.count)); detail("Операцій без категорії")
         case .goals: obligationSummary([.goal])
-        case .debt: Text("Мені: \(money(s.db.obligations.filter{$0.kind == .owed}.reduce(0){$0+$1.remaining}))").font(.caption); Text("Я: \(money(s.db.obligations.filter{$0.kind == .owe}.reduce(0){$0+$1.remaining}))").font(.caption)
+        case .debt: metric("Мені винні", s.db.obligations.filter{$0.kind == .owed}.reduce(0){$0+$1.remaining}, .green); metric("Я винен", s.db.obligations.filter{$0.kind == .owe}.reduce(0){$0+$1.remaining}, .orange)
         case .installments: obligationSummary([.installment])
         case .recurring: obligationSummary([.recurring])
-        case .statistics: Text("\(ops.count) операцій").bold(); Text(money(inc-exp)).font(.caption)
-        case .fees: Text(money(ops.filter{$0.kind == .expense && $0.category == "🏦 Комісії"}.reduce(0){$0+$1.amount})).bold()
-        case .ownFunds: Text(s.displayed(s.totalOwnFunds))
-        case .creditDebt: Text(s.displayed(s.totalAccountDebt))
-        case .availableCredit: Text(s.displayed(s.totalAvailableCredit))
-        case .review: Text(String(ops.filter{$0.kind.needsReview}.count))
-        case .savings: Text(inc > 0 ? ((Double(inc-exp)/Double(inc)).formatted(.percent.precision(.fractionLength(1)))) : "—").bold()
+        case .statistics: value(String(ops.count)); detail("Операцій · потік \(money(inc-exp))")
+        case .fees: amount(ops.filter{$0.kind == .expense && $0.category == "🏦 Комісії"}.reduce(0){$0+$1.amount})
+        case .ownFunds: amount(s.totalOwnFunds); detail("Без кредитних коштів")
+        case .creditDebt: amount(s.totalAccountDebt); detail("Використані кредитні кошти")
+        case .availableCredit: amount(s.totalAvailableCredit); detail("Не є власними коштами")
+        case .review: value(String(ops.filter{$0.kind.needsReview}.count)); detail("Потребують перевірки")
+        case .savings: value(inc > 0 ? ((Double(inc-exp)/Double(inc)).formatted(.percent.precision(.fractionLength(1)))) : "—"); detail("Частка доходу після витрат")
         }
     }
-    @ViewBuilder func obligationSummary(_ kinds: [ObligationKind]) -> some View { let matching = s.db.obligations.filter { kinds.contains($0.kind) }; Text(money(matching.reduce(0){$0+$1.remaining})).bold(); Text("\(matching.count) записів").font(.caption) }
+    @ViewBuilder func obligationSummary(_ kinds: [ObligationKind]) -> some View {
+        let matching = s.db.obligations.filter { kinds.contains($0.kind) }
+        amount(matching.reduce(0){$0+$1.remaining}); detail("\(matching.count) записів")
+    }
+}
+struct DashboardCategoryLine: View {
+    var title: String; var amount: Int64; var total: Int64; var color: Color
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(title).font(.subheadline).lineLimit(2)
+                Spacer(minLength: 3)
+                Text(money(amount)).font(.subheadline.weight(.semibold)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
+            }
+            ProgressView(value: total > 0 ? min(1, max(0, Double(amount)/Double(total))) : 0).tint(color)
+                .accessibilityLabel(title).accessibilityValue(money(amount))
+        }
+    }
 }
 
 struct ForecastPreferences: Codable { var expected: Int64 = 0; var planned: Int64 = 0; var reserve: Int64 = 0; var days: Int = 30 }
