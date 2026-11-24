@@ -100,31 +100,126 @@ struct BankCenter: View {
     @EnvironmentObject var s: Store
     @State private var importing = false; @State private var pending: BankBatch?; @State private var account = ""; @State private var busy = false
     @State private var token = ""; @State private var mono: [MonoAccount] = []; @State private var monoID = ""; @State private var from = Calendar.current.date(byAdding:.day,value:-7,to:Date()) ?? Date(); @State private var lastFetch = Date.distantPast
+    private var supportedMonoAccounts: [MonoAccount] {
+        mono.filter { $0.currencyCode == 980 }
+    }
+    private var supportedLocalAccounts: [Account] {
+        s.db.accounts.filter { $0.code == "UAH" }
+    }
+    private var statementDates: ClosedRange<Date> {
+        let now = Date()
+        let start = Calendar.current.date(byAdding: .day, value: -30, to: now) ?? now
+        return start...now
+    }
+    private var importTypes: [UTType] {
+        [.pdf, UTType(filenameExtension: "xlsx") ?? .spreadsheet]
+    }
     var body: some View {
         List {
-            Section("Виписки") {
-                Button { importing = true } label: { IzanamiLabel(title:"Імпортувати PDF / XLSX",icon:"doc.badge.plus",color:.red) }.disabled(busy)
-                Text("ПУМБ PDF, А-БАНК PDF, ОТП XLSX. Лише гривневі рахунки; оригінальні суми в іншій валюті зберігаються. Приват24 і PDF monobank потребують шаблону.").font(.caption)
-                NavigationLink { BankImportHistory() } label: { IzanamiLabel(title:"Історія імпорту",icon:"clock.arrow.circlepath",color:.blue) }
-                NavigationLink { ReceiptScanView() } label: { IzanamiLabel(title:"Розпізнати фото чека",icon:"viewfinder",color:.purple) }
-            }
-            Section("monobank · персональний API") {
-                Link("Отримати токен",destination:URL(string:"https://api.monobank.ua/")!)
-                SecureField("Токен",text:$token).textInputAutocapitalization(.never).autocorrectionDisabled()
-                Button("Зберегти токен і завантажити рахунки") { loadAccounts() }.disabled(busy || token.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
-                if !mono.isEmpty {
-                    Picker("Рахунок банку",selection:$monoID) { ForEach(mono.filter{$0.currencyCode == 980}) { a in Text((a.type ?? "Рахунок")+" · "+(a.maskedPan?.first.map{String($0.suffix(4))} ?? String(a.id.suffix(4)))).tag(a.id) } }
-                    DatePicker("Виписка з",selection:$from,in:(Calendar.current.date(byAdding:.day,value:-30,to:Date()) ?? Date())...Date(),displayedComponents:.date)
-                    Button("Завантажити операції") { fetchMono() }.disabled(busy || monoID.isEmpty)
-                }
-                Button("Видалити токен",role:.destructive){ MonoKeychain.remove();token="";mono=[];monoID="" }.disabled(busy)
-                Text("Читання операцій, без права оплати. Запити не частіше разу за 60 секунд. Поки оновлення вручну, без постійного фонового доступу.").font(.caption)
-            }
+            statementSection
+            monoSection
             if busy { ProgressView() }
-            if let batch = pending { Section("Перевірка") { Text("Розпізнано \(batch.rows.count), пропущено \(batch.rejected)"); Picker("Рахунок Izanami",selection:$account) { Text("Вибрати").tag(""); ForEach(s.db.accounts.filter{$0.code == "UAH"}){Text($0.name).tag($0.id)} }; NavigationLink("Переглянути та імпортувати") { BankReview(batch:batch,account:account) }.disabled(account.isEmpty) } }
-        }.navigationTitle("Банки та імпорт").onAppear { if token.isEmpty { token=MonoKeychain.get() } }.fileImporter(isPresented:$importing,allowedContentTypes:[.pdf,UTType(filenameExtension:"xlsx") ?? .spreadsheet]) { result in
-            do { let u=try result.get(); let access=u.startAccessingSecurityScopedResource(); defer { if access {u.stopAccessingSecurityScopedResource()} }; let bytes=(try u.resourceValues(forKeys:[.fileSizeKey]).fileSize) ?? 0; guard bytes <= 30_000_000 else { throw BankFailure.unsupported }; let batch = try u.pathExtension.lowercased() == "pdf" ? StatementPDF.read(u) : readOTP(u); guard !batch.rows.isEmpty else { throw BankFailure.empty }; pending=batch;account="" }
-            catch {s.error=error.localizedDescription}
+            if let batch = pending {
+                reviewSection(batch)
+            }
+        }
+        .navigationTitle("Банки та імпорт")
+        .onAppear {
+            if token.isEmpty { token = MonoKeychain.get() }
+        }
+        .fileImporter(isPresented: $importing, allowedContentTypes: importTypes, onCompletion: importFile)
+    }
+    private var statementSection: some View {
+        Section("Виписки") {
+            Button { importing = true } label: {
+                IzanamiLabel(title: "Імпортувати PDF / XLSX", icon: "doc.badge.plus", color: .red)
+            }
+            .disabled(busy)
+            Text("ПУМБ PDF, А-БАНК PDF, ОТП XLSX. Лише гривневі рахунки; оригінальні суми в іншій валюті зберігаються. Приват24 і PDF monobank потребують шаблону.")
+                .font(.caption)
+            NavigationLink { BankImportHistory() } label: {
+                IzanamiLabel(title: "Історія імпорту", icon: "clock.arrow.circlepath", color: .blue)
+            }
+            NavigationLink { ReceiptScanView() } label: {
+                IzanamiLabel(title: "Розпізнати фото чека", icon: "viewfinder", color: .purple)
+            }
+        }
+    }
+    private var monoSection: some View {
+        Section("monobank · персональний API") {
+            Link("Отримати токен", destination: URL(string: "https://api.monobank.ua/")!)
+            SecureField("Токен", text: $token)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            Button("Зберегти токен і завантажити рахунки") { loadAccounts() }
+                .disabled(busy || token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            if !mono.isEmpty { monoControls }
+            Button("Видалити токен", role: .destructive) {
+                MonoKeychain.remove()
+                token = ""
+                mono = []
+                monoID = ""
+            }
+            .disabled(busy)
+            Text("Читання операцій, без права оплати. Запити не частіше разу за 60 секунд. Поки оновлення вручну, без постійного фонового доступу.")
+                .font(.caption)
+        }
+    }
+    private func monoAccountTitle(_ a: MonoAccount) -> String {
+        let lastFour: String
+        if let pan = a.maskedPan?.first {
+            lastFour = String(pan.suffix(4))
+        } else {
+            lastFour = String(a.id.suffix(4))
+        }
+        let type = a.type ?? "Рахунок"
+        return type + " · " + lastFour
+    }
+    private var monoControls: some View {
+        Group {
+            Picker("Рахунок банку", selection: $monoID) {
+                ForEach(supportedMonoAccounts) { a in
+                    Text(monoAccountTitle(a)).tag(a.id)
+                }
+            }
+            DatePicker("Виписка з", selection: $from, in: statementDates, displayedComponents: .date)
+            Button("Завантажити операції") { fetchMono() }
+                .disabled(busy || monoID.isEmpty)
+        }
+    }
+    private func reviewSection(_ batch: BankBatch) -> some View {
+        Section("Перевірка") {
+            Text("Розпізнано \(batch.rows.count), пропущено \(batch.rejected)")
+            Picker("Рахунок Izanami", selection: $account) {
+                Text("Вибрати").tag("")
+                ForEach(supportedLocalAccounts) { a in
+                    Text(a.name).tag(a.id)
+                }
+            }
+            NavigationLink("Переглянути та імпортувати") {
+                BankReview(batch: batch, account: account)
+            }
+            .disabled(account.isEmpty)
+        }
+    }
+    private func importFile(_ result: Result<URL, Error>) {
+        do {
+            let url = try result.get()
+            let access = url.startAccessingSecurityScopedResource()
+            defer { if access { url.stopAccessingSecurityScopedResource() } }
+            let bytes = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+            guard bytes <= 30_000_000 else { throw BankFailure.unsupported }
+            let batch: BankBatch
+            if url.pathExtension.lowercased() == "pdf" {
+                batch = try StatementPDF.read(url)
+            } else {
+                batch = try readOTP(url)
+            }
+            guard !batch.rows.isEmpty else { throw BankFailure.empty }
+            pending = batch
+            account = ""
+        } catch {
+            s.error = error.localizedDescription
         }
     }
     func loadAccounts() {
