@@ -5,19 +5,25 @@ options:
 settings:
   base:
     SWIFT_VERSION: '5.0'
-    MARKETING_VERSION: '3.0'
-    CURRENT_PROJECT_VERSION: '1'
+    MARKETING_VERSION: '4.0'
+    CURRENT_PROJECT_VERSION: '3'
     TARGETED_DEVICE_FAMILY: '1'
+packages:
+  ZIPFoundation:
+    url: https://github.com/weichsel/ZIPFoundation.git
+    exactVersion: 0.9.19
 targets:
   Finora:
     type: application
     platform: iOS
     sources: [Finora]
+    dependencies:
+      - package: ZIPFoundation
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: ua.finora.personal
         GENERATE_INFOPLIST_FILE: YES
-        INFOPLIST_KEY_CFBundleDisplayName: Finora
+        INFOPLIST_KEY_CFBundleDisplayName: Izanami
         INFOPLIST_KEY_NSFaceIDUsageDescription: 'Захист особистих фінансів'
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
