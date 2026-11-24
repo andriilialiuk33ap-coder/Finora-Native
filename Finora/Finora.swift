@@ -1,3 +1,4 @@
+// Finora 3.0.1 - SwiftUI build fix
 import Charts
 import LocalAuthentication
 import SwiftUI
@@ -16,7 +17,7 @@ let incomeDefaults = [
   "Інше",
 ]
 let cash = "cash"
-let tint = Color(red: 0.04, green: 0.48, blue: 0.36)
+let finoraAccent = Color(red: 0.04, green: 0.48, blue: 0.36)
 func money(_ n: Int64) -> String {
   (Double(n) / 100).formatted(.currency(code: "UAH").locale(Locale(identifier: "uk_UA")))
 }
@@ -248,7 +249,7 @@ struct DataFile: FileDocument {
 }
 @main @MainActor struct FinoraApp: App {
   @StateObject private var store = Store()
-  var body: some Scene { WindowGroup { Root().environmentObject(store).tint(tint) } }
+  var body: some Scene { WindowGroup { Root().environmentObject(store).tint(finoraAccent) } }
 }
 struct Root: View {
   @EnvironmentObject var store: Store
@@ -260,7 +261,7 @@ struct Root: View {
     Group {
       if lockEnabled && !unlocked {
         VStack(spacing: 18) {
-          Image(systemName: "lock.shield.fill").font(.system(size: 64)).foregroundStyle(tint)
+          Image(systemName: "lock.shield.fill").font(.system(size: 64)).foregroundStyle(finoraAccent)
           Text("Finora").font(.largeTitle.bold())
           Text(authError).foregroundStyle(.secondary)
           Button("Розблокувати", action: unlock).buttonStyle(.borderedProminent)
@@ -362,7 +363,7 @@ struct Home: View {
         }.padding(20).frame(maxWidth: .infinity, alignment: .leading).foregroundStyle(.white)
           .background(
             LinearGradient(
-              colors: [tint, Color(red: 0.03, green: 0.29, blue: 0.25)], startPoint: .topLeading,
+              colors: [finoraAccent, Color(red: 0.03, green: 0.29, blue: 0.25)], startPoint: .topLeading,
               endPoint: .bottomTrailing), in: RoundedRectangle(cornerRadius: 24))
         Button {
           add = true
@@ -373,7 +374,7 @@ struct Home: View {
           Panel {
             Text("Бюджет місяця").font(.headline)
             ProgressView(value: min(1, Double(exp) / Double(s.db.budget))).tint(
-              exp > s.db.budget ? .red : tint)
+              exp > s.db.budget ? .red : finoraAccent)
             Text("\(money(exp)) / \(money(s.db.budget))").font(.subheadline)
             Text(exp > s.db.budget ? "Ліміт перевищено" : "Залишок \(money(s.db.budget-exp))")
               .foregroundStyle(.secondary)
@@ -410,7 +411,7 @@ struct Breakdown: View {
           Spacer()
           Text(money(value)).bold()
         }.font(.subheadline)
-        ProgressView(value: Double(value) / Double(total)).tint(tint)
+        ProgressView(value: Double(value) / Double(total)).tint(finoraAccent)
       }
     }
   }
@@ -546,7 +547,7 @@ struct Accounts: View {
     List {
       Section("Загальний залишок") {
         Text(money(s.db.accounts.reduce(0) { $0 + s.balance($1) })).font(.largeTitle.bold())
-          .foregroundStyle(tint)
+          .foregroundStyle(finoraAccent)
       }
       Section("Рахунки в гривнях") {
         ForEach(s.db.accounts) { a in
@@ -554,7 +555,7 @@ struct Accounts: View {
             edit = a
           } label: {
             HStack {
-              Image(systemName: "creditcard.fill").foregroundStyle(tint)
+              Image(systemName: "creditcard.fill").foregroundStyle(finoraAccent)
               Text(a.name)
               Spacer()
               Text(money(s.balance(a))).bold()
@@ -611,6 +612,28 @@ struct AccountEditor: View {
     }
   }
 }
+// Keep chart data and chart rendering separate to simplify SwiftUI type checking.
+struct CashFlowPoint: Identifiable {
+  let month: Date
+  let series: String
+  let amount: Double
+  var id: String { "\(month.timeIntervalSinceReferenceDate)-\(series)" }
+}
+struct AnnualCashFlowChart: View {
+  let points: [CashFlowPoint]
+  var body: some View {
+    Chart(points) { point in
+      BarMark(
+        x: .value("Місяць", point.month, unit: .month),
+        y: .value("UAH", point.amount)
+      )
+      .foregroundStyle(by: .value("Тип", point.series))
+      .position(by: .value("Тип", point.series))
+    }
+    .chartForegroundStyleScale(domain: ["Доходи", "Витрати"], range: [finoraAccent, Color.orange])
+    .frame(height: 220)
+  }
+}
 struct Reports: View {
   @EnvironmentObject var s: Store
   @State private var year = Calendar.current.component(.year, from: Date())
@@ -618,6 +641,17 @@ struct Reports: View {
     (1...12).compactMap {
       Calendar.current.date(from: DateComponents(year: year, month: $0, day: 1))
     }
+  }
+  private var chartPoints: [CashFlowPoint] {
+    var points: [CashFlowPoint] = []
+    for month in months {
+      let operations = s.month(month)
+      let income = Double(s.totals(operations, .income)) / 100.0
+      let expense = Double(s.totals(operations, .expense)) / 100.0
+      points.append(CashFlowPoint(month: month, series: "Доходи", amount: income))
+      points.append(CashFlowPoint(month: month, series: "Витрати", amount: expense))
+    }
+    return points
   }
   var body: some View {
     ScrollView {
@@ -650,18 +684,7 @@ struct Reports: View {
         }
         Panel {
           Text("Доходи та витрати").font(.headline)
-          Chart {
-            ForEach(months, id: \.self) { d in
-              BarMark(
-                x: .value("Місяць", d, unit: .month),
-                y: .value("UAH", Double(s.totals(s.month(d), .income)) / 100)
-              ).foregroundStyle(by: .value("Тип", "Доходи")).position(by: .value("Тип", "Доходи"))
-              BarMark(
-                x: .value("Місяць", d, unit: .month),
-                y: .value("UAH", Double(s.totals(s.month(d), .expense)) / 100)
-              ).foregroundStyle(by: .value("Тип", "Витрати")).position(by: .value("Тип", "Витрати"))
-            }
-          }.chartForegroundStyleScale(["Доходи": tint, "Витрати": Color.orange]).frame(height: 220)
+          AnnualCashFlowChart(points: chartPoints)
         }
         Panel {
           Text("За місяцями").font(.headline)
@@ -797,7 +820,7 @@ struct BudgetRow: View {
         Text(money(used)).font(.subheadline.bold())
       }
       if limit > 0 {
-        ProgressView(value: min(1, Double(used) / Double(limit))).tint(used > limit ? .red : tint)
+        ProgressView(value: min(1, Double(used) / Double(limit))).tint(used > limit ? .red : finoraAccent)
         Text("Ліміт: \(money(limit))").font(.caption).foregroundStyle(.secondary)
       } else {
         Text("Без ліміту").font(.caption).foregroundStyle(.secondary)
