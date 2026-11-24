@@ -1,4 +1,4 @@
-name: Build Finora IPA
+name: Build Izanami IPA
 on:
   workflow_dispatch:
 permissions:
@@ -9,19 +9,27 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Test bank and currency logic
+        run: |
+          swiftc -warnings-as-errors -typecheck Finora/BankCore.swift Finora/MoneyCore.swift
+          swiftc Finora/BankCore.swift Finora/MoneyCore.swift Tests/main.swift -o /tmp/izanami-tests
+          /tmp/izanami-tests
+          bash Tests/check-model.sh
       - name: Generate Xcode project
         run: |
           command -v xcodegen || brew install xcodegen
           xcodegen generate
+      - name: Resolve Swift packages
+        run: xcodebuild -resolvePackageDependencies -project Finora.xcodeproj -scheme Finora
       - name: Build unsigned iPhone application
         run: |
           xcodebuild -project Finora.xcodeproj -scheme Finora -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
           mkdir -p dist/Payload
           cp -R build/Build/Products/Release-iphoneos/Finora.app dist/Payload/
           cd dist
-          zip -qry Finora.ipa Payload
+          zip -qry Izanami.ipa Payload
       - uses: actions/upload-artifact@v4
         with:
-          name: Finora-IPA
-          path: dist/Finora.ipa
+          name: Izanami-IPA
+          path: dist/Izanami.ipa
           if-no-files-found: error
