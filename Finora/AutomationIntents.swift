@@ -15,6 +15,7 @@ struct CaptureWalletIntent: AppIntent {
     func perform() async throws -> some IntentResult & ProvidesDialog {
         let event = try captureWallet(amount:amount,merchant:merchant,account:account,currency:currency)
         try CaptureInbox.enqueue(event,in:CaptureInbox.folder())
+        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "finami.lastWalletCapture")
         return .result(dialog:"Payment captured. Open Finami to process it. / Оплату отримано. Відкрийте Finami для обробки.")
     }
 }
@@ -31,5 +32,22 @@ struct CaptureMessageIntent: AppIntent {
         let event = try captureMessage(message,account:account)
         try CaptureInbox.enqueue(event,in:CaptureInbox.folder())
         return .result(dialog:"Message captured. Open Finami to review. / Повідомлення отримано. Відкрийте Finami для перевірки.")
+    }
+}
+
+// Tests only action discovery, parameter processing and communication; never enqueues a payment.
+struct FinamiShortcutCheckIntent: AppIntent {
+    static var title: LocalizedStringResource = "Finami: перевірка зв’язку"
+    static var description: IntentDescription? = IntentDescription("Перевірка без запису фінансової операції")
+    static var openAppWhenRun: Bool = false
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        _ = try captureWallet(amount: 1.25, merchant: "Test", account: "diagnostic", currency: "UAH")
+        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "finami.lastShortcutCheck")
+        return .result(dialog: "Finami відповідає. Фінансові дані не змінено.")
+    }
+}
+struct FinamiShortcuts: AppShortcutsProvider {
+    static var appShortcuts: [AppShortcut] {
+        AppShortcut(intent: FinamiShortcutCheckIntent(), phrases: ["Check \(.applicationName)"], shortTitle: "Перевірка зв’язку", systemImageName: "checkmark.shield")
     }
 }

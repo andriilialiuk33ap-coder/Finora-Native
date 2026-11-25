@@ -75,6 +75,15 @@ struct AutomationCenter: View {
     @State private var review: CapturedPayment?
     @State private var sample="Оплата 125,50 UAH; Магазин: ATБ; Баланс 1000 UAH"
     @State private var testResult=""
+    @AppStorage("finami.lastShortcutCheck") private var lastShortcutCheck: Double = 0
+    @AppStorage("finami.lastWalletCapture") private var lastWalletCapture: Double = 0
+    @State private var openFailed = false
+    @State private var checkTime: Double = 0
+    private func launchShortcuts() {
+        guard let url = URL(string: "shortcuts://") else { return }
+        openURL(url) { accepted in if !accepted { openFailed = true } }
+    }
+    private func stamp(_ value: Double) -> String { value > 0 ? Date(timeIntervalSince1970: value).formatted(date: .abbreviated, time: .shortened) : "Ще не зафіксовано" }
     private var chosen: Account? {s.db.accounts.first{$0.id==account}}
     private func setting(_ key: WritableKeyPath<CapturePreferences,Bool>) -> Binding<Bool> {
         Binding(get:{(s.db.capturePreferences ?? .init())[keyPath:key]},set:{v in
@@ -84,6 +93,7 @@ struct AutomationCenter: View {
     var body: some View {
         List {
             setupSection
+            connectionSection
             autoSection
             inboxSection
             guideSection
@@ -91,6 +101,7 @@ struct AutomationCenter: View {
         }.navigationTitle("Автоматизація")
             .onAppear {if account.isEmpty {account=s.db.accounts.first(where:{$0.id != cash})?.id ?? s.db.accounts.first?.id ?? ""};s.refreshCaptures()}
             .sheet(item:$review){CaptureReview(event:$0)}
+            .alert("Не вдалося відкрити Команди", isPresented: $openFailed) { Button("OK", role: .cancel) {} } message: { Text("Відкрий системний застосунок Команди вручну.") }
     }
     private var setupSection: some View {
         Section("1. Виберіть картку") {
@@ -104,8 +115,23 @@ struct AutomationCenter: View {
                 Text(chosen.id).font(.caption2.monospaced()).textSelection(.enabled)
             }
             Text("Спочатку створіть рахунок у вкладці Рахунки. Для кожної картки налаштуйте окрему автоматизацію. Код рахунку — внутрішній ID, не номер картки.").font(.caption)
-            Button("Відкрити Команди / Shortcuts") {if let url=URL(string:"shortcuts://") {openURL(url)}}
+            Button { if let chosen { UIPasteboard.general.string = chosen.id; copied = true }; launchShortcuts() } label: { Label("Копіювати код і відкрити Команди", systemImage: "bolt.fill") }.disabled(chosen == nil)
+            Text("Це відкриває Команди, але не створює автоматизацію. Тригер та його параметри потрібно один раз налаштувати вручну.").font(.caption).foregroundStyle(.secondary)
         }.onChange(of:account){_ in copied=false}
+    }
+    private var connectionSection: some View {
+        Section("Перевірка зв’язку Apple Pay") {
+            LabeledContent("Тест дії Команд", value: stamp(lastShortcutCheck))
+            LabeledContent("Останній прийом Apple Pay", value: stamp(lastWalletCapture))
+            Button { launchShortcuts() } label: { Label("Відкрити Команди для тесту", systemImage: "checkmark.shield") }
+            Text("У Командах знайди Finami → Перевірка зв’язку і запусти її. Повернись сюди: час тесту має оновитися. Цей тест не додає витрату і не підтверджує роботу Wallet-тригера.").font(.caption)
+            Button("Перевірити локальний обробник") {
+                do { _ = try captureWallet(amount: 1.25, merchant: "Test", account: account, currency: chosen?.code ?? "UAH"); checkTime = Date().timeIntervalSince1970 }
+                catch { testResult = error.localizedDescription }
+            }.disabled(chosen == nil)
+            if checkTime > 0 { Text("Локальний тест: " + stamp(checkTime) + " · без запису").font(.caption).foregroundStyle(.secondary) }
+            Text("Після налаштування тригера перевір наступний реальний платіж у Вхідних операціях. Відсутність часу не доводить, що автоматизації немає; Finami не може читати список системних автоматизацій.").font(.caption).foregroundStyle(.secondary)
+        }
     }
     private var autoSection: some View {
         Section("2. Автоматичне збереження") {
@@ -123,7 +149,7 @@ struct AutomationCenter: View {
                 Button {review=e} label:{
                     VStack(alignment:.leading,spacing:5){
                         Text(e.merchant.isEmpty ? e.source:e.merchant).foregroundStyle(.primary).font(.headline)
-                        Text(currencyMoney(e.minor,e.currency)).font(.title3.bold())
+                        Text(s.visibleMoney(e.minor,e.currency)).font(.title3.bold())
                         Text(s.accountName(e.account)+" · "+e.date.formatted(date:.abbreviated,time:.shortened)).font(.caption)
                         if s.captureMatch(e) {Label(s.captureRepeat(e) ? "Повтор повідомлення" : "Можливий дублікат",systemImage:"exclamationmark.triangle").foregroundStyle(.orange).font(.caption)}
                     }
@@ -167,7 +193,7 @@ struct CaptureReview: View {
             Form {
                 LabeledContent("Джерело",value:event.source)
                 LabeledContent("Рахунок",value:s.accountName(event.account))
-                LabeledContent("Сума",value:currencyMoney(event.minor,event.currency))
+                LabeledContent("Сума",value:s.visibleMoney(event.minor,event.currency))
                 LabeledContent("Дата",value:event.date.formatted(date:.abbreviated,time:.shortened))
                 if !event.merchant.isEmpty {LabeledContent("Продавець",value:event.merchant)}
                 Picker("Тип",selection:$kind){ForEach(allowed){k in Text(k.title).tag(k)}}
@@ -177,7 +203,7 @@ struct CaptureReview: View {
                 }
                 if let o=s.capturedOperation(event,kind:kind) {
                     LabeledContent("Категорія",value:o.category)
-                    if let rate=o.exchangeRate {LabeledContent("Курс UAH/USD (поточний)",value:rate);LabeledContent("Еквівалент",value:money(o.amount));Text("Після збереження можна виправити курс у редакторі операції.").font(.caption)}
+                    if let rate=o.exchangeRate {LabeledContent("Курс UAH/USD (поточний)",value:rate);LabeledContent("Еквівалент",value:s.visibleMoney(o.amount));Text("Після збереження можна виправити курс у редакторі операції.").font(.caption)}
                 }
                 else {Text("Рахунок видалено, валюта не збігається або немає курсу. Перевірте рахунок і курс. За потреби внесіть платіж вручну.").foregroundStyle(.orange)}
                 Button("Зберегти операцію"){confirm=true}.disabled(s.capturedOperation(event,kind:kind)==nil || (s.captureMatch(event) && !separatePayment))
@@ -192,10 +218,14 @@ struct CaptureReview: View {
 }
 
 struct AutomationGuide: View {
+    @Environment(\.openURL) private var openURL
+    @EnvironmentObject var s:Store
+    @State private var accountID=""
     let title: String
     let steps: [String]
     var body: some View {
         ScrollView {VStack(alignment:.leading,spacing:20){
+            if title.contains("Apple Pay") { Picker("Рахунок Finami",selection:$accountID){Text("Вибрати рахунок").tag("");ForEach(s.db.accounts){a in Text(a.name+" · "+a.code).tag(a.id)}};Button { UIPasteboard.general.string=accountID;if let url=URL(string:"shortcuts://") {openURL(url)} } label:{Label("Копіювати код і відкрити Команди",systemImage:"bolt.fill")}.buttonStyle(.borderedProminent).disabled(accountID.isEmpty);Text("Код рахунку скопіюється автоматично. iOS потребує ручного вибору картки й створення системного тригера. Finami не може створити його замість тебе.").font(.caption).foregroundStyle(.secondary) }
             ForEach(Array(steps.enumerated()),id:\.offset){entry in
                 HStack(alignment:.top,spacing:14){
                     Text(String(entry.offset+1)).font(.headline).foregroundStyle(.white).frame(width:36,height:36).background(finoraAccent,in:Circle())
@@ -208,7 +238,7 @@ struct AutomationGuide: View {
         "У Finami → Рахунки створіть картку, перевірте валюту та кредитний ліміт. У Ще → Автоматизація виберіть цю картку і скопіюйте її код.",
         "Відкрийте Команди (Shortcuts) → Автоматизація → +. Знайдіть Транзакція (Transaction) або Wallet. Тригер доступний на підтримуваних iOS 17 і новіших.",
         "Виберіть лише потрібну картку в When I tap / Коли торкаюся. Категорії та продавці — усі. Виберіть Run Immediately / Запускати негайно, якщо доступно.",
-        "Натисніть Далі → Нова порожня автоматизація → Додати дію. Знайдіть Finami: Apple Pay (пошук Finami).",
+        "Натисніть Далі → Нова порожня автоматизація → Додати дію. Знайдіть Finami: Apple Pay (пошук Finami). Якщо дія не відображається, відкрийте Finami після встановлення, закрийте й знову відкрийте Команди. Спробуйте запустити Finami: перевірка зв’язку; це безпечний тест, не покупка.",
         "У Amount / Сума вставте змінну Shortcut Input / Вхідні дані команди. Торкніться змінної ще раз і виберіть властивість Amount, а не весь об’єкт. Merchant / Продавець — та сама змінна, властивість Merchant. Якщо поле продавця недоступне, введіть Apple Pay.",
         "У Account code вставте скопійований код. У Currency впишіть UAH або USD відповідно до фактичної валюти суми. Для оплати в іншій валюті залиште автоматичне збереження вимкненим і звіряйте суму списання з банком. Не підставляйте курс навмання.",
         "Збережіть автоматизацію. При наступній звичайній покупці відкрийте Finami → Ще → Автоматизація → Вхідні операції. Звірте суму та картку. Після успішного тесту за бажанням увімкніть Apple Pay без підтвердження.",

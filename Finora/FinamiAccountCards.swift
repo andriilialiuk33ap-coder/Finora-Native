@@ -79,12 +79,12 @@ private struct HomeAccountArt: View {
             Circle().strokeBorder(tint.opacity(0.12), lineWidth: 1).frame(width: 106, height: 106)
             if account.id == cash || account.accountType == "cash" {
                 RoundedRectangle(cornerRadius: 7).fill(tint.opacity(0.28)).frame(width: 70, height: 40).rotationEffect(.degrees(-15)).offset(y: -13)
-                RoundedRectangle(cornerRadius: 13).fill(LinearGradient(colors: [tint.opacity(0.75), tint.opacity(0.32)], startPoint: .topLeading, endPoint: .bottomTrailing)).frame(width: 92, height: 58).rotationEffect(.degrees(5))
+                RoundedRectangle(cornerRadius: 13).fill(LinearGradient(colors: [tint.opacity(0.55), tint.opacity(0.32)], startPoint: .topLeading, endPoint: .bottomTrailing)).frame(width: 92, height: 58).rotationEffect(.degrees(5))
                 Image(systemName: "banknote.fill").font(.system(size: 28, weight: .medium)).foregroundStyle(.primary)
             } else {
                 RoundedRectangle(cornerRadius: 10).fill(tint.opacity(0.30)).frame(width: 89, height: 56).rotationEffect(.degrees(-15)).offset(x: -6, y: -10)
                 ZStack(alignment: .topLeading) {
-                    RoundedRectangle(cornerRadius: 10).fill(LinearGradient(colors: [tint.opacity(0.85), tint.opacity(0.32)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                    RoundedRectangle(cornerRadius: 10).fill(LinearGradient(colors: [tint.opacity(0.65), tint.opacity(0.32)], startPoint: .topLeading, endPoint: .bottomTrailing))
                     VStack(alignment: .leading, spacing: 7) {
                         Image(systemName: "creditcard.fill").font(.system(size: 15, weight: .medium))
                         RoundedRectangle(cornerRadius: 2).fill(Color.white.opacity(0.75)).frame(width: 18, height: 12)
@@ -92,7 +92,7 @@ private struct HomeAccountArt: View {
                     }.padding(8).foregroundStyle(.white)
                 }.frame(width: 95, height: 60).rotationEffect(.degrees(8)).offset(x: 5, y: 7)
             }
-        }.frame(width: 112, height: 108).accessibilityHidden(true)
+        }.scaleEffect(0.80).frame(width: 92, height: 82).accessibilityHidden(true)
     }
 }
 
@@ -103,6 +103,8 @@ struct FinamiHomeAccountCard: View {
     var accountID: String
     var date: Date
     var fallbackTint: Color
+    var mode: String = "all"
+    var onAccountsScreen = false
     @State private var route: Route?
     private enum Route: Identifiable {
         case settings, history, edit(Account), operation(Operation)
@@ -111,8 +113,10 @@ struct FinamiHomeAccountCard: View {
     var body: some View {
         if let a = s.db.accounts.first(where: { $0.id == accountID }) {
             let style = accountStyle(a.cardOptions?.style ?? s.db.preferences?.homeAccountLayout)
-            let right = accountRight(a.cardOptions?.right ?? s.db.preferences?.homeAccountRight, style: style)
-            let fields = Set(a.cardOptions?.fields ?? s.db.preferences?.homeAccountFields ?? HomeAccountField.defaults)
+            let selectedRight = accountRight(a.cardOptions?.right ?? s.db.preferences?.homeAccountRight, style: style)
+            let right: HomeAccountRight = mode == "own" && selectedRight == .credit ? .art : selectedRight
+            let excludedFields: Set<String> = mode == "own" ? ["limit", "used", "available"] : mode == "credit" ? ["own"] : []
+            let fields = Set(a.cardOptions?.fields ?? s.db.preferences?.homeAccountFields ?? HomeAccountField.defaults).subtracting(excludedFields)
             let activity = AccountActivity(account: a, operations: s.db.operations, month: date)
             let tint = accountTint(a, fallback: fallbackTint)
             card(a, style: style, right: right, fields: fields, activity: activity, tint: tint)
@@ -134,7 +138,7 @@ struct FinamiHomeAccountCard: View {
     }
     private func header(_ a: Account, fields: Set<String>, tint: Color) -> some View {
         HStack(spacing: 8) {
-            FinamiArt(icon: accountArtIcon(a), tint: tint, size: 40)
+            FinamiIconTile(icon: accountArtIcon(a), tint: tint, side: 38)
             Button { route = .history } label: {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(a.name).font(.headline).foregroundStyle(.primary).fixedSize(horizontal: false, vertical: true)
@@ -150,12 +154,12 @@ struct FinamiHomeAccountCard: View {
                 Button { route = .history } label: { Label("Історія операцій", systemImage: "clock") }
                 Button { route = .edit(a) } label: { Label("Редагувати рахунок / залишок", systemImage: "pencil") }
                 Button { s.change { d in if let i = d.accounts.firstIndex(where: { $0.id == a.id }) { var o = d.accounts[i].cardOptions ?? .init(); o.pinned = !(o.pinned ?? false); d.accounts[i].cardOptions = o } } } label: { Label(a.cardOptions?.pinned == true ? "Відкріпити" : "Закріпити зверху", systemImage: "pin") }
-                Button { s.change { d in if let i = d.accounts.firstIndex(where: { $0.id == a.id }) { d.accounts[i].hiddenInOverview = true } } } label: { Label("Приховати на головній", systemImage: "eye.slash") }
+                Button { s.change { d in if let i = d.accounts.firstIndex(where: { $0.id == a.id }) { if onAccountsScreen { d.accounts[i].hiddenInAccounts = true } else { d.accounts[i].hiddenInOverview = true } } } } label: { Label(onAccountsScreen ? "Приховати у рахунках" : "Приховати на головній", systemImage: "eye.slash") }
             } label: { Image(systemName: "ellipsis").frame(minWidth: 44, minHeight: 44) }.accessibilityLabel("Дії рахунку")
         }
     }
     private func card(_ a: Account, style: HomeAccountStyle, right: HomeAccountRight, fields: Set<String>, activity: AccountActivity, tint: Color) -> some View {
-        VStack(alignment: .leading, spacing: style == .compact ? 10 : 14) {
+        VStack(alignment: .leading, spacing: style == .compact ? 8 : 12) {
             header(a, fields: fields, tint: tint)
             if fields.contains("own") || right != .none {
                 if dynamicTypeSize.isAccessibilitySize || right == .none || !fields.contains("own") {
@@ -166,22 +170,22 @@ struct FinamiHomeAccountCard: View {
                 } else {
                     HStack(alignment: .center, spacing: 10) {
                         own(a).frame(maxWidth: .infinity, alignment: .leading)
-                        rightPanel(right, a: a, activity: activity, tint: tint).frame(width: right == .art ? 112 : 116)
+                        rightPanel(right, a: a, activity: activity, tint: tint).frame(width: right == .art ? 92 : 116)
                     }
                 }
             }
-            if a.isCredit { creditFields(a, fields: fields, right: right, style: style) }
+            if a.isCredit && mode != "own" { creditFields(a, fields: fields, right: right, style: style) }
             activityFields(a, fields: fields, right: right, activity: activity, style: style)
             if fields.contains("actions") && right != .actions { quickActions(a, vertical: dynamicTypeSize.isAccessibilitySize) }
         }
-        .padding(style == .compact ? 12 : 14)
+        .padding(style == .compact ? 12 : 16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background {
             if style == .physical || style == .premium {
-                RoundedRectangle(cornerRadius: 20).fill(LinearGradient(colors: [tint.opacity(0.23), tint.opacity(0.07)], startPoint: .topLeading, endPoint: .bottomTrailing))
-            } else { RoundedRectangle(cornerRadius: 16).fill(tint.opacity(0.08)) }
+                FinamiAccountSurface(tint: tint, radius: 24)
+            } else { FinamiAccountSurface(tint: tint, radius: 16) }
         }
-        .clipShape(RoundedRectangle(cornerRadius: style == .compact ? 16 : 20))
+        .clipShape(RoundedRectangle(cornerRadius: style == .compact ? 16 : 24))
         .contextMenu {
             Button { route = .settings } label: { Label("Оформлення", systemImage: "paintpalette") }
             Button { route = .history } label: { Label("Історія", systemImage: "clock") }
@@ -191,8 +195,8 @@ struct FinamiHomeAccountCard: View {
     private func own(_ a: Account) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Власні кошти").font(.caption).foregroundStyle(.secondary)
-            Text(amount(s.ownFunds(a), a)).font(.title2.bold()).monospacedDigit().lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2).minimumScaleFactor(0.72)
-            Text("Без кредиту").font(.caption2).foregroundStyle(.secondary)
+            Text(amount(s.ownFunds(a), a)).font(.system(.title, design: .rounded).weight(.semibold)).monospacedDigit().lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2).minimumScaleFactor(0.72)
+            if a.isCredit { Text("Без кредиту").font(.caption2).foregroundStyle(.secondary) }
         }
     }
     private func metric(_ title: String, _ value: String, tint: Color = .primary) -> some View {
@@ -270,7 +274,7 @@ struct FinamiHomeAccountCard: View {
                 }.buttonStyle(.plain)
             }
             if fields.contains("updated") { Text("Останній запис: " + last.date.formatted(date: .abbreviated, time: .shortened)).font(.caption2).foregroundStyle(.secondary) }
-        } else if fields.contains("last") && right != .last { Text("Немає записаних операцій").font(.caption).foregroundStyle(.secondary) }
+        } 
     }
     private func action(_ kind: Kind, _ label: String, _ icon: String, _ a: Account) -> some View {
         Button { start(kind, a) } label: {

@@ -30,6 +30,7 @@ struct AppearancePreferences: Codable {
     var reportsShowChart: Bool? = nil
     var reportsShowMonths: Bool? = nil
     var reportsShowCategories: Bool? = nil
+    var reportsHiddenSections: [String]? = nil
     var menuCompact: Bool? = nil
 }
 struct IzanamiTheme: Identifiable {
@@ -81,7 +82,7 @@ struct IzanamiLabel: View {
         let p = s.db.preferences ?? .init()
         let tint = (p.colorfulDashboard ?? true) ? color : (IzanamiTheme.all.first(where: { $0.name == p.theme })?.color ?? finoraAccent)
         HStack(spacing: 12) {
-            FinamiArt(icon: icon, tint: tint, size: p.menuCompact == true ? 36 : 56)
+            FinamiIconTile(icon: icon, tint: tint, side: p.menuCompact == true ? 36 : 48)
             Text(title).font(.body).foregroundStyle(.primary).fixedSize(horizontal: false, vertical: true)
         }.frame(minHeight: 46, alignment: .leading).padding(.vertical, 2)
     }
@@ -293,7 +294,7 @@ struct CustomDashboard: View {
         }.background(Color(uiColor: .systemGroupedBackground)).navigationTitle(s.db.preferences?.homeTitle ?? "Головна")
             .toolbar { Button { s.change { d in var p=d.preferences ?? .init();p.hideAmounts = !(p.hideAmounts ?? false);d.preferences=p } } label: { Image(systemName:s.privateAmounts ? "eye.slash" : "eye") }.accessibilityLabel("Приховати або показати суми"); Button { configure = true } label: { Image(systemName: "slider.horizontal.3").font(.title2) }.accessibilityLabel("Налаштувати блоки") }
             .safeAreaInset(edge: .bottom) {
-                HStack { Button { add = true } label: { Label("Додати операцію", systemImage: "plus.circle.fill").font(.headline).frame(maxWidth: .infinity).padding(.vertical, 5) }.buttonStyle(.borderedProminent); Button { voice=true } label:{Image(systemName:"mic.fill").frame(minWidth:44,minHeight:34)}.buttonStyle(.bordered).accessibilityLabel("Голосовий запис"); Button { scan = true } label: { Image(systemName: "doc.viewfinder").frame(minWidth:44,minHeight:34) }.buttonStyle(.bordered).accessibilityLabel("Імпорт зі скриншота") }.padding(.horizontal).padding(.vertical,5).background(.regularMaterial)
+                HStack { Button { add = true } label: { Label("Додати операцію", systemImage: "plus.circle.fill").font(.headline).frame(maxWidth: .infinity).padding(.vertical, 5) }.buttonStyle(.borderedProminent); Button { voice=true } label:{Image(systemName:"mic.fill").frame(minWidth:44,minHeight:34)}.buttonStyle(.bordered).accessibilityLabel("Голосовий запис"); Button { scan = true } label: { Image(systemName: "doc.viewfinder").frame(minWidth:44,minHeight:34) }.buttonStyle(.bordered).accessibilityLabel("Імпорт зі скриншота") }.padding(.horizontal).padding(.vertical,7).background(Color(uiColor:.systemGroupedBackground))
             }.sheet(isPresented: $add) { OpEditor(original: Operation(category: "Без категорії", account: s.db.accounts.first?.id ?? cash)) }
             .sheet(isPresented:$voice) { FinamiVoice() }
             .sheet(isPresented:$scan) { NavigationStack { FinamiScanView().toolbar { ToolbarItem(placement: .cancellationAction) { Button("Закрити") { scan = false } } } } }
@@ -324,16 +325,16 @@ struct DashboardTile: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if small {
-                HStack {FinamiArt(icon:item.kind.icon,tint:color,size:34);Spacer(minLength:0);privacyButton}
+                HStack {FinamiIconTile(icon:item.kind.icon,tint:color,side:32);Spacer(minLength:0);privacyButton}
                 Text(item.kind.title).font(.subheadline.weight(.semibold)).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true)
             } else {
-                HStack(alignment:.center,spacing:9){FinamiArt(icon:item.kind.icon,tint:color,size:50);Text(item.kind == .accounts ? "Мої рахунки" : item.kind.title).font(.subheadline.weight(.semibold)).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true);Spacer(minLength:0);if item.kind == .accounts { Button { accountSettings = true } label: { Image(systemName:"slider.horizontal.3").frame(minWidth:44,minHeight:44) }.buttonStyle(.plain).accessibilityLabel("Налаштування карток рахунків") };privacyButton}
+                HStack(alignment:.center,spacing:9){FinamiIconTile(icon:item.kind.icon,tint:color,side:38);Text(item.kind == .accounts ? "Мої рахунки" : item.kind.title).font(.headline).foregroundStyle(.primary).fixedSize(horizontal:false,vertical:true);Spacer(minLength:0);if item.kind == .accounts { Button { accountSettings = true } label: { Image(systemName:"slider.horizontal.3").frame(minWidth:44,minHeight:44) }.buttonStyle(.plain).accessibilityLabel("Налаштування карток рахунків") };privacyButton}.padding(.horizontal, item.kind == .accounts ? 4 : 0)
             }
             content
         }
         .frame(maxWidth: .infinity, minHeight: small ? 94 : nil, alignment: .topLeading)
-        .padding(small ? 12 : 16)
-        .modifier(FinamiCardStyle(tint:color,template:item.template))
+        .padding(item.kind == .accounts ? 0 : (small ? 12 : 16))
+        .modifier(FinamiDashboardSurface(isAccounts: item.kind == .accounts, tint: color, template: item.template))
         .environment(\.finamiMask, masked)
         .sheet(item:$paymentDetails) { FinamiPaymentDetails(payment:$0) }
         .sheet(isPresented:$accountSettings) { NavigationStack { FinamiHomeAccountsSettings().toolbar { ToolbarItem(placement:.cancellationAction) { Button("Готово") { accountSettings = false } } } } }
