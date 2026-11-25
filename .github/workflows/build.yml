@@ -11,13 +11,14 @@ jobs:
       - uses: actions/checkout@v4
       - name: Test bank and currency logic
         run: |
-          swiftc -warnings-as-errors -typecheck Finora/BankCore.swift Finora/MoneyCore.swift Finora/AutomationCore.swift
+          swiftc -warnings-as-errors -typecheck Finora/BankCore.swift Finora/MoneyCore.swift Finora/AutomationCore.swift Finora/FinamiScanCore.swift
           swiftc Finora/BankCore.swift Finora/MoneyCore.swift Finora/AutomationCore.swift Tests/main.swift -o /tmp/izanami-tests
           /tmp/izanami-tests
           bash Tests/check-model.sh
           bash Tests/check-finami.sh
           bash Tests/check-preview2.sh
           bash Tests/check-preview3.sh
+          bash Tests/check-preview4.sh
       - name: Generate Xcode project
         run: |
           command -v xcodegen || brew install xcodegen
