@@ -16,6 +16,8 @@ jobs:
           /tmp/izanami-tests
           bash Tests/check-model.sh
           bash Tests/check-finami.sh
+          bash Tests/check-preview2.sh
+          bash Tests/check-preview3.sh
       - name: Generate Xcode project
         run: |
           command -v xcodegen || brew install xcodegen
