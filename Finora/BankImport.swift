@@ -141,6 +141,7 @@ struct BankCenter: View {
             NavigationLink { BankImportHistory() } label: {
                 IzanamiLabel(title: "Історія імпорту", icon: "clock.arrow.circlepath", color: .blue)
             }
+            NavigationLink { FinamiScanView() } label: { IzanamiLabel(title: "Finami Scan · операції / розстрочки", icon: "doc.viewfinder", color: .purple) }
             NavigationLink { ReceiptScanView() } label: {
                 IzanamiLabel(title: "Розпізнати фото чека", icon: "viewfinder", color: .purple)
             }
@@ -319,7 +320,7 @@ struct BankImportHistory: View {
             ForEach(batches) { batch in
                 let group=batch.operations
                 if let first=group.first,let id=first.importBatch {
-                    VStack(alignment:.leading,spacing:8){Text(first.sourceBank ?? "Виписка").font(.headline);Text("\(group.count) операцій · \(s.accountName(first.account))").font(.caption);if let d=group.map(\.date).max(){Text("Остання операція: \(d.formatted(date:.abbreviated,time:.omitted))").font(.caption)};Button("Скасувати імпорт",role:.destructive){pending=id;confirm=true}}
+                    VStack(alignment:.leading,spacing:8){Text(first.sourceBank ?? first.captureSource ?? "Виписка").font(.headline);Text("\(group.count) операцій · \(s.accountName(first.account))").font(.caption);if let d=group.map(\.date).max(){Text("Остання операція: \(d.formatted(date:.abbreviated,time:.omitted))").font(.caption)};Button("Скасувати імпорт",role:.destructive){pending=id;confirm=true}}
                 }
             }
         }.navigationTitle("Історія імпорту").confirmationDialog("Видалити всі операції пакета, включно з відредагованими?",isPresented:$confirm){Button("Видалити пакет",role:.destructive){if let id=pending{s.change{$0.operations.removeAll{$0.importBatch==id}}};pending=nil};Button("Скасувати",role:.cancel){pending=nil}}

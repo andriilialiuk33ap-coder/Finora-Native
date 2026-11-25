@@ -195,6 +195,7 @@ struct FinamiHelp:View {
     var body:some View { List {
         Section("Перші кроки") { Label("1. Створи рахунки та введи власні кошти або кредитний борг.",systemImage:"wallet.pass");Label("2. Додай операцію вручну або імпортуй виписку.",systemImage:"plus.circle");Label("3. Налаштуй блоки огляду, видимість сум і дизайн.",systemImage:"slider.horizontal.3");Label("4. Відкрий календар, обери платіж і додай нагадування в деталях.",systemImage:"calendar") }
         Section("Автоматизація — покроково") {NavigationLink {AutomationCenter()} label:{Label("Центр автоматизації та інструкції",systemImage:"bolt.fill")};NavigationLink {BankCenter()} label:{Label("Імпорт виписок і банки",systemImage:"building.columns")}}
+        Section("Finami Scan") { NavigationLink { FinamiScanView() } label: { Label("Імпорт зі скриншотів", systemImage: "doc.viewfinder") }; Text("1. Зроби скриншот операції або розстрочки в банку. 2. Обери тип та фото. 3. Перевір суми, дати, рахунок і дублікати. 4. Підтвердь імпорт. Для оновлення розстрочки обери існуючий договір.") }
         Section("Безпека") {Text("Перед оновленням експортуй JSON у Ще → Захист та резервні копії. Не видаляй старий застосунок, якщо хочеш зберегти його дані.");Text("Режим приватності приховує суми на огляді та основних екранах; це не шифрування.")}
     }.navigationTitle("Допомога") }
 }

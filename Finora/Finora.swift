@@ -109,6 +109,8 @@ struct Operation: Codable, Identifiable {
   var bankType: String? = nil
   var classificationReviewed: Bool? = nil
   var captureSource: String? = nil
+  var scanFingerprint: String? = nil
+  var scanImageID: String? = nil
   var signedNative: Int64 { kind.incoming ? (sourceMinor ?? amount) : -(sourceMinor ?? amount) }
   // Only count an embedded fee separately when it is demonstrably part of a non-expense debit.
   var neutralFee: Int64 {
@@ -174,6 +176,8 @@ struct Obligation: Codable, Identifiable {
   var paid: Int64 = 0
   var monthly: Int64 = 0
   var due = Date()
+  var scanFingerprint: String? = nil
+  var scanImageID: String? = nil
   var remaining: Int64 { max(0, target - paid) }
 }
 struct Database: Codable {
@@ -198,6 +202,7 @@ struct Database: Codable {
   var hiddenIncomeCategories: [String]? = nil
   var categoryParents: [String: String]? = nil
   var paymentPhotos: [String: Data]? = nil
+  var scanImages: [String: Data]? = nil
 }
 struct Legacy: Decodable {
   struct Entry: Decodable {
@@ -249,6 +254,10 @@ struct DataFile: FileDocument {
     }
     var copy = db
     update(&copy)
+    if let images = copy.scanImages {
+      let references = Set(copy.operations.compactMap(\.scanImageID) + copy.obligations.compactMap(\.scanImageID))
+      copy.scanImages = images.filter { references.contains($0.key) }
+    }
     return write(copy)
   }
   private func write(_ copy: Database) -> Bool {
@@ -716,7 +725,8 @@ struct OpEditor: View {
         }
         TextField("Магазин / примітка / теги", text: $o.note)
         if let bank = o.sourceBank { LabeledContent("Джерело", value: bank) }
-        if let capture = o.captureSource { LabeledContent("Автоматизація", value: capture) }
+        if let capture = o.captureSource { LabeledContent("Джерело запису", value: capture) }
+        if let imageID = o.scanImageID { NavigationLink("Вкладений скриншот") { FinamiScanAttachment(imageID: imageID) } }
         if let n = o.originalAmount, let c = o.originalCurrency { LabeledContent("Оригінальна сума", value: currencyMoney(n,c)) }
         if let fee = o.bankFee, fee > 0 { LabeledContent("Комісія у виписці", value: money(fee)) }
         if o.kind == .expense || o.kind == .income {
@@ -785,6 +795,7 @@ struct Accounts: View {
         }
       }
       Button {edit=Account(name:"",accountType:"debit")} label:{Label("Додати рахунок",systemImage:"plus.circle.fill").frame(maxWidth:.infinity).padding(8)}.buttonStyle(.borderedProminent)
+      NavigationLink { FinamiScanView(initialMode: .balance) } label: { Label("Звірити зі скриншота", systemImage: "doc.viewfinder") }
       NavigationLink("Перевірити старі імпортовані операції") { CreditImportCorrection() }
     }.padding() }.background(Color(uiColor:.systemGroupedBackground)).navigationTitle("Рахунки").toolbar {
       ToolbarItemGroup(placement:.navigationBarTrailing) {
@@ -1072,6 +1083,7 @@ struct More: View {
         }
       }
       Section("Банки") {
+        NavigationLink { FinamiScanView() } label: { IzanamiLabel(title: "Finami Scan · зі скриншота", icon: "doc.viewfinder", color: .purple) }
         NavigationLink { BankCenter() } label: { IzanamiLabel(title: "Банки та імпорт", icon: "building.columns.fill", color: .cyan) }
         NavigationLink { AutomationCenter() } label: { IzanamiLabel(title: "Автоматизація · Apple Pay / SMS (\(s.capturePending.count))", icon: "bolt.fill", color: .orange) }
       }
@@ -1091,7 +1103,7 @@ struct More: View {
         }
       }
       Section {
-        Text("Finami · 5.0 Preview 3\nБез реклами, серверів та платних API.").font(.footnote)
+        Text("Finami · 5.0 Preview 4\nБез реклами, серверів та платних API.").font(.footnote)
           .foregroundStyle(.secondary)
       }
     }.navigationTitle("Ще").toolbar{Button{menuSettings=true} label:{Image(systemName:"slider.horizontal.3")}.accessibilityLabel("Налаштування меню")}.sheet(isPresented:$menuSettings){NavigationStack{Form{Toggle("Компактні ілюстрації",isOn:Binding(get:{s.db.preferences?.menuCompact ?? false},set:{v in s.change{d in var p=d.preferences ?? .init();p.menuCompact=v;d.preferences=p}}));NavigationLink("Студія дизайну"){AppearanceView()};NavigationLink("Блоки головної"){DashboardSettings()};NavigationLink("Рахунки"){FinamiAccountSettings()}}.navigationTitle("Налаштування меню").toolbar{Button("Готово"){menuSettings=false}}}}
@@ -1173,6 +1185,7 @@ struct Obligations: View {
   @State private var edit: Obligation?
   var body: some View {
     List {
+      if kind == .installment { NavigationLink { FinamiScanView(initialMode: .installment) } label: { Label("Додати зі скриншота", systemImage: "doc.viewfinder") } }
       Section("Загальний залишок") {
         Text(s.visibleMoney(s.db.obligations.filter { $0.kind == kind }.reduce(0) { $0 + $1.remaining }))
           .font(.title.bold())
@@ -1248,6 +1261,7 @@ struct ObligationEditor: View {
           }
           FinamiField("Регулярний платіж, ₴", text: $monthly, keyboard: .decimalPad)
           DatePicker("Наступна дата / термін", selection: $o.due, displayedComponents: [.date, .hourAndMinute])
+          if let imageID = o.scanImageID { NavigationLink("Вкладений скриншот") { FinamiScanAttachment(imageID: imageID) } }
           if s.db.obligations.contains(where: { $0.id == o.id }) {
             NavigationLink("Нагадування") { ReminderEditor(original: PersonalReminder(title: o.name, date: o.due, linkedID: o.id)) }
           }

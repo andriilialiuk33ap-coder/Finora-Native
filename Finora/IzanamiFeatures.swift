@@ -268,6 +268,7 @@ struct CustomDashboard: View {
     @State private var add = false
     @State private var configure = false
     @State private var voice = false
+    @State private var scan = false
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     var items: [DashboardItem] { (DashboardItem.merged(s.db.dashboard)).filter(\.enabled) }
     var rows: [[DashboardItem]] {
@@ -292,9 +293,10 @@ struct CustomDashboard: View {
         }.background(Color(uiColor: .systemGroupedBackground)).navigationTitle(s.db.preferences?.homeTitle ?? "Головна")
             .toolbar { Button { s.change { d in var p=d.preferences ?? .init();p.hideAmounts = !(p.hideAmounts ?? false);d.preferences=p } } label: { Image(systemName:s.privateAmounts ? "eye.slash" : "eye") }.accessibilityLabel("Приховати або показати суми"); Button { configure = true } label: { Image(systemName: "slider.horizontal.3").font(.title2) }.accessibilityLabel("Налаштувати блоки") }
             .safeAreaInset(edge: .bottom) {
-                HStack { Button { add = true } label: { Label("Додати операцію", systemImage: "plus.circle.fill").font(.headline).frame(maxWidth: .infinity).padding(.vertical, 5) }.buttonStyle(.borderedProminent); Button { voice=true } label:{Image(systemName:"mic.fill").frame(minWidth:44,minHeight:34)}.buttonStyle(.bordered).accessibilityLabel("Голосовий запис") }.padding(.horizontal).padding(.vertical,5).background(.regularMaterial)
+                HStack { Button { add = true } label: { Label("Додати операцію", systemImage: "plus.circle.fill").font(.headline).frame(maxWidth: .infinity).padding(.vertical, 5) }.buttonStyle(.borderedProminent); Button { voice=true } label:{Image(systemName:"mic.fill").frame(minWidth:44,minHeight:34)}.buttonStyle(.bordered).accessibilityLabel("Голосовий запис"); Button { scan = true } label: { Image(systemName: "doc.viewfinder").frame(minWidth:44,minHeight:34) }.buttonStyle(.bordered).accessibilityLabel("Імпорт зі скриншота") }.padding(.horizontal).padding(.vertical,5).background(.regularMaterial)
             }.sheet(isPresented: $add) { OpEditor(original: Operation(category: "Без категорії", account: s.db.accounts.first?.id ?? cash)) }
             .sheet(isPresented:$voice) { FinamiVoice() }
+            .sheet(isPresented:$scan) { NavigationStack { FinamiScanView().toolbar { ToolbarItem(placement: .cancellationAction) { Button("Закрити") { scan = false } } } } }
             .sheet(isPresented: $configure) { NavigationStack { DashboardSettings().toolbar { ToolbarItem(placement: .cancellationAction) { Button("Готово") { configure = false } } } } }
     }
 }
