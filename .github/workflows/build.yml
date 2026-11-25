@@ -19,6 +19,7 @@ jobs:
           bash Tests/check-preview2.sh
           bash Tests/check-preview3.sh
           bash Tests/check-preview4.sh
+          bash Tests/check-preview5.sh
       - name: Generate Xcode project
         run: |
           command -v xcodegen || brew install xcodegen
