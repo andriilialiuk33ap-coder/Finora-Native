@@ -22,7 +22,8 @@ struct FinamiCardStyle: ViewModifier {
     @EnvironmentObject var s: Store
     var tint: Color
     var template: String? = nil
-    var body: some View { let design = FinamiDesign(rawValue:s.db.preferences?.design ?? "Signature") ?? .signature
+    func body(content: Content) -> some View {
+    let design = FinamiDesign(rawValue:s.db.preferences?.design ?? "Signature") ?? .signature
         let style = FinamiCardTemplate(rawValue:template ?? s.db.preferences?.cardTemplate ?? "За дизайном") ?? .automatic
         let radius = style == .minimal || style == .compact ? 12 : design.corner
         content.background {
