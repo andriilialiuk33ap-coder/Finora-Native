@@ -8,6 +8,12 @@ struct AppearancePreferences: Codable {
     var largeIcons = true
     var glow = true
     var colorfulDashboard: Bool? = nil
+    var design: String? = nil
+    var cardTemplate: String? = nil
+    var hideAmounts: Bool? = nil
+    var showIncome: Bool? = nil
+    var showExpenses: Bool? = nil
+    var noCharts: Bool? = nil
 }
 struct IzanamiTheme: Identifiable {
     var id: String { name }
@@ -26,9 +32,10 @@ struct IzanamiTheme: Identifiable {
 struct IzanamiShell: View {
     @EnvironmentObject var s: Store
     var p: AppearancePreferences { s.db.preferences ?? .init() }
-    var accent: Color { IzanamiTheme.all.first(where: { $0.name == p.theme })?.color ?? finoraAccent }
-    var scheme: ColorScheme? { p.mode == "dark" ? .dark : p.mode == "light" ? .light : nil }
-    var design: Font.Design { p.font == "rounded" ? .rounded : p.font == "serif" ? .serif : p.font == "monospaced" ? .monospaced : .default }
+    var preset: FinamiDesign { FinamiDesign(rawValue: p.design ?? "Signature") ?? .signature }
+    var accent: Color { p.design != nil && p.theme == "Preset" ? preset.tint : IzanamiTheme.all.first(where: { $0.name == p.theme })?.color ?? preset.tint }
+    var scheme: ColorScheme? { p.mode == "dark" ? .dark : p.mode == "light" ? .light : p.mode == "preset" ? preset.scheme : nil }
+    var design: Font.Design { p.font == "rounded" ? .rounded : p.font == "serif" ? .serif : p.font == "monospaced" ? .monospaced : p.font == "preset" ? preset.font : .default }
     var body: some View {
         Root().tint(accent).preferredColorScheme(scheme).environment(\.font, .system(.body, design: design))
     }
@@ -57,7 +64,7 @@ struct IzanamiLabel: View {
         let p = s.db.preferences ?? .init()
         let tint = (p.colorfulDashboard ?? true) ? color : (IzanamiTheme.all.first(where: { $0.name == p.theme })?.color ?? finoraAccent)
         HStack(spacing: 12) {
-            IzanamiGlyph(icon: icon, color: tint)
+            FinamiArt(icon: icon, tint: tint, size: 56)
             Text(title).font(.body).foregroundStyle(.primary).fixedSize(horizontal: false, vertical: true)
         }.frame(minHeight: 46, alignment: .leading).padding(.vertical, 2)
     }
@@ -69,21 +76,32 @@ struct AppearanceView: View {
             s.change { d in var p = d.preferences ?? .init(); p[keyPath: key] = value; d.preferences = p }
         })
     }
+    @State private var preview: FinamiDesign?
     var body: some View {
         Form {
+            Section("Шість дизайнів · натисни для перегляду") {
+                ForEach(FinamiDesign.allCases) { preset in Button { preview=preset } label: { VStack(alignment:.leading,spacing:8) { FinamiDesignPreview(design:preset); Text(preset.rawValue).font(.headline);Text(preset.description).font(.caption).foregroundStyle(.secondary) } }.buttonStyle(.plain) }
+            }
+            Section("Картки та приватність") {
+                Picker("Шаблон карток",selection:Binding(get:{s.db.preferences?.cardTemplate ?? "За дизайном"},set:{binding(\.cardTemplate).wrappedValue=$0})) {ForEach(FinamiCardTemplate.allCases){Text($0.rawValue).tag($0.rawValue)}}
+                Toggle("Приховувати суми",isOn:Binding(get:{s.privateAmounts},set:{binding(\.hideAmounts).wrappedValue=$0}))
+                Toggle("Показувати доходи",isOn:Binding(get:{s.db.preferences?.showIncome ?? false},set:{binding(\.showIncome).wrappedValue=$0}))
+                Toggle("Показувати витрати",isOn:Binding(get:{s.db.preferences?.showExpenses ?? true},set:{binding(\.showExpenses).wrappedValue=$0}))
+                Toggle("Без діаграм на огляді",isOn:Binding(get:{s.db.preferences?.noCharts ?? true},set:{binding(\.noCharts).wrappedValue=$0}))
+            }
             Section("Акцент") {
                 ForEach(IzanamiTheme.all) { theme in
                     Button { binding(\.theme).wrappedValue = theme.name } label: {
-                        HStack { Circle().fill(theme.color).frame(width: 28, height: 28); Text(theme.name); Spacer(); if (s.db.preferences ?? .init()).theme == theme.name { Image(systemName: "checkmark.circle.fill") } }
-                    }.buttonStyle(.plain)
+                        HStack { Circle().fill(theme.color).frame(width: 28, height: 28); Text(theme.name); Spacer(); if (s.db.preferences ?? .init()).theme == theme.name { Image(systemName: "checkmark.circle.fill") } }.frame(maxWidth:.infinity,alignment:.leading).contentShape(Rectangle())
+                    }.frame(maxWidth:.infinity,alignment:.leading).contentShape(Rectangle()).buttonStyle(.plain)
                 }
             }
-            Picker("Режим", selection: binding(\.mode)) { Text("Системний").tag("system"); Text("Темний").tag("dark"); Text("Світлий").tag("light") }
-            Picker("Шрифт", selection: binding(\.font)) { Text("Системний").tag("default"); Text("Rounded").tag("rounded"); Text("Serif").tag("serif"); Text("Monospaced").tag("monospaced") }
+            Picker("Режим", selection: binding(\.mode)) { Text("За дизайном").tag("preset"); Text("Системний").tag("system"); Text("Темний").tag("dark"); Text("Світлий").tag("light") }
+            Picker("Шрифт", selection: binding(\.font)) { Text("За дизайном").tag("preset"); Text("Системний").tag("default"); Text("Rounded").tag("rounded"); Text("Serif").tag("serif"); Text("Monospaced").tag("monospaced") }
             Toggle("Великі іконки", isOn: binding(\.largeIcons))
             Toggle("Яскраве підсвічування", isOn: binding(\.glow))
             Toggle("Кольорові акценти", isOn: Binding(get:{s.db.preferences?.colorfulDashboard ?? true},set:{binding(\.colorfulDashboard).wrappedValue=$0}))
-        }.navigationTitle("Оформлення")
+        }.navigationTitle("Студія дизайну").sheet(item:$preview) { selected in NavigationStack { VStack(spacing:18) { FinamiDesignPreview(design:selected); Text(selected.description).foregroundStyle(.secondary); Button("Застосувати дизайн") { s.change { d in var p=d.preferences ?? .init();p.design=selected.rawValue;p.theme="Preset";p.mode="preset";p.font="preset";d.preferences=p };preview=nil }.buttonStyle(.borderedProminent);Spacer() }.padding().navigationTitle(selected.rawValue).toolbar{Button("Скасувати"){preview=nil}} } }
     }
 }
 enum OperationSort: String, CaseIterable {
@@ -101,7 +119,8 @@ enum OperationSort: String, CaseIterable {
 }
 func ruleKey(_ note: String, kind: Kind) -> String { kind.rawValue + ":" + note.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
 func suggestedCategory(_ note: String, kind: Kind, database: Database) -> String {
-    let allowed = kind == .income ? database.incomeCategories : database.expenseCategories
+    let hidden = kind == .income ? database.hiddenIncomeCategories ?? [] : database.hiddenExpenseCategories ?? []
+    let allowed = (kind == .income ? database.incomeCategories : database.expenseCategories).filter { !hidden.contains($0) }
     if let learned = database.merchantRules?[ruleKey(note, kind: kind)], allowed.contains(learned) { return learned }
     guard kind == .expense else { return "Без категорії" }
     let n = note.lowercased()
@@ -110,7 +129,7 @@ func suggestedCategory(_ note: String, kind: Kind, database: Database) -> String
 }
 
 enum DashboardKind: String, Codable, CaseIterable, Identifiable {
-    case balance, cashflow, categories, recent, accounts, budget, obligations, subscriptions, reminders, forecast, uncategorized, goals, debt, installments, recurring, statistics, fees, savings, ownFunds, creditDebt, availableCredit, review
+    case balance, cashflow, categories, recent, accounts, budget, obligations, subscriptions, reminders, forecast, uncategorized, goals, debt, installments, recurring, statistics, fees, savings, ownFunds, creditDebt, availableCredit, review, creditLimit, creditPortfolio, allAvailable, monthlyPayments
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -136,6 +155,10 @@ enum DashboardKind: String, Codable, CaseIterable, Identifiable {
         case .creditDebt: return "Борг за рахунками"
         case .availableCredit: return "Доступно кредиту"
         case .review: return "Потребують уточнення"
+        case .creditLimit: return "Загальний кредитний ліміт"
+        case .creditPortfolio: return "Кредитні кошти"
+        case .allAvailable: return "Власні + доступний кредит"
+        case .monthlyPayments: return "Платежі до кінця місяця"
         }
     }
     var icon: String {
@@ -154,6 +177,9 @@ enum DashboardKind: String, Codable, CaseIterable, Identifiable {
         case .ownFunds: return "banknote.fill"
         case .availableCredit: return "building.columns.fill"
         case .review: return "exclamationmark.bubble.fill"
+        case .creditLimit,.creditPortfolio: return "creditcard.fill"
+        case .allAvailable: return "wallet.pass.fill"
+        case .monthlyPayments: return "calendar"
         }
     }
 }
@@ -163,9 +189,9 @@ extension DashboardKind {
         case .balance: return .red
         case .ownFunds,.savings,.goals: return .green
         case .creditDebt,.fees,.debt,.review: return .orange
-        case .accounts,.availableCredit: return .blue
+        case .accounts,.availableCredit,.creditLimit,.creditPortfolio,.allAvailable: return .blue
         case .subscriptions,.categories: return .purple
-        case .obligations,.reminders,.recurring: return .cyan
+        case .obligations,.reminders,.recurring,.monthlyPayments: return .cyan
         case .forecast,.statistics: return .teal
         case .cashflow,.budget: return .indigo
         case .recent,.uncategorized,.installments: return .pink
@@ -176,14 +202,24 @@ enum DashboardSize: String, Codable, CaseIterable { case small = "Компакт
 struct DashboardItem: Codable, Identifiable {
     var id: String { kind.rawValue }
     var kind: DashboardKind; var enabled: Bool; var size: DashboardSize
+    var template: String? = nil
+    var accentName: String? = nil
+    var categorySelection: [String]? = nil
+    var categoryCount: Int? = nil
+    var showLimit: Bool? = nil
+    var showUsed: Bool? = nil
+    var showAvailable: Bool? = nil
+    var showPaymentRemaining: Bool? = nil
+    var showPaymentDate: Bool? = nil
+    var showPaymentImage: Bool? = nil
     static var defaults: [Self] { DashboardKind.allCases.map { k in
-        .init(kind: k, enabled: [.balance,.cashflow,.categories,.recent].contains(k), size: [.balance,.categories,.recent].contains(k) ? .large : .medium)
+        .init(kind: k, enabled: [.ownFunds,.categories,.obligations,.recent].contains(k), size: [.balance,.ownFunds,.categories,.obligations,.creditPortfolio,.recent].contains(k) ? .large : .medium)
     } }
     static func merged(_ stored: [Self]?) -> [Self] {
         guard let stored else { return defaults }
         var seen=Set<String>()
         let clean=stored.filter{seen.insert($0.id).inserted}
-        return clean + defaults.filter{!seen.contains($0.id)}
+        return clean + defaults.filter{!seen.contains($0.id)}.map { var x=$0;x.enabled=false;return x }
     }
 }
 struct DashboardSettings: View {
@@ -192,11 +228,12 @@ struct DashboardSettings: View {
     func modify(_ id: String, _ action: (inout DashboardItem)->Void) { s.change { d in var all = DashboardItem.merged(d.dashboard); if let i = all.firstIndex(where: { $0.id == id }) { action(&all[i]) }; d.dashboard = all } }
     var body: some View {
         List {
-            Section("Вибери лише потрібні блоки. Натисни «Порядок», щоб перемістити їх.") {
+            Section("Увімкни потрібні блоки. Через «Редагувати» перетягни їх у новий порядок. Великі фінансові блоки завжди на всю ширину.") {
                 ForEach(items) { item in
                     VStack(alignment: .leading, spacing: 8) {
                         Toggle(isOn: Binding(get: { items.first(where: { $0.id == item.id })?.enabled ?? false }, set: { v in modify(item.id) { $0.enabled = v } })) { Label(item.kind.title, systemImage: item.kind.icon) }
                         if item.enabled {
+                            NavigationLink("Оформлення та показники") { FinamiBlockSettings(id:item.id) }
                             Picker("Розмір", selection: Binding(get: { items.first(where: { $0.id == item.id })?.size ?? .medium }, set: { v in modify(item.id) { $0.size = v } })) { ForEach(DashboardSize.allCases, id: \.self) { Text($0.rawValue).tag($0) } }.pickerStyle(.segmented)
                         }
                     }
@@ -211,12 +248,13 @@ struct CustomDashboard: View {
     @State private var date = Date()
     @State private var add = false
     @State private var configure = false
+    @State private var voice = false
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     var items: [DashboardItem] { (DashboardItem.merged(s.db.dashboard)).filter(\.enabled) }
     var rows: [[DashboardItem]] {
         var result: [[DashboardItem]] = []; var pair: [DashboardItem] = []
         for item in items {
-            if item.size == .small && !dynamicTypeSize.isAccessibilitySize { pair.append(item); if pair.count == 2 { result.append(pair); pair = [] } }
+            if item.size == .small && ![.balance,.ownFunds,.creditLimit,.creditPortfolio,.obligations,.allAvailable,.monthlyPayments].contains(item.kind) && !dynamicTypeSize.isAccessibilitySize { pair.append(item); if pair.count == 2 { result.append(pair); pair = [] } }
             else { if !pair.isEmpty { result.append(pair); pair = [] }; result.append([item]) }
         }
         if !pair.isEmpty { result.append(pair) }; return result
@@ -232,11 +270,12 @@ struct CustomDashboard: View {
                     }
                 }
             }.padding()
-        }.background(Color(uiColor: .systemGroupedBackground)).navigationTitle("Izanami")
-            .toolbar { Button { configure = true } label: { Image(systemName: "slider.horizontal.3").font(.title2) }.accessibilityLabel("Налаштувати блоки") }
+        }.background(Color(uiColor: .systemGroupedBackground)).navigationTitle("Finami")
+            .toolbar { Button { s.change { d in var p=d.preferences ?? .init();p.hideAmounts = !(p.hideAmounts ?? false);d.preferences=p } } label: { Image(systemName:s.privateAmounts ? "eye.slash" : "eye") }.accessibilityLabel("Приховати або показати суми"); Button { configure = true } label: { Image(systemName: "slider.horizontal.3").font(.title2) }.accessibilityLabel("Налаштувати блоки") }
             .safeAreaInset(edge: .bottom) {
-                Button { add = true } label: { Label("Додати операцію", systemImage: "plus.circle.fill").font(.headline).frame(maxWidth: .infinity).padding(.vertical, 5) }.buttonStyle(.borderedProminent).padding(.horizontal).padding(.vertical, 5).background(.regularMaterial)
+                HStack { Button { add = true } label: { Label("Додати операцію", systemImage: "plus.circle.fill").font(.headline).frame(maxWidth: .infinity).padding(.vertical, 5) }.buttonStyle(.borderedProminent); Button { voice=true } label:{Image(systemName:"mic.fill").frame(minWidth:44,minHeight:34)}.buttonStyle(.bordered).accessibilityLabel("Голосовий запис") }.padding(.horizontal).padding(.vertical,5).background(.regularMaterial)
             }.sheet(isPresented: $add) { OpEditor(original: Operation(category: "Без категорії", account: s.db.accounts.first?.id ?? cash)) }
+            .sheet(isPresented:$voice) { FinamiVoice() }
             .sheet(isPresented: $configure) { NavigationStack { DashboardSettings().toolbar { ToolbarItem(placement: .cancellationAction) { Button("Готово") { configure = false } } } } }
     }
 }
@@ -247,17 +286,20 @@ struct DashboardTile: View {
     var ops: [Operation] { s.month(date) }
     var inc: Int64 { s.totals(ops,.income) }
     var exp: Int64 { s.totals(ops,.expense) }
-    var balance: Int64 { s.db.accounts.reduce(0) { $0 + s.balance($1) } }
-    var small: Bool { item.size == .small && !dynamicTypeSize.isAccessibilitySize }
+    var balance: Int64 { s.includedAccounts.reduce(0) { $0 + s.balance($1) } }
+    var small: Bool { item.size == .small && ![.balance,.ownFunds,.creditLimit,.creditPortfolio,.obligations,.allAvailable,.monthlyPayments].contains(item.kind) && !dynamicTypeSize.isAccessibilitySize }
+    @State private var paymentDetails: FinamiPayment?
+    var showCharts:Bool { s.db.preferences?.noCharts == false && !s.privateAmounts }
     var detailed: Bool { item.size == .large }
     var color: Color {
         let p = s.db.preferences ?? .init()
-        return (p.colorfulDashboard ?? true) ? item.kind.tileColor : (IzanamiTheme.all.first(where:{$0.name==p.theme})?.color ?? finoraAccent)
+        if let name = item.accentName, let custom = IzanamiTheme.all.first(where: {$0.name == name}) { return custom.color }
+        return (p.colorfulDashboard ?? true) ? item.kind.tileColor : (IzanamiTheme.all.first(where:{$0.name==p.theme})?.color ?? (FinamiDesign(rawValue:p.design ?? "Signature") ?? .signature).tint)
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .center, spacing: 9) {
-                IzanamiGlyph(icon: item.kind.icon, color: color, compact: small)
+                FinamiArt(icon: item.kind.icon, tint: color, size: small ? 34 : 50)
                 Text(item.kind.title).font(.subheadline.weight(.semibold))
                     .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
@@ -266,8 +308,8 @@ struct DashboardTile: View {
         }
         .frame(maxWidth: .infinity, minHeight: small ? 94 : nil, alignment: .topLeading)
         .padding(small ? 12 : 16)
-        .background(cardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .modifier(FinamiCardStyle(tint:color,template:item.template))
+        .sheet(item:$paymentDetails) { FinamiPaymentDetails(payment:$0) }
     }
     var cardBackground: some View {
         ZStack {
@@ -300,34 +342,16 @@ struct DashboardTile: View {
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
     var cashFlow: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if small || dynamicTypeSize.isAccessibilitySize {
-                metric("Доходи", inc, .green)
-                metric("Витрати", exp, .orange)
-            } else {
-                HStack(alignment: .top, spacing: 12) {
-                    metric("Доходи", inc, .green)
-                    metric("Витрати", exp, .orange)
-                }
-            }
-            if !small {
-                let positive = Double(max(0, inc)), negative = Double(max(0, exp))
-                if positive + negative > 0 {
-                    GeometryReader { g in
-                        HStack(spacing: 0) {
-                            Rectangle().fill(Color.green).frame(width: g.size.width * CGFloat(positive / (positive + negative)))
-                            Rectangle().fill(Color.orange)
-                        }
-                    }.frame(height: 7).clipShape(Capsule()).accessibilityHidden(true)
-                }
-                HStack { detail("Грошовий потік"); Spacer(minLength: 4); Text(s.displayed(inc-exp)).font(.subheadline.weight(.semibold)).monospacedDigit() }
-            }
+        VStack(alignment:.leading,spacing:12) {
+            if s.db.preferences?.showIncome == true { metric("Доходи",inc,.green) }
+            if s.db.preferences?.showExpenses != false { metric("Витрати",exp,.orange) }
+            if s.db.preferences?.showIncome != true && s.db.preferences?.showExpenses == false { detail("Показники приховано") }
         }
     }
     var categoryGroups: [(key: String, value: Int64)] {
         Dictionary(grouping: ops.filter { $0.expenseValue != 0 }, by: { $0.expenseGroup })
             .mapValues { $0.reduce(Int64(0)) { $0 + $1.expenseValue } }
-            .filter { $0.value > 0 }.sorted { $0.value > $1.value }
+            .filter { $0.value > 0 && (item.categorySelection?.contains($0.key) ?? true) }.sorted { $0.value > $1.value }
     }
     var categories: some View {
         let groups = categoryGroups
@@ -336,11 +360,11 @@ struct DashboardTile: View {
             if groups.isEmpty { detail("Немає витрат за період") }
             else if small { value("\(groups.count)"); detail("Категорій з витратами") }
             else {
-                amount(exp)
-                ForEach(Array(groups.prefix(detailed ? 10 : 4).enumerated()), id: \.element.key) { entry in
-                    DashboardCategoryLine(title: entry.element.key, amount: entry.element.value, total: total, color: categoryColor(entry.offset))
+                amount(item.categorySelection == nil ? exp : total)
+                ForEach(Array(groups.prefix(max(1,min(30,item.categoryCount ?? (detailed ? 10 : 4)))).enumerated()), id: \.element.key) { entry in
+                    DashboardCategoryLine(title: entry.element.key, amount: entry.element.value, total: total, color: categoryColor(entry.offset), showChart:showCharts)
                 }
-                if groups.count > (detailed ? 10 : 4) { detail("Показано найбільші категорії") }
+                if groups.count > (item.categoryCount ?? (detailed ? 10 : 4)) { detail("Показано найбільші категорії") }
             }
         }
     }
@@ -349,7 +373,7 @@ struct DashboardTile: View {
         return (s.db.preferences?.colorfulDashboard ?? true) ? palette[index % palette.count] : color
     }
     @ViewBuilder var accounts: some View {
-        let shown = Array(s.db.accounts.prefix(detailed ? 6 : 2))
+        let shown = s.db.accounts.filter{$0.hiddenInOverview != true}
         if shown.isEmpty { detail("Немає рахунків") }
         ForEach(shown) { a in
             HStack(alignment: .center, spacing: 8) {
@@ -359,15 +383,19 @@ struct DashboardTile: View {
                     if !small { detail(a.typeName) }
                 }
                 Spacer(minLength: 4)
-                Text(currencyMoney(s.nativeBalance(a), a.code)).font(.subheadline.weight(.semibold)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.65)
+                Text(s.visibleMoney(s.ownFunds(a), a.code)).font(.subheadline.weight(.semibold)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.65)
             }
             if a.id != shown.last?.id { Divider() }
         }
-        if s.db.accounts.count > shown.count { detail("Ще \(s.db.accounts.count-shown.count) рах.") }
+        
     }
     @ViewBuilder var content: some View {
         switch item.kind {
         case .balance: amount(balance); detail("Чистий баланс рахунків · без невикористаного кредиту")
+        case .creditLimit: amount(s.totalCreditLimit);detail("Ліміт усіх включених кредитних рахунків")
+        case .creditPortfolio: FinamiCreditSummary(showLimit:item.showLimit ?? true,showUsed:item.showUsed ?? true,showAvailable:item.showAvailable ?? true)
+        case .allAvailable: amount(s.totalOwnFunds+s.totalAvailableCredit);detail("Власні кошти разом із доступним кредитом")
+        case .monthlyPayments: FinamiMonthPayments()
         case .cashflow: cashFlow
         case .categories: categories
         case .recent:
@@ -375,7 +403,7 @@ struct DashboardTile: View {
             else {
                 let shown = Array(ops.sorted{$0.date > $1.date}.prefix(detailed ? 5 : 2))
                 ForEach(shown) { o in
-                    if small { Text(money(o.amount)).font(.subheadline.weight(.semibold)).monospacedDigit(); detail(o.note.isEmpty ? o.category : o.note) }
+                    if small { Text(s.visibleMoney(o.amount)).font(.subheadline.weight(.semibold)).monospacedDigit(); detail(o.note.isEmpty ? o.category : o.note) }
                     else { OperationRow(o: o) }
                     if o.id != shown.last?.id { Divider() }
                 }
@@ -383,13 +411,12 @@ struct DashboardTile: View {
         case .accounts: accounts
         case .budget:
             if s.db.budget > 0 {
-                amount(max(0,s.db.budget-exp)); detail("Залишок бюджету · з \(money(s.db.budget))")
-                ProgressView(value: max(0,min(1, Double(exp)/Double(s.db.budget)))).tint(color)
+                amount(max(0,s.db.budget-exp)); detail("Залишок бюджету · з \(s.visibleMoney(s.db.budget))")
+                if showCharts { ProgressView(value: max(0,min(1, Double(exp)/Double(s.db.budget)))).tint(color) }
             } else { detail("Не задано") }
         case .obligations:
-            let due = s.db.obligations.filter{$0.remaining > 0 && $0.kind != .goal}.sorted{$0.due < $1.due}
-            if due.isEmpty { detail("Немає платежів") }
-            else { ForEach(due.prefix(small ? 1 : detailed ? 3 : 2)) { o in Text(o.name).font(.subheadline.weight(.semibold)); detail(o.due.formatted(.dateTime.day().month(.wide).locale(Locale(identifier: "uk_UA")))) } }
+            if let next=s.upcomingPayments.first { Button { paymentDetails=next } label:{FinamiPaymentCard(payment:next,showRemaining:item.showPaymentRemaining ?? true,showDate:item.showPaymentDate ?? true,showImage:item.showPaymentImage ?? true)}.buttonStyle(.plain) }
+            else {detail("Немає запланованих платежів")}
         case .subscriptions:
             value(String((s.db.subscriptions ?? []).filter{$0.active}.count)); detail("Активних підписок")
             if let next = (s.db.subscriptions ?? []).filter({$0.active}).sorted(by: {$0.next < $1.next}).first { Text(next.name).font(.subheadline.weight(.medium)); detail(next.next.formatted(.dateTime.day().month(.wide).locale(Locale(identifier: "uk_UA")))) }
@@ -400,13 +427,16 @@ struct DashboardTile: View {
         case .debt: metric("Мені винні", s.db.obligations.filter{$0.kind == .owed}.reduce(0){$0+$1.remaining}, .green); metric("Я винен", s.db.obligations.filter{$0.kind == .owe}.reduce(0){$0+$1.remaining}, .orange)
         case .installments: obligationSummary([.installment])
         case .recurring: obligationSummary([.recurring])
-        case .statistics: value(String(ops.count)); detail("Операцій · потік \(money(inc-exp))")
+        case .statistics: value(String(ops.count)); detail("Операцій · потік \(s.visibleMoney(inc-exp))")
         case .fees: amount(ops.filter{$0.kind == .expense && $0.category == "🏦 Комісії"}.reduce(0){$0+$1.amount})
-        case .ownFunds: amount(s.totalOwnFunds); detail("Без кредитних коштів")
+        case .ownFunds:
+            amount(s.totalOwnFunds); detail("Без кредитних коштів")
+            if s.db.preferences?.showIncome == true { metric("Доходи",inc,.green) }
+            if s.db.preferences?.showExpenses != false { metric("Витрати",exp,.orange) }
         case .creditDebt: amount(s.totalAccountDebt); detail("Використані кредитні кошти")
         case .availableCredit: amount(s.totalAvailableCredit); detail("Не є власними коштами")
         case .review: value(String(ops.filter{$0.kind.needsReview}.count)); detail("Потребують перевірки")
-        case .savings: value(inc > 0 ? ((Double(inc-exp)/Double(inc)).formatted(.percent.precision(.fractionLength(1)))) : "—"); detail("Частка доходу після витрат")
+        case .savings: value(s.privateAmounts ? "••••" : inc > 0 ? ((Double(inc-exp)/Double(inc)).formatted(.percent.precision(.fractionLength(1)))) : "—"); detail("Частка доходу після витрат")
         }
     }
     @ViewBuilder func obligationSummary(_ kinds: [ObligationKind]) -> some View {
@@ -415,16 +445,16 @@ struct DashboardTile: View {
     }
 }
 struct DashboardCategoryLine: View {
-    var title: String; var amount: Int64; var total: Int64; var color: Color
+    @EnvironmentObject var s:Store
+    var title: String; var amount: Int64; var total: Int64; var color: Color; var showChart: Bool = false
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(title).font(.subheadline).lineLimit(2)
                 Spacer(minLength: 3)
-                Text(money(amount)).font(.subheadline.weight(.semibold)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
+                Text(s.visibleMoney(amount)).font(.subheadline.weight(.semibold)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
             }
-            ProgressView(value: total > 0 ? min(1, max(0, Double(amount)/Double(total))) : 0).tint(color)
-                .accessibilityLabel(title).accessibilityValue(money(amount))
+            if showChart && !s.privateAmounts { ProgressView(value: total > 0 ? min(1, max(0, Double(amount)/Double(total))) : 0).tint(color).accessibilityLabel(title).accessibilityValue(money(amount)) }
         }
     }
 }
@@ -440,15 +470,15 @@ struct ForecastView: View {
         Form {
             Section("Необов’язково") {
                 Text("Заповни тільки потрібні поля. Прогноз не створює фактичних операцій.").font(.caption)
-                TextField("Очікуваний дохід, ₴", text: $expected).keyboardType(.decimalPad)
-                TextField("Майбутні платежі, ₴", text: $planned).keyboardType(.decimalPad)
-                TextField("Недоторканний резерв, ₴", text: $reserve).keyboardType(.decimalPad)
+                FinamiField("Очікуваний дохід, ₴", text: $expected, keyboard: .decimalPad)
+                FinamiField("Майбутні платежі, ₴", text: $planned, keyboard: .decimalPad)
+                FinamiField("Недоторканний резерв, ₴", text: $reserve, keyboard: .decimalPad)
                 Stepper("Горизонт: \(days) днів", value: $days, in: 1...365)
             }
             Section("Прогноз") {
-                LabeledContent("Поточний баланс", value: money(total))
-                LabeledContent("Вільний залишок", value: money(available))
-                LabeledContent("Бюджет на день", value: money(max(0,available)/Int64(days)))
+                LabeledContent("Поточний баланс", value: s.visibleMoney(total))
+                LabeledContent("Вільний залишок", value: s.visibleMoney(available))
+                LabeledContent("Бюджет на день", value: s.visibleMoney(max(0,available)/Int64(days)))
                 Text("Оцінка залежить від введених майбутніх доходів та витрат.").font(.caption)
             }
             Button("Зберегти прогноз") { s.change { $0.forecast = .init(expected: cents(expected) ?? 0, planned: cents(planned) ?? 0, reserve: cents(reserve) ?? 0, days: days) } }.disabled(!valid)
@@ -475,10 +505,10 @@ struct PersonalReminder: Codable, Identifiable {
         // A calendar recurrence starts at its next matching occurrence, not necessarily at the selected future date.
         let trigger = UNCalendarNotificationTrigger(dateMatching: cal.dateComponents(fields, from: r.date), repeats: r.recurrence != .once)
         guard trigger.nextTriggerDate() != nil else { throw ReminderFailure.past }
-        let c = UNMutableNotificationContent(); c.title = "Izanami · Нагадування"; c.body = r.hideDetails ? "Відкрий застосунок, щоб переглянути платіж." : r.title; c.sound = .default
+        let c = UNMutableNotificationContent(); c.title = "Finami · Нагадування"; c.body = r.hideDetails ? "Відкрий застосунок, щоб переглянути платіж." : r.title; c.sound = .default
         try await center.add(UNNotificationRequest(identifier: r.requestID, content: c, trigger: trigger))
     }
-    enum ReminderFailure: LocalizedError { case denied,past; var errorDescription: String? { self == .denied ? "Дозволь сповіщення Izanami в налаштуваннях iPhone." : "Вибери майбутню дату й час." } }
+    enum ReminderFailure: LocalizedError { case denied,past; var errorDescription: String? { self == .denied ? "Дозволь сповіщення Finami в налаштуваннях iPhone." : "Вибери майбутню дату й час." } }
 }
 struct ReminderList: View {
     @EnvironmentObject var s: Store
@@ -528,9 +558,9 @@ struct SubscriptionsView: View {
     var list: [SubscriptionRecord] { (s.db.subscriptions ?? []).sorted{$0.next < $1.next} }
     var body: some View {
         List {
-            Section("Активні") { ForEach(["UAH","USD"], id: \.self) { currency in let active = list.filter{$0.active && $0.currency == currency}; if !active.isEmpty { let total = active.reduce(0.0) { n,r in n + Double(r.amount) * (r.period == .week ? 52.0/12 : r.period == .year ? 1.0/12 : 1) }; LabeledContent("Місячна оцінка \(currency)", value: currencyMoney(Int64(total.rounded()),currency)) } } }
+            Section("Активні") { ForEach(["UAH","USD"], id: \.self) { currency in let active = list.filter{$0.active && $0.currency == currency}; if !active.isEmpty { let total = active.reduce(0.0) { n,r in n + Double(r.amount) * (r.period == .week ? 52.0/12 : r.period == .year ? 1.0/12 : 1) }; LabeledContent("Місячна оцінка \(currency)", value: s.visibleMoney(Int64(total.rounded()),currency)) } } }
             ForEach(list) { r in
-                Button { edit = r } label: { HStack { IzanamiLabel(title: r.name,icon:"repeat",color:.purple); Spacer(); VStack(alignment:.trailing){Text(currencyMoney(r.amount,r.currency)).bold(); Text(r.active ? r.next.formatted(date:.abbreviated,time:.omitted) : "Призупинено").font(.caption)} } }.buttonStyle(.plain)
+                Button { edit = r } label: { HStack { IzanamiLabel(title: r.name,icon:"repeat",color:.purple); Spacer(); VStack(alignment:.trailing){Text(s.visibleMoney(r.amount,r.currency)).bold(); Text(r.active ? r.next.formatted(date:.abbreviated,time:.omitted) : "Призупинено").font(.caption)} } }.buttonStyle(.plain)
             }
         }.navigationTitle("Підписки").toolbar { Button { edit = SubscriptionRecord() } label: { Image(systemName:"plus.circle.fill").font(.title2) } }.sheet(item:$edit){ SubscriptionEditor(original:$0) }
     }
@@ -544,16 +574,16 @@ struct SubscriptionEditor: View {
         NavigationStack {
             Form {
                 TextField("Назва сервісу",text:$r.name)
-                TextField("Тариф",text:$amount).keyboardType(.decimalPad)
+                FinamiField("Тариф", text: $amount, keyboard: .decimalPad)
                 Picker("Валюта",selection:$r.currency){Text("UAH").tag("UAH");Text("USD").tag("USD")}
                 Picker("Період",selection:$r.period){ForEach(SubscriptionPeriod.allCases,id:\.self){Text($0.rawValue).tag($0)}}
                 DatePicker("Наступна оплата",selection:$r.next,displayedComponents:.date)
                 Toggle("Активна",isOn:$r.active); Toggle("Автосписання в сервісі",isOn:$r.automatic)
                 TextField("Примітка",text:$r.notes)
                 Section("Історія оплат") {
-                    ForEach(r.payments.sorted{$0.date > $1.date}) { p in VStack(alignment:.leading){Text(currencyMoney(p.amount,p.currency)).bold();Text("Сплачено: \(p.date.formatted(date:.abbreviated,time:.omitted)) · До: \(p.through.formatted(date:.abbreviated,time:.omitted))").font(.caption)} }
+                    ForEach(r.payments.sorted{$0.date > $1.date}) { p in VStack(alignment:.leading){Text(s.visibleMoney(p.amount,p.currency)).bold();Text("Сплачено: \(p.date.formatted(date:.abbreviated,time:.omitted)) · До: \(p.through.formatted(date:.abbreviated,time:.omitted))").font(.caption)} }
                     DatePicker("Дата фактичної оплати",selection:$paidDate,displayedComponents:.date)
-                    TextField("Фактична сума (необов’язково)",text:$payment).keyboardType(.decimalPad)
+                    FinamiField("Фактична сума (необов’язково)", text: $payment, keyboard: .decimalPad)
                     Button("Записати оплату") { guard let n = cents(payment.isEmpty ? amount : payment), n > 0 else { return }; let base = max(r.next,paidDate); let end = Calendar.current.date(byAdding:r.period.component,value:r.period.step,to:base) ?? base; r.payments.append(.init(date:paidDate,amount:n,currency:r.currency,through:end));r.next=end;payment="" }.disabled(!valid || (!payment.isEmpty && (cents(payment) ?? 0)<=0))
                     Text("Історія підписки не додає витрати в рахунок автоматично, щоб не подвоїти банківську операцію.").font(.caption)
                 }
@@ -590,8 +620,8 @@ struct CurrencyCalculator: View {
     var body: some View {
         Form {
             Picker("Напрямок",selection:$usd){Text("USD → UAH").tag(true);Text("UAH → USD").tag(false)}.pickerStyle(.segmented)
-            TextField("Сума",text:$amount).keyboardType(.decimalPad)
-            TextField("Власний курс: грн за 1 USD",text:$rate).keyboardType(.decimalPad)
+            FinamiField("Сума", text: $amount, keyboard: .decimalPad)
+            FinamiField("Власний курс: грн за 1 USD", text: $rate, keyboard: .decimalPad)
             if let result { Text(result.formatted(.currency(code:usd ? "UAH" : "USD").locale(Locale(identifier:"uk_UA")))).font(.largeTitle.bold()) }
             Text("Довідковий калькулятор. Не створює валютної операції та не змінює баланс.").font(.caption)
         }.navigationTitle("Конвертер валют")
@@ -603,11 +633,11 @@ struct CurrencySettings: View {
     @State private var rate=""; @State private var display="dual"
     var body:some View {
         Form {
-            Section("Поточний курс") { TextField("UAH за 1 USD",text:$rate).keyboardType(.decimalPad);Text("Використовується для оцінки залишків і довідкового відображення. Старі операції зберігають власний курс.").font(.caption) }
+            Section("Поточний курс") { FinamiField("UAH за 1 USD", text: $rate, keyboard: .decimalPad);Text("Використовується для оцінки залишків і довідкового відображення. Старі операції зберігають власний курс.").font(.caption) }
             Picker("Відображення огляду",selection:$display){Text("Гривня").tag("UAH");Text("Долар (еквівалент)").tag("USD");Text("Обидві").tag("dual")}
             Button("Зберегти"){s.change{$0.currencyPreferences=CurrencyPreferences(usdRate:rate,display:display)}}.disabled(fxRate(rate)==nil)
-            Section("Операції цього місяця за оригінальною валютою") {ForEach(["UAH","USD"],id:\.self){code in let ops=s.month(Date()).filter{($0.originalCurrency ?? "UAH")==code}; LabeledContent("Дохід \(code)",value:currencyMoney(ops.filter{$0.kind == .income}.reduce(0){$0+($1.originalAmount ?? $1.amount)},code)); LabeledContent("Витрати \(code)",value:currencyMoney(ops.filter{$0.kind == .expense}.reduce(0){$0+($1.originalAmount ?? $1.amount)},code))}}
-            Section("Окремі залишки") {ForEach(["UAH","USD"],id:\.self){code in LabeledContent(code,value:currencyMoney(s.db.accounts.filter{$0.code==code}.reduce(0){$0+s.nativeBalance($1)},code))}}
+            Section("Операції цього місяця за оригінальною валютою") {ForEach(["UAH","USD"],id:\.self){code in let ops=s.month(Date()).filter{($0.originalCurrency ?? "UAH")==code}; LabeledContent("Дохід \(code)",value:s.visibleMoney(ops.filter{$0.kind == .income}.reduce(0){$0+($1.originalAmount ?? $1.amount)},code)); LabeledContent("Витрати \(code)",value:s.visibleMoney(ops.filter{$0.kind == .expense}.reduce(0){$0+($1.originalAmount ?? $1.amount)},code))}}
+            Section("Окремі залишки") {ForEach(["UAH","USD"],id:\.self){code in LabeledContent(code,value:s.visibleMoney(s.db.accounts.filter{$0.code==code}.reduce(0){$0+s.nativeBalance($1)},code))}}
             Text("Щоб записати доларовий дохід, створи рахунок USD або вибери USD при введенні операції на рахунку UAH. Для обміну обери переказ між рахунками різних валют і фактичний курс.").font(.caption)
         }.navigationTitle("Валюти та курси").onAppear {rate=s.db.currencyPreferences?.usdRate ?? "";display=s.db.currencyPreferences?.display ?? "dual"}
     }

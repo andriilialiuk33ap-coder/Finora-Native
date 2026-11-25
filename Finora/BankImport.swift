@@ -191,7 +191,7 @@ struct BankCenter: View {
     private func reviewSection(_ batch: BankBatch) -> some View {
         Section("Перевірка") {
             Text("Розпізнано \(batch.rows.count), пропущено \(batch.rejected)")
-            Picker("Рахунок Izanami", selection: $account) {
+            Picker("Рахунок Finami", selection: $account) {
                 Text("Вибрати").tag("")
                 ForEach(supportedLocalAccounts) { a in
                     Text(a.name).tag(a.id)

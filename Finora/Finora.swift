@@ -9,7 +9,7 @@ let expenseDefaults = [
   "🧾 Комунальні", "🔑 Оренда", "🛠️ Ремонт", "👕 Одяг", "💇 Краса", "💊 Здоров’я", "🏋️ Спорт", "🎬 Розваги",
   "📺 Підписки", "💻 Техніка", "📱 Зв’язок", "✈️ Подорожі", "📚 Освіта", "🐾 Тварини", "👶 Діти",
   "🎁 Подарунки", "💳 Розстрочка", "🛡️ Страхування", "🏦 Комісії", "📦 Доставка", "❤️ Благодійність",
-  "Без категорії", "Інше",
+  "🏪 Побут", "🅿️ Паркування", "🚆 Поїздки", "🦷 Стоматологія", "🧴 Гігієна", "🎮 Ігри", "🍕 Доставка їжі", "📦 Маркетплейси", "🧰 Робочі витрати", "🪴 Сад", "🧾 Податки", "🏥 Лікування", "Без категорії", "Інше",
 ]
 let incomeDefaults = [
   "💼 Зарплата", "💻 Підробіток", "🏢 Бізнес", "🎁 Подарунок", "↩️ Повернення", "💵 Кешбек", "📈 Відсотки",
@@ -66,6 +66,9 @@ struct Account: Codable, Identifiable {
   var bankName: String? = nil
   var lastFour: String? = nil
   var creditLimit: Int64? = nil
+  var hiddenInAccounts: Bool? = nil
+  var hiddenInOverview: Bool? = nil
+  var excludedFromTotals: Bool? = nil
   var code: String { currency ?? "UAH" }
   var isCredit: Bool { accountType == "credit" }
   var limit: Int64 { isCredit ? max(0,creditLimit ?? 0) : 0 }
@@ -144,6 +147,10 @@ struct Database: Codable {
   var capturePreferences: CapturePreferences? = nil
   var captureHandled: [String]? = nil
   var captureMessageFingerprints: [String]? = nil
+  var hiddenExpenseCategories: [String]? = nil
+  var hiddenIncomeCategories: [String]? = nil
+  var categoryParents: [String: String]? = nil
+  var paymentPhotos: [String: Data]? = nil
 }
 struct Legacy: Decodable {
   struct Entry: Decodable {
@@ -238,16 +245,22 @@ struct DataFile: FileDocument {
   func debt(_ a: Account) -> Int64 { CardPosition(net:nativeBalance(a),limit:a.limit).used }
   func available(_ a: Account) -> Int64 { CardPosition(net:nativeBalance(a),limit:a.limit).available }
   func uah(_ n: Int64, account a: Account) -> Int64 { a.code == "USD" ? currentRate.flatMap{fxMinor(n,rate:$0)} ?? 0 : n }
-  var totalOwnFunds: Int64 { db.accounts.reduce(0){$0+uah(ownFunds($1),account:$1)} }
-  var totalAvailableCredit: Int64 { db.accounts.reduce(0){$0+uah(max(0,$1.limit-debt($1)),account:$1)} }
-  var totalAccountDebt: Int64 { db.accounts.reduce(0){$0+uah(debt($1),account:$1)} }
+  var includedAccounts: [Account] { db.accounts.filter { $0.excludedFromTotals != true } }
+  var totalCreditLimit: Int64 { includedAccounts.filter(\.isCredit).reduce(0) { $0 + uah($1.limit, account: $1) } }
+  var totalCreditUsed: Int64 { includedAccounts.filter(\.isCredit).reduce(0) { $0 + uah(debt($1), account: $1) } }
+  var totalOwnFunds: Int64 { includedAccounts.reduce(0){$0+uah(ownFunds($1),account:$1)} }
+  var totalAvailableCredit: Int64 { includedAccounts.filter(\.isCredit).reduce(0){$0+uah(max(0,$1.limit-debt($1)),account:$1)} }
+  var totalAccountDebt: Int64 { includedAccounts.reduce(0){$0+uah(debt($1),account:$1)} }
   func balance(_ a: Account) -> Int64 {
     let n=nativeBalance(a)
     guard a.code == "USD" else{return n}
     guard let rate=currentRate else{return 0}
     return fxMinor(n,rate:rate) ?? 0
   }
+  var privateAmounts: Bool { db.preferences?.hideAmounts == true }
+  func visibleMoney(_ n: Int64, _ code: String = "UAH") -> String { privateAmounts ? "••••" : currencyMoney(n,code) }
   func displayed(_ n:Int64)->String {
+    if privateAmounts { return "••••" }
     let mode=db.currencyPreferences?.display ?? "dual"
     guard let rate=currentRate, let usd=fxMinor(n,rate:rate,divide:true) else{return money(n)}
     if mode == "USD" {return "≈ "+currencyMoney(usd,"USD")}
@@ -359,7 +372,7 @@ struct Root: View {
       if lockEnabled && !unlocked {
         VStack(spacing: 18) {
           Image(systemName: "lock.shield.fill").font(.system(size: 64)).foregroundStyle(finoraAccent)
-          Text("Izanami").font(.largeTitle.bold())
+          Text("Finami").font(.largeTitle.bold())
           Text(authError).foregroundStyle(.secondary)
           Button("Розблокувати", action: unlock).buttonStyle(.borderedProminent)
         }.onAppear(perform: unlock)
@@ -372,7 +385,7 @@ struct Root: View {
           NavigationStack { Accounts() }.tabItem {
             Label("Рахунки", systemImage: "wallet.pass.fill")
           }
-          NavigationStack { Reports() }.tabItem { Label("Звіти", systemImage: "chart.bar.xaxis") }
+          NavigationStack { if store.privateAmounts { FinamiPrivacyNotice() } else { Reports() } }.tabItem { Label("Звіти", systemImage: "chart.bar.xaxis") }
           NavigationStack { More() }.tabItem { Label("Ще", systemImage: "ellipsis.circle") }
         }.task(id: phase) {
           guard phase == .active else {return}
@@ -383,7 +396,7 @@ struct Root: View {
         }
       }
     }.onChange(of: phase) { p in if p == .background && lockEnabled { unlocked = false } }.alert(
-      "Izanami",
+      "Finami",
       isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.error = nil } })
     ) {
       Button("OK") { store.error = nil }
@@ -493,12 +506,13 @@ struct Home: View {
           if ops.isEmpty { Text("Додай першу операцію").foregroundStyle(.secondary) }
         }
       }.padding()
-    }.background(Color(uiColor: .systemGroupedBackground)).navigationTitle("Izanami").sheet(
+    }.background(Color(uiColor: .systemGroupedBackground)).navigationTitle("Finami").sheet(
       isPresented: $add
     ) { OpEditor(original: Operation(account: s.db.accounts.first?.id ?? cash)) }
   }
 }
 struct Breakdown: View {
+  @EnvironmentObject var store: Store
   var ops: [Operation]
   var body: some View {
     let groups = Dictionary(grouping: ops.filter { $0.expenseValue != 0 }, by: { $0.expenseGroup })
@@ -512,9 +526,9 @@ struct Breakdown: View {
         HStack {
           Text(key)
           Spacer()
-          Text(money(value)).bold()
+          Text(store.visibleMoney(value)).bold()
         }.font(.subheadline)
-        ProgressView(value: Double(value) / Double(total)).tint(finoraAccent)
+        if !store.privateAmounts { ProgressView(value: Double(value) / Double(total)).tint(finoraAccent) }
       }
     }
   }
@@ -539,8 +553,8 @@ struct OperationRow: View {
       }
       Spacer()
       VStack(alignment:.trailing) {
-        Text((o.kind == .transfer ? "" : o.kind.incoming ? "+" : "−") + money(o.amount)).font(.subheadline.bold()).foregroundStyle(o.kind == .income ? Color.green : Color.primary)
-        if let n=o.originalAmount, let code=o.originalCurrency, code != "UAH" { Text(currencyMoney(n,code)).font(.caption).foregroundStyle(.secondary) }
+        Text(s.privateAmounts ? "••••" : (o.kind == .transfer ? "" : o.kind.incoming ? "+" : "−") + money(o.amount)).font(.subheadline.bold()).foregroundStyle(o.kind == .income ? Color.green : Color.primary)
+        if let n=o.originalAmount, let code=o.originalCurrency, code != "UAH" { Text(s.visibleMoney(n,code)).font(.caption).foregroundStyle(.secondary) }
       }
     }
   }
@@ -598,7 +612,7 @@ struct OpEditor: View {
     _entryCurrency = State(initialValue: original.entryCurrency ?? "UAH")
     _rate = State(initialValue: original.exchangeRate ?? "")
   }
-  var categories: [String] { let list = o.kind == .income ? s.db.incomeCategories : s.db.expenseCategories; return list.contains("Без категорії") ? list : list + ["Без категорії"] }
+  var categories: [String] { let list = o.kind == .income ? s.db.incomeCategories : s.db.expenseCategories; let hidden = o.kind == .income ? (s.db.hiddenIncomeCategories ?? []) : (s.db.hiddenExpenseCategories ?? []); let available = list.filter { !hidden.contains($0) || $0 == o.category }; return Array(Set(available + ["Без категорії",o.category])).sorted() }
   var allowedKinds: [Kind] {
     if o.sourceBank != nil && o.kind != .transfer {return Kind.allCases.filter{$0 != .transfer && $0.incoming == o.kind.incoming}}
     return Kind.allCases
@@ -628,11 +642,11 @@ struct OpEditor: View {
         Picker("Тип", selection: $o.kind) { ForEach(allowedKinds) { Text($0.title).tag($0) } }
           .pickerStyle(.menu)
         if o.kind.needsReview { Text("Не входить у доходи чи витрати до уточнення. Баланс враховує рух коштів.").font(.caption) }
-        TextField("Сума, \(entryCurrency)", text: $amount).keyboardType(.decimalPad)
+        FinamiField("Сума, \(entryCurrency)", text: $amount, keyboard: .decimalPad)
         if o.kind != .transfer && sourceCode == "UAH" && o.sourceBank == nil {
           Picker("Валюта введення",selection:$entryCurrency){Text("Гривня").tag("UAH");Text("Долар").tag("USD")}
         }
-        if requiresRate { TextField("Курс UAH за 1 USD",text:$rate).keyboardType(.decimalPad); if let n=converted { LabeledContent("Сума у гривнях",value:money(n)) } }
+        if requiresRate { FinamiField("Курс UAH за 1 USD", text: $rate, keyboard: .decimalPad); if let n=converted { LabeledContent("Сума у гривнях",value:money(n)) } }
         DatePicker("Дата і час", selection: $o.date, displayedComponents: [.date,.hourAndMinute])
         Picker("Рахунок", selection: $o.account) {
           ForEach(s.db.accounts.filter{o.sourceBank == nil || $0.code == "UAH"}) { Text($0.name).tag($0.id) }
@@ -700,60 +714,42 @@ struct OpEditor: View {
 struct Accounts: View {
   @EnvironmentObject var s: Store
   @State private var edit: Account?
+  @State private var showHidden = false
   var body: some View {
-    List {
-      Section("Власні кошти та кредит") {
-        LabeledContent("Власні кошти", value:s.displayed(s.totalOwnFunds))
-        LabeledContent("Борг за рахунками", value:s.displayed(s.totalAccountDebt))
-        LabeledContent("Чистий залишок", value:s.displayed(s.totalOwnFunds-s.totalAccountDebt))
-        LabeledContent("Доступно кредиту", value:s.displayed(s.totalAvailableCredit))
-        Text("Кредитний ліміт не входить до власних коштів і доходів.").font(.caption)
-      }
-      Section("Рахунки у власній валюті") {
-        ForEach(s.db.accounts) { a in
-          Button {
-            edit = a
-          } label: {
-            CreditAccountRow(a:a)
-          }.buttonStyle(.plain)
+    ScrollView {
+      VStack(spacing: 16) {
+        FinamiMoneyCard(title: "Власні кошти", amount: s.displayed(s.totalOwnFunds), icon: "wallet.pass.fill", tint: .green, subtitle: "Без кредитного ліміту")
+        FinamiCreditSummary(showLimit: true, showUsed: true, showAvailable: true)
+        Toggle("Показати приховані рахунки", isOn: $showHidden).padding(12)
+        ForEach(s.db.accounts.filter { showHidden || $0.hiddenInAccounts != true }) { a in
+          Button { edit = a } label: { CreditAccountRow(a:a) }.buttonStyle(.plain)
         }
-      }
-      Section("Виправлення обліку") {
         NavigationLink("Перевірити старі імпортовані операції") { CreditImportCorrection() }
-      }
-      Text(
-        "Перекази додаються в меню «Операції». Початковий баланс можна змінювати в налаштуваннях рахунку."
-      ).font(.caption).foregroundStyle(.secondary)
-    }.navigationTitle("Рахунки").toolbar {
-      Button {
-        edit = Account(name: "")
-      } label: {
-        Image(systemName: "plus")
-      }
+      }.padding()
+    }.background(Color(uiColor: .systemGroupedBackground)).navigationTitle("Рахунки").toolbar {
+      Button { edit = Account(name: "") } label: { Image(systemName: "plus.circle.fill") }
     }.sheet(item: $edit) { AccountEditor(a: $0) }
   }
 }
 struct CreditAccountRow: View {
-  @EnvironmentObject var s:Store
-  let a:Account
-  var body:some View {
-    VStack(alignment:.leading,spacing:8) {
+  @EnvironmentObject var s: Store
+  let a: Account
+  var body: some View {
+    VStack(alignment: .leading, spacing: 14) {
       HStack {
-        Image(systemName:a.isCredit ? "creditcard.fill" : "wallet.pass.fill").font(.title2).foregroundStyle(finoraAccent)
-        VStack(alignment:.leading) {Text(a.name).bold();Text(a.typeName + (a.lastFour.map{" · •••• " + $0} ?? "")).font(.caption).foregroundStyle(.secondary)}
-        Spacer()
-        Text(currencyMoney(s.nativeBalance(a),a.code)).bold()
+        IzanamiGlyph(icon: a.isCredit ? "creditcard.fill" : "wallet.pass.fill", color: .teal)
+        VStack(alignment:.leading) { Text(a.name).font(.headline); Text(a.typeName + (a.lastFour.map{" · •••• " + $0} ?? "")).font(.caption).foregroundStyle(.secondary) }
+        Spacer(minLength: 0)
+        if a.hiddenInAccounts == true { Image(systemName: "eye.slash") }
       }
+      FinamiMetric(title: "Власні кошти", value: s.visibleMoney(s.ownFunds(a),a.code), tint: .primary)
       if a.isCredit {
-        LabeledContent("Власні кошти",value:currencyMoney(s.ownFunds(a),a.code))
-        LabeledContent("Кредитний ліміт",value:currencyMoney(a.limit,a.code))
-        LabeledContent("Використано / борг",value:currencyMoney(s.debt(a),a.code))
-        LabeledContent("Доступно кредиту",value:currencyMoney(max(0,a.limit-s.debt(a)),a.code))
-        LabeledContent("Доступно загалом",value:currencyMoney(s.available(a),a.code))
-        if a.limit > 0 {ProgressView(value:min(1,Double(s.debt(a))/Double(a.limit))).tint(.red)}
-        if s.debt(a)>a.limit {Text("Борг перевищує ліміт").foregroundStyle(.orange).font(.caption)}
-      }
-    }.padding(.vertical,4)
+        FinamiMetric(title: "Кредитний ліміт", value: s.visibleMoney(a.limit,a.code), tint: .primary)
+        FinamiMetric(title: "Використано", value: s.visibleMoney(s.debt(a),a.code), tint: .orange)
+        FinamiMetric(title: "Доступний кредит", value: s.visibleMoney(max(0,a.limit-s.debt(a)),a.code), tint: .green)
+      } else if s.nativeBalance(a) < 0 { FinamiMetric(title: "Чистий залишок", value: s.visibleMoney(s.nativeBalance(a),a.code), tint: .orange) }
+      if a.excludedFromTotals == true { Text("Не враховується в загальних сумах").font(.caption).foregroundStyle(.secondary) }
+    }.padding(18).frame(maxWidth:.infinity,alignment:.leading).modifier(FinamiCardStyle(tint:.teal))
   }
 }
 struct AccountEditor: View {
@@ -787,8 +783,8 @@ struct AccountEditor: View {
   }
   var existingAccount: Bool {s.db.accounts.contains(where:{$0.id==a.id})}
   @ViewBuilder var componentFields: some View {
-    TextField("Власні кошти, \(a.code)",text:$ownText).keyboardType(.decimalPad)
-    TextField("Використано кредиту, \(a.code)",text:$usedText).keyboardType(.decimalPad)
+    FinamiField("Власні кошти, \(a.code)", text: $ownText, keyboard: .decimalPad)
+    FinamiField("Використано кредиту, \(a.code)", text: $usedText, keyboard: .decimalPad)
     Text("Для одного чистого балансу введи власні кошти або використаний кредит; друге поле залиш нульовим. Для окремих кредитних договорів потрібен окремий рахунок.").font(.caption)
   }
   init(a: Account) {
@@ -805,17 +801,23 @@ struct AccountEditor: View {
         }
         TextField("Банк (необов’язково)",text:Binding(get:{a.bankName ?? ""},set:{a.bankName=$0}))
         TextField("Останні 4 цифри (необов’язково)",text:Binding(get:{a.lastFour ?? ""},set:{a.lastFour=String($0.filter{$0.isASCII && $0.isNumber}.prefix(4))})).keyboardType(.numberPad)
-        if a.isCredit {TextField("Кредитний ліміт, \(a.code)",text:$limitText).keyboardType(.decimalPad)}
+        if a.isCredit {FinamiField("Кредитний ліміт, \(a.code)", text: $limitText, keyboard: .decimalPad)}
         Picker("Валюта рахунку",selection:Binding(get:{a.code},set:{a.currency=$0})){Text("UAH").tag("UAH");Text("USD").tag("USD")}.disabled(s.db.operations.contains{$0.account==a.id || $0.destination==a.id})
+        Section("Видимість") {
+          Toggle("Приховати в рахунках", isOn: Binding(get:{a.hiddenInAccounts ?? false},set:{a.hiddenInAccounts=$0}))
+          Toggle("Приховати на огляді", isOn: Binding(get:{a.hiddenInOverview ?? false},set:{a.hiddenInOverview=$0}))
+          Toggle("Не враховувати в загальних сумах", isOn: Binding(get:{a.excludedFromTotals ?? false},set:{a.excludedFromTotals=$0}))
+          Text("Видимість не видаляє операції та не змінює історію.").font(.caption)
+        }
         Toggle("Звірити з поточним балансом банку",isOn:$correctBalance)
         if correctBalance {
           if a.isCredit {Picker("Яку суму показує банк",selection:$actualMode){Text("Чистий баланс (+ власні / − борг)").tag("net");Text("Доступно разом з кредитом").tag("available");Text("Власні кошти та використаний кредит").tag("components")}}
-          if a.isCredit && actualMode == "components" {componentFields} else {TextField("Поточна сума, \(a.code)",text:$actualText).keyboardType(.numbersAndPunctuation)}
+          if a.isCredit && actualMode == "components" {componentFields} else {FinamiField("Поточна сума, \(a.code)", text: $actualText, keyboard: .numbersAndPunctuation)}
           Text("Початковий залишок буде скориговано з урахуванням усієї записаної історії. Це не створює дохід. Не застосовуй до неповної історії без звірки.").font(.caption)
         } else if a.isCredit && !existingAccount {
           componentFields
         } else {
-          TextField("Початковий чистий баланс, \(a.code)", text: $opening).keyboardType(.numbersAndPunctuation)
+          FinamiField("Початковий чистий баланс, \(a.code)", text: $opening, keyboard: .numbersAndPunctuation)
         }
         if a.code == "USD" && s.currentRate == nil {Text("Спочатку вкажи поточний курс у Ще → Валюти.").foregroundStyle(.orange)}
         Text("Якщо вже винен банку, введи від’ємний чистий баланс. Невикористаний ліміт не є початковим балансом.").font(.caption)
@@ -987,9 +989,10 @@ struct More: View {
         NavigationLink { BankCenter() } label: { IzanamiLabel(title: "Банки та імпорт", icon: "building.columns.fill", color: .cyan) }
         NavigationLink { AutomationCenter() } label: { IzanamiLabel(title: "Автоматизація · Apple Pay / SMS (\(s.capturePending.count))", icon: "bolt.fill", color: .orange) }
       }
-      Section("Керування") {
+      Section("Персоналізація") {
+        NavigationLink { FinamiHelp() } label: { IzanamiLabel(title: "Допомога та інструкції", icon: "book.fill", color: .blue) }
         NavigationLink { DashboardSettings() } label: { IzanamiLabel(title: "Блоки огляду", icon: "square.grid.2x2.fill", color: .orange) }
-        NavigationLink { AppearanceView() } label: { IzanamiLabel(title: "Оформлення", icon: "paintpalette.fill", color: .pink) }
+        NavigationLink { AppearanceView() } label: { IzanamiLabel(title: "Студія дизайну", icon: "paintpalette.fill", color: .pink) }
         NavigationLink {
           Categories()
         } label: {
@@ -1002,7 +1005,7 @@ struct More: View {
         }
       }
       Section {
-        Text("Izanami · 4.0.5 Preview\nБез реклами, серверів та платних API.").font(.footnote)
+        Text("Finami · 5.0 Preview 1\nБез реклами, серверів та платних API.").font(.footnote)
           .foregroundStyle(.secondary)
       }
     }.navigationTitle("Ще")
@@ -1024,7 +1027,7 @@ struct Budgets: View {
           HStack {
             Text("Місячний ліміт")
             Spacer()
-            Text(money(s.db.budget))
+            Text(s.visibleMoney(s.db.budget))
           }
         }
         BudgetRow(
@@ -1058,6 +1061,7 @@ struct Budgets: View {
   }
 }
 struct BudgetRow: View {
+  @EnvironmentObject var s: Store
   var name: String
   var used: Int64
   var limit: Int64
@@ -1066,11 +1070,11 @@ struct BudgetRow: View {
       HStack {
         Text(name)
         Spacer()
-        Text(money(used)).font(.subheadline.bold())
+        Text(s.visibleMoney(used)).font(.subheadline.bold())
       }
       if limit > 0 {
-        ProgressView(value: max(0,min(1, Double(used) / Double(limit)))).tint(used > limit ? .red : finoraAccent)
-        Text("Ліміт: \(money(limit))").font(.caption).foregroundStyle(.secondary)
+        if !s.privateAmounts { ProgressView(value: max(0,min(1, Double(used) / Double(limit)))).tint(used > limit ? .red : finoraAccent) }
+        Text("Ліміт: \(s.visibleMoney(limit))").font(.caption).foregroundStyle(.secondary)
       } else {
         Text("Без ліміту").font(.caption).foregroundStyle(.secondary)
       }
@@ -1084,7 +1088,7 @@ struct Obligations: View {
   var body: some View {
     List {
       Section("Загальний залишок") {
-        Text(money(s.db.obligations.filter { $0.kind == kind }.reduce(0) { $0 + $1.remaining }))
+        Text(s.visibleMoney(s.db.obligations.filter { $0.kind == kind }.reduce(0) { $0 + $1.remaining }))
           .font(.title.bold())
       }
       ForEach(s.db.obligations.filter { $0.kind == kind }) { o in
@@ -1095,11 +1099,11 @@ struct Obligations: View {
             HStack {
               Text(o.name).bold()
               Spacer()
-              Text(money(o.remaining))
+              Text(s.visibleMoney(o.remaining))
             }
-            ProgressView(value: o.target > 0 ? min(1, Double(o.paid) / Double(o.target)) : 0)
+            if !s.privateAmounts { ProgressView(value: o.target > 0 ? min(1, Double(o.paid) / Double(o.target)) : 0) }
             Text(
-              "\(money(o.paid)) із \(money(o.target)) · \(o.due.formatted(date:.abbreviated,time:.omitted))"
+              "\(s.visibleMoney(o.paid)) із \(s.visibleMoney(o.target)) · \(o.due.formatted(date:.abbreviated,time:.omitted))"
             ).font(.caption).foregroundStyle(.secondary)
           }
         }.buttonStyle(.plain)
@@ -1120,6 +1124,7 @@ struct ObligationEditor: View {
   @State var target: String
   @State var paid: String
   @State var monthly: String
+  @State var remainingText: String
   @State var payment = ""
   @State var log = false
   @State var account = cash
@@ -1129,30 +1134,39 @@ struct ObligationEditor: View {
     _target = State(initialValue: amountText(original.target))
     _paid = State(initialValue: amountText(original.paid))
     _monthly = State(initialValue: amountText(original.monthly))
+    _remainingText = State(initialValue: amountText(original.remaining))
   }
+  var baseTarget: Int64? { o.kind == .installment ? cents(remainingText).map { max(o.target, o.paid + $0) } : cents(target) }
+  var basePaid: Int64? { o.kind == .installment ? cents(remainingText).flatMap { r in baseTarget.map { $0 - r } } : cents(paid) }
   var valid: Bool {
-    !o.name.trimmingCharacters(in: .whitespaces).isEmpty && (cents(target) ?? 0) > 0
-      && (cents(paid) ?? -1) >= 0 && (cents(paid) ?? 0) <= (cents(target) ?? 0)
+    !o.name.trimmingCharacters(in: .whitespaces).isEmpty && (baseTarget ?? 0) > 0
+      && (o.kind != .installment || (cents(remainingText) ?? -1) >= 0)
+      && (basePaid ?? -1) >= 0 && (basePaid ?? 0) <= (baseTarget ?? 0)
       && (cents(monthly) ?? -1) >= 0
       && (payment.isEmpty
         || ((cents(payment) ?? 0) > 0
-          && (cents(payment) ?? 0) <= (cents(target) ?? 0) - (cents(paid) ?? 0)))
+          && (cents(payment) ?? 0) <= (baseTarget ?? 0) - (basePaid ?? 0)))
   }
   var body: some View {
     NavigationStack {
       Form {
         Section("Параметри") {
           TextField("Назва / особа", text: $o.name)
-          TextField("Загальна сума, ₴", text: $target).keyboardType(.decimalPad)
-          TextField("Вже сплачено / накопичено", text: $paid).keyboardType(.decimalPad)
-          TextField("Регулярний платіж, ₴", text: $monthly).keyboardType(.decimalPad)
+          if o.kind == .installment {
+            FinamiField("Поточний залишок розстрочки, ₴", text: $remainingText, keyboard: .decimalPad)
+            Text("Введи залишок боргу, не суму вже сплачених платежів.").font(.caption)
+          } else {
+            FinamiField("Загальна сума, ₴", text: $target, keyboard: .decimalPad)
+            FinamiField("Вже сплачено / накопичено", text: $paid, keyboard: .decimalPad)
+          }
+          FinamiField("Регулярний платіж, ₴", text: $monthly, keyboard: .decimalPad)
           DatePicker("Наступна дата / термін", selection: $o.due, displayedComponents: [.date, .hourAndMinute])
           if s.db.obligations.contains(where: { $0.id == o.id }) {
             NavigationLink("Нагадування") { ReminderEditor(original: PersonalReminder(title: o.name, date: o.due, linkedID: o.id)) }
           }
         }
         Section("Додати платіж або накопичення") {
-          TextField("Сума", text: $payment).keyboardType(.decimalPad)
+          FinamiField("Сума", text: $payment, keyboard: .decimalPad)
           if o.kind != .goal {
             Toggle("Також записати операцію", isOn: $log)
             if log {
@@ -1172,7 +1186,7 @@ struct ObligationEditor: View {
         ToolbarItem(placement: .cancellationAction) { Button("Скасувати") { dismiss() } }
         ToolbarItem(placement: .confirmationAction) {
           Button("Зберегти") {
-            guard valid, let t = cents(target), let p = cents(paid), let m = cents(monthly) else {
+            guard valid, let t = baseTarget, let p = basePaid, let m = cents(monthly) else {
               return
             }
             let extra = cents(payment) ?? 0
@@ -1210,100 +1224,58 @@ struct ObligationEditor: View {
 }
 struct CalendarView: View {
   @EnvironmentObject var s: Store
+  @State private var selected: FinamiPayment?
   var body: some View {
-    List {
-      ForEach(
-        s.db.obligations.filter { $0.remaining > 0 && $0.kind != .goal }.sorted { $0.due < $1.due }
-      ) { o in
-        VStack(alignment: .leading, spacing: 8) {
-          HStack {
-            Text(o.name).bold()
-            Spacer()
-            Text(o.due.formatted(date: .abbreviated, time: .omitted)).foregroundStyle(
-              o.due < Date() ? Color.red : Color.secondary)
-          }
-          Text("\(o.kind.title) · \(money(o.monthly>0 ? min(o.monthly,o.remaining):o.remaining))")
-            .font(.caption)
-          NavigationLink { ReminderEditor(original: PersonalReminder(title: o.name, date: o.due, linkedID: o.id)) } label: { Label("Налаштувати нагадування", systemImage: "bell") }
+    ScrollView {
+      VStack(spacing: 14) {
+        FinamiMonthPayments()
+        if s.upcomingPayments.isEmpty { Text("Немає запланованих платежів").foregroundStyle(.secondary).padding() }
+        ForEach(s.upcomingPayments) { p in
+          Button { selected = p } label: { FinamiPaymentCard(payment:p) }.buttonStyle(.plain)
         }
-      }
-    }.navigationTitle("Календар")
-  }
-  func notify(_ o: Obligation) {
-    let center = UNUserNotificationCenter.current()
-    center.requestAuthorization(options: [.alert, .sound, .badge]) { ok, _ in
-      guard ok else {
-        DispatchQueue.main.async { s.error = "Дозволь сповіщення в налаштуваннях iPhone." }
-        return
-      }
-      let c = UNMutableNotificationContent()
-      c.title = "Izanami: платіж"
-      c.body = o.name
-      c.sound = .default
-      let due = max(60, o.due.timeIntervalSinceNow - 86400)
-      center.add(
-        UNNotificationRequest(
-          identifier: o.id, content: c,
-          trigger: UNTimeIntervalNotificationTrigger(timeInterval: due, repeats: false))
-      ) { e in
-        DispatchQueue.main.async { s.error = e?.localizedDescription ?? "Нагадування встановлено." }
-      }
-    }
+      }.padding()
+    }.background(Color(uiColor:.systemGroupedBackground)).navigationTitle("Календар платежів")
+      .sheet(item:$selected) { FinamiPaymentDetails(payment:$0) }
   }
 }
 struct Categories: View {
   @EnvironmentObject var s: Store
   @State private var income = false
   @State private var adding = false
+  @State private var editing: String? = nil
   @State private var name = ""
+  @State private var parent = ""
+  @State private var deleting: String? = nil
+  @State private var replacement = "Інше"
   var cats: [String] { income ? s.db.incomeCategories : s.db.expenseCategories }
+  var hidden: [String] { income ? s.db.hiddenIncomeCategories ?? [] : s.db.hiddenExpenseCategories ?? [] }
   var body: some View {
     List {
-      Picker("Тип", selection: $income) {
-        Text("Витрати").tag(false)
-        Text("Доходи").tag(true)
-      }.pickerStyle(.segmented)
+      Picker("Тип", selection: $income) { Text("Витрати").tag(false); Text("Доходи").tag(true) }.pickerStyle(.segmented)
+      if !income { Button("Додати стандартні категорії") { s.change { d in for c in expenseDefaults where !d.expenseCategories.contains(c) { d.expenseCategories.append(c) } } } }
       ForEach(cats, id: \.self) { c in
-        Text(c).swipeActions {
+        HStack {
+          VStack(alignment:.leading) { Text(c).font(.body.weight(.medium)); if !income, let p=s.db.categoryParents?[c] { Text("Група: " + p).font(.caption).foregroundStyle(.secondary) } }
+          Spacer()
           if c != "Інше" && c != "Без категорії" {
-            Button(role: .destructive) {
-              s.change { d in
-                if income {
-                  d.incomeCategories.removeAll { $0 == c }
-                } else {
-                  d.expenseCategories.removeAll { $0 == c }
-                  d.limits.removeValue(forKey: c)
-                }
-                for i in d.operations.indices
-                where d.operations[i].category == c
-                  && d.operations[i].kind == (income ? .income : .expense)
-                { d.operations[i].category = "Інше" }
-              }
-            } label: {
-              Label("Видалити", systemImage: "trash")
-            }
+            Button { toggle(c) } label: { Image(systemName:hidden.contains(c) ? "eye.slash" : "eye") }.buttonStyle(.borderless).accessibilityLabel(hidden.contains(c) ? "Показати" : "Приховати")
+            Menu { Button("Редагувати") { editing=c;name=c;parent=s.db.categoryParents?[c] ?? "";adding=true }; Button("Видалити",role:.destructive) { replacement="Інше";deleting=c } } label: { Image(systemName:"ellipsis.circle") }
           }
         }
-      }
-    }.navigationTitle("Категорії").toolbar {
-      Button {
-        adding = true
-        name = ""
-      } label: {
-        Image(systemName: "plus")
-      }
-    }.alert("Нова категорія", isPresented: $adding) {
-      TextField("Іконка та назва", text: $name)
-      Button("Скасувати", role: .cancel) {}
-      Button("Додати") {
-        let c = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !c.isEmpty, !cats.contains(c) else { return }
-        s.change { d in
-          if income { d.incomeCategories.append(c) } else { d.expenseCategories.append(c) }
-        }
-      }
-    }
+      }.onMove { from,to in s.change { d in if income { d.incomeCategories.move(fromOffsets:from,toOffset:to) } else { d.expenseCategories.move(fromOffsets:from,toOffset:to) } } }
+    }.navigationTitle("Категорії").toolbar { EditButton(); Button { editing=nil;name="";parent="";adding=true } label:{Image(systemName:"plus.circle.fill")} }
+      .sheet(isPresented:$adding) { NavigationStack { Form { TextField("Іконка та назва",text:$name); if !income { TextField("Група (необов’язково)",text:$parent) }; Button("Зберегти") { save() }.disabled(name.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty || (cats.contains(name.trimmingCharacters(in:.whitespacesAndNewlines)) && editing != name.trimmingCharacters(in:.whitespacesAndNewlines))) }.navigationTitle(editing == nil ? "Нова категорія" : "Редагування").toolbar { Button("Скасувати") { adding=false } } } }
+      .confirmationDialog("Перенести операції перед видаленням",isPresented:Binding(get:{deleting != nil},set:{if !$0 {deleting=nil}}),titleVisibility:.visible) { ForEach(cats.filter{$0 != deleting},id:\.self) { c in Button("Перенести в «"+c+"»") { if let old=deleting { replace(old,with:c,remove:true) };deleting=nil } }; Button("Скасувати",role:.cancel){deleting=nil} } message:{Text("Операції не видаляються. Бюджет і правила категорії буде перенесено.")}
   }
+  func toggle(_ c:String) { s.change { d in var list=income ? d.hiddenIncomeCategories ?? [] : d.hiddenExpenseCategories ?? []; if list.contains(c) { list.removeAll{$0==c} } else { list.append(c) }; if income {d.hiddenIncomeCategories=list} else {d.hiddenExpenseCategories=list} } }
+  func save() { let c=name.trimmingCharacters(in:.whitespacesAndNewlines); guard !c.isEmpty, !cats.contains(c) || editing==c else{return}; if let old=editing,old != c { replace(old,with:c,remove:false) } else if editing==nil {s.change{d in if income{d.incomeCategories.append(c)}else{d.expenseCategories.append(c)}}}; if !income {s.change{d in var groups=d.categoryParents ?? [:];groups[c]=parent.isEmpty ? nil : parent;d.categoryParents=groups}};adding=false }
+  func replace(_ old:String,with new:String,remove:Bool) { s.change { d in
+    if income { d.incomeCategories.removeAll{$0==old};if !remove{d.incomeCategories.append(new)};d.hiddenIncomeCategories?.removeAll{$0==old} }
+    else {d.expenseCategories.removeAll{$0==old};if !remove{d.expenseCategories.append(new)};d.hiddenExpenseCategories?.removeAll{$0==old};d.categoryParents?.removeValue(forKey:old);if let limit=d.limits.removeValue(forKey:old){d.limits[new,default:0]+=limit} }
+    for i in d.operations.indices where d.operations[i].category==old && (income ? d.operations[i].kind == .income : [.expense,.refund].contains(d.operations[i].kind)) {d.operations[i].category=new}
+    if var rules=d.merchantRules {for key in Array(rules.keys) where rules[key]==old && (income ? key.hasPrefix("income:") : key.hasPrefix("expense:")){rules[key]=new};d.merchantRules=rules}
+    if !income, var items=d.dashboard {for i in items.indices {items[i].categorySelection=items[i].categorySelection?.map{$0==old ? new : $0}};d.dashboard=items}
+  } }
 }
 struct Insights: View {
   @EnvironmentObject var s: Store
@@ -1323,18 +1295,18 @@ struct Insights: View {
         }
         Panel {
           Text("Прогноз витрат місяця").font(.headline)
-          Text(money(forecast)).font(.title.bold())
+          Text(s.visibleMoney(forecast)).font(.title.bold())
           Text("Оцінка за поточним середнім темпом, не гарантія.").font(.caption)
         }
         Panel {
           Text("Грошовий потік").font(.headline)
-          Text(money(inc - exp)).font(.title.bold())
-          if inc > 0 {
+          Text(s.visibleMoney(inc - exp)).font(.title.bold())
+          if inc > 0 && !s.privateAmounts {
             Text(
               "Частка невитраченого доходу: \((Double(inc-exp)/Double(inc)*100).formatted(.number.precision(.fractionLength(1))))%"
             )
           }
-          Text("Витрати минулого місяця: \(money(previous))")
+          Text("Витрати минулого місяця: \(s.visibleMoney(previous))")
           if s.db.budget > 0 {
             Text(
               forecast > s.db.budget
@@ -1357,7 +1329,7 @@ struct Settings: View {
   @State private var legacy = false
   @State private var doc: DataFile?
   @State private var format: UTType = .json
-  @State private var fileName = "Izanami-backup"
+  @State private var fileName = "Finami-backup"
   @State private var confirm = false
   @State private var pending: Data?
   var body: some View {
@@ -1373,13 +1345,13 @@ struct Settings: View {
         Text("Зберігай експорт JSON у «Файли» / iCloud Drive. Автоматична хмарна синхронізація ще не підключена.").font(.caption)
         Button("Експорт JSON") {
           format = .json
-          fileName = "Izanami-backup"
+          fileName = "Finami-backup"
           doc = s.backup()
           exporting = true
         }
         Button("Експорт CSV для Excel") {
           format = .commaSeparatedText
-          fileName = "Izanami-operations"
+          fileName = "Finami-operations"
           doc = s.csv()
           exporting = true
         }
