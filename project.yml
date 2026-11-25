@@ -5,8 +5,8 @@ options:
 settings:
   base:
     SWIFT_VERSION: '5.0'
-    MARKETING_VERSION: '4.0.5'
-    CURRENT_PROJECT_VERSION: '8'
+    MARKETING_VERSION: '5.0.0'
+    CURRENT_PROJECT_VERSION: '9'
     TARGETED_DEVICE_FAMILY: '1'
 packages:
   ZIPFoundation:
@@ -23,7 +23,9 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: ua.finora.personal
         GENERATE_INFOPLIST_FILE: YES
-        INFOPLIST_KEY_CFBundleDisplayName: Izanami
+        INFOPLIST_KEY_CFBundleDisplayName: Finami
         INFOPLIST_KEY_NSFaceIDUsageDescription: 'Захист особистих фінансів'
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: "Запис голосової чернетки витрати"
+        INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: "Розпізнавання голосової чернетки операції"
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
