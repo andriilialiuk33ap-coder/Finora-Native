@@ -32,6 +32,15 @@ struct AppearancePreferences: Codable {
     var reportsShowCategories: Bool? = nil
     var reportsHiddenSections: [String]? = nil
     var menuCompact: Bool? = nil
+    var accountsHideOwn: Bool? = nil
+    var accountsHideCredit: Bool? = nil
+    var reportsPeriod: String? = nil
+    var reportsAccount: String? = nil
+    var reportsShowIncome: Bool? = nil
+    var reportsShowComparison: Bool? = nil
+    var reportsShowAccounts: Bool? = nil
+    var reportsShowReview: Bool? = nil
+    var reportsCategoryLimit: Int? = nil
 }
 struct IzanamiTheme: Identifiable {
     var id: String { name }
@@ -247,6 +256,7 @@ struct DashboardSettings: View {
     func modify(_ id: String, _ action: (inout DashboardItem)->Void) { s.change { d in var all = DashboardItem.merged(d.dashboard); if let i = all.firstIndex(where: { $0.id == id }) { action(&all[i]) }; d.dashboard = all } }
     var body: some View {
         List {
+            NavigationLink("Змінити порядок видимих блоків") { FinamiOrderEditor(target: .dashboard, closeButton: false) }
             Section("Увімкни потрібні блоки. Через «Редагувати» перетягни їх у новий порядок. Великі фінансові блоки завжди на всю ширину.") {
                 ForEach(items) { item in
                     VStack(alignment: .leading, spacing: 8) {
@@ -268,6 +278,7 @@ struct CustomDashboard: View {
     @State private var date = Date()
     @State private var add = false
     @State private var configure = false
+    @State private var reorder = false
     @State private var voice = false
     @State private var scan = false
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -292,12 +303,13 @@ struct CustomDashboard: View {
                 }
             }.padding()
         }.background(Color(uiColor: .systemGroupedBackground)).navigationTitle(s.db.preferences?.homeTitle ?? "Головна")
-            .toolbar { Button { s.change { d in var p=d.preferences ?? .init();p.hideAmounts = !(p.hideAmounts ?? false);d.preferences=p } } label: { Image(systemName:s.privateAmounts ? "eye.slash" : "eye") }.accessibilityLabel("Приховати або показати суми"); Button { configure = true } label: { Image(systemName: "slider.horizontal.3").font(.title2) }.accessibilityLabel("Налаштувати блоки") }
+            .toolbar { Button { s.change { d in var p=d.preferences ?? .init();p.hideAmounts = !(p.hideAmounts ?? false);d.preferences=p } } label: { Image(systemName:s.privateAmounts ? "eye.slash" : "eye") }.accessibilityLabel("Приховати або показати суми"); Button { reorder = true } label: { Image(systemName: "arrow.up.arrow.down") }.accessibilityLabel("Змінити порядок блоків"); Button { configure = true } label: { Image(systemName: "slider.horizontal.3").font(.title2) }.accessibilityLabel("Налаштувати блоки") }
             .safeAreaInset(edge: .bottom) {
                 HStack { Button { add = true } label: { Label("Додати операцію", systemImage: "plus.circle.fill").font(.headline).frame(maxWidth: .infinity).padding(.vertical, 5) }.buttonStyle(.borderedProminent); Button { voice=true } label:{Image(systemName:"mic.fill").frame(minWidth:44,minHeight:34)}.buttonStyle(.bordered).accessibilityLabel("Голосовий запис"); Button { scan = true } label: { Image(systemName: "doc.viewfinder").frame(minWidth:44,minHeight:34) }.buttonStyle(.bordered).accessibilityLabel("Імпорт зі скриншота") }.padding(.horizontal).padding(.vertical,7).background(Color(uiColor:.systemGroupedBackground))
             }.sheet(isPresented: $add) { OpEditor(original: Operation(category: "Без категорії", account: s.db.accounts.first?.id ?? cash)) }
             .sheet(isPresented:$voice) { FinamiVoice() }
             .sheet(isPresented:$scan) { NavigationStack { FinamiScanView().toolbar { ToolbarItem(placement: .cancellationAction) { Button("Закрити") { scan = false } } } } }
+            .sheet(isPresented: $reorder) { NavigationStack { FinamiOrderEditor(target: .dashboard) } }
             .sheet(isPresented: $configure) { NavigationStack { DashboardSettings().toolbar { ToolbarItem(placement: .cancellationAction) { Button("Готово") { configure = false } } } } }
     }
 }

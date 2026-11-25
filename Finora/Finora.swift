@@ -814,6 +814,7 @@ struct Accounts: View {
   @EnvironmentObject var s: Store
   @State private var edit: Account?
   @State private var configure = false
+  @State private var reorder = false
   @Environment(\.dynamicTypeSize) private var dynamicTypeSize
   var prefs: AppearancePreferences { s.db.preferences ?? .init() }
   var mode: String { prefs.accountsMode ?? "own" }
@@ -821,10 +822,10 @@ struct Accounts: View {
   var shown:[Account] { s.db.accounts.filter { (prefs.accountsShowHidden == true || $0.hiddenInAccounts != true) && (mode == "all" || (mode == "credit" ? $0.isCredit : (!$0.isCredit || s.ownFunds($0)>0))) } }
   var body: some View {
     ScrollView { VStack(spacing: 14) {
-      if prefs.accountsLayout == "full" || dynamicTypeSize.isAccessibilitySize { VStack(spacing:10){summary("own");summary("credit")} }
-      else { HStack(alignment:.top,spacing:10){summary("own");summary("credit")} }
+      FinamiAccountsBalance()
+      Button { reorder = true } label: { Label("Змінити порядок рахунків", systemImage: "arrow.up.arrow.down").font(.subheadline.weight(.medium)).frame(maxWidth: .infinity, alignment: .leading).padding(12) }.buttonStyle(.plain).background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14))
       Picker("Розділ",selection:Binding(get:{mode},set:{v in update{$0.accountsMode=v}})){Text("Власні").tag("own");Text("Кредитні").tag("credit");Text("Усі").tag("all")}.pickerStyle(.segmented)
-      if mode != "own" { FinamiCreditSummary(showLimit:prefs.accountsShowLimit ?? true,showUsed:prefs.accountsShowUsed ?? true,showAvailable:prefs.accountsShowAvailable ?? true) }
+      if mode != "own" { FinamiCreditSummary(showLimit:prefs.accountsShowLimit ?? true,showUsed:prefs.accountsShowUsed ?? true,showAvailable:prefs.accountsShowAvailable ?? true).environment(\.finamiMask, prefs.accountsHideCredit == true) }
       if shown.isEmpty { FinamiEmptyCard(title: "Немає рахунків", detail: "Додай рахунок або зміни режим відображення.", icon: "wallet.pass") }
       ForEach(finamiOrderedAccounts(shown)) { a in
         VStack(alignment: .leading, spacing: 5) {
@@ -842,12 +843,7 @@ struct Accounts: View {
         Button {configure=true} label:{Image(systemName:"slider.horizontal.3")}.accessibilityLabel("Налаштування рахунків")
         Button {edit=Account(name:"",accountType:"debit")} label:{Image(systemName:"plus.circle.fill")}.accessibilityLabel("Додати рахунок")
       }
-    }.sheet(item:$edit){AccountEditor(a:$0)}.sheet(isPresented:$configure){NavigationStack{FinamiAccountSettings()}}
-  }
-  func summary(_ kind:String)->some View {
-    let own=kind == "own"
-    let tint:Color=own ? .green : .blue
-    return Button {update{$0.accountsMode=kind}} label:{VStack(alignment:.leading,spacing:8){FinamiIconTile(icon:own ? "wallet.pass.fill" : "creditcard.fill",tint:tint,side:38);Text(own ? "Власні кошти" : "Кредитні кошти").font(.caption.weight(.semibold));Text(s.displayed(own ? s.totalOwnFunds : s.totalAvailableCredit)).font(.title3.bold()).monospacedDigit().minimumScaleFactor(0.65);Text(own ? "Без кредиту" : "Доступний кредит").font(.caption2).foregroundStyle(.secondary)}.frame(maxWidth:.infinity,alignment:.leading).padding(12).modifier(FinamiCardStyle(tint:tint)).overlay{if mode==kind{RoundedRectangle(cornerRadius:18).strokeBorder(tint.opacity(0.6),lineWidth:1)}}}.buttonStyle(.plain)
+    }.sheet(item:$edit){AccountEditor(a:$0)}.sheet(isPresented:$configure){NavigationStack{FinamiAccountSettings()}}.sheet(isPresented:$reorder){NavigationStack{FinamiOrderEditor(target: .accounts)}}
   }
 }
 struct FinamiAccountSettings:View {
@@ -855,9 +851,9 @@ struct FinamiAccountSettings:View {
   @Environment(\.dismiss) var dismiss
   func binding<T>(_ key:WritableKeyPath<AppearancePreferences,T?>,_ fallback:T)->Binding<T>{Binding(get:{(s.db.preferences ?? .init())[keyPath:key] ?? fallback},set:{v in s.change{d in var p=d.preferences ?? .init();p[keyPath:key]=v;d.preferences=p}})}
   var body:some View {Form {
-    Section("Відображення") {Picker("Картки",selection:binding(\.accountsLayout,"split")){Text("Дві половини").tag("split");Text("На всю ширину").tag("full")};Toggle("Показати приховані рахунки",isOn:binding(\.accountsShowHidden,false));Toggle("Приховати всі суми",isOn:binding(\.hideAmounts,false))}
+    Section("Відображення") {Picker("Картки",selection:binding(\.accountsLayout,"split")){Text("Дві половини").tag("split");Text("Один спільний блок").tag("full")};Toggle("Показати приховані рахунки",isOn:binding(\.accountsShowHidden,false));Toggle("Приховати власний баланс",isOn:binding(\.accountsHideOwn,false));Toggle("Приховати кредитний баланс",isOn:binding(\.accountsHideCredit,false));Toggle("Приховати всі суми",isOn:binding(\.hideAmounts,false))}
     Section("Кредитні показники") {Toggle("Загальний ліміт",isOn:binding(\.accountsShowLimit,true));Toggle("Використано",isOn:binding(\.accountsShowUsed,true));Toggle("Доступно",isOn:binding(\.accountsShowAvailable,true))}
-    Section("Спільне оформлення рахунків") { NavigationLink("Вигляд, показники та порядок") { FinamiHomeAccountsSettings() } }
+    Section("Спільне оформлення рахунків") { NavigationLink("Змінити порядок рахунків") { FinamiOrderEditor(target: .accounts, closeButton: false) }; NavigationLink("Вигляд, показники та порядок") { FinamiHomeAccountsSettings() } }
     Section("Рахунки") {ForEach(s.db.accounts){a in Toggle(a.name,isOn:Binding(get:{s.db.accounts.first(where:{$0.id==a.id})?.hiddenInAccounts != true},set:{v in s.change{d in if let i=d.accounts.firstIndex(where:{$0.id==a.id}){d.accounts[i].hiddenInAccounts = !v}}}))}}
   }.navigationTitle("Налаштування рахунків").toolbar{ToolbarItem(placement:.confirmationAction){Button("Готово"){dismiss()}}} }
 }
@@ -1002,76 +998,6 @@ struct AnnualCashFlowChart: View {
     .frame(height: 220)
   }
 }
-struct Reports: View {
-  @EnvironmentObject var s: Store
-  @State private var reportSettings=false
-  func flag(_ key:WritableKeyPath<AppearancePreferences,Bool?>)->Binding<Bool>{Binding(get:{(s.db.preferences ?? .init())[keyPath:key] ?? true},set:{v in s.change{d in var p=d.preferences ?? .init();p[keyPath:key]=v;d.preferences=p}})}
-  @State private var year = Calendar.current.component(.year, from: Date())
-  var months: [Date] {
-    (1...12).compactMap {
-      Calendar.current.date(from: DateComponents(year: year, month: $0, day: 1))
-    }
-  }
-  private var chartPoints: [CashFlowPoint] {
-    var points: [CashFlowPoint] = []
-    for month in months {
-      let operations = s.month(month)
-      let income = Double(s.totals(operations, .income)) / 100.0
-      let expense = Double(s.totals(operations, .expense)) / 100.0
-      points.append(CashFlowPoint(month: month, series: "Доходи", amount: income))
-      points.append(CashFlowPoint(month: month, series: "Витрати", amount: expense))
-    }
-    return points
-  }
-  func hidden(_ id: String) -> Binding<Bool> {
-    Binding(get: { s.db.preferences?.reportsHiddenSections?.contains(id) == true }, set: { hide in
-      s.change { d in var p = d.preferences ?? .init(); var values = Set(p.reportsHiddenSections ?? []); if hide { values.insert(id) } else { values.remove(id) }; p.reportsHiddenSections = values.sorted(); d.preferences = p }
-    })
-  }
-  var body: some View {
-    let ops = s.db.operations.filter { Calendar.current.component(.year, from: $0.date) == year }
-    let inc = s.totals(ops, .income), exp = s.totals(ops, .expense)
-    ScrollView {
-      VStack(spacing: 16) {
-        HStack {
-          Button { year -= 1 } label: { Image(systemName: "chevron.left").frame(width: 44, height: 44) }
-          Spacer(); VStack(spacing: 3) { Text("Річний огляд").font(.caption).foregroundStyle(.secondary); Text(String(year)).font(.title2.bold()) }; Spacer()
-          Button { year += 1 } label: { Image(systemName: "chevron.right").frame(width: 44, height: 44) }
-        }.buttonStyle(.plain)
-        FinamiReportPanel(title: "Грошовий потік", icon: "arrow.left.arrow.right", tint: .teal, hidden: hidden("flow")) {
-          FinamiMetric(title: "Чистий потік за рік", value: s.visibleMoney(inc-exp))
-          FinamiMetric(title: "Доходи", value: s.visibleMoney(inc), tint: .green)
-          FinamiMetric(title: "Витрати", value: s.visibleMoney(exp), tint: .orange)
-          Text("Повернення покупок: " + s.visibleMoney(s.totals(ops,.refund))).font(.caption).foregroundStyle(.secondary)
-          Text("Неуточнені рухи: \(ops.filter{$0.kind.needsReview}.count)").font(.caption).foregroundStyle(.secondary)
-        }
-        if s.db.preferences?.reportsShowChart != false && s.db.preferences?.noCharts == false {
-          FinamiReportPanel(title: "Динаміка року", icon: "chart.bar.xaxis", tint: .blue, hidden: hidden("chart")) { AnnualCashFlowChart(points: chartPoints) }
-        }
-        if s.db.preferences?.reportsShowMonths != false {
-          FinamiReportPanel(title: "За місяцями", icon: "calendar", tint: .indigo, hidden: hidden("months")) {
-            ForEach(months, id: \.self) { d in
-              VStack(alignment: .leading, spacing: 6) {
-                Text(d.formatted(.dateTime.month(.wide).locale(Locale(identifier: "uk_UA"))).capitalized).font(.subheadline.weight(.semibold))
-                Text("Доходи: " + s.visibleMoney(s.totals(s.month(d), .income))).font(.subheadline).foregroundStyle(.green)
-                Text("Витрати: " + s.visibleMoney(s.totals(s.month(d), .expense))).font(.subheadline).foregroundStyle(.secondary)
-              }.frame(maxWidth: .infinity, alignment: .leading).padding(10).background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
-            }
-          }
-        }
-        if s.db.preferences?.reportsShowCategories != false {
-          FinamiReportPanel(title: "Структура витрат", icon: "tag.fill", tint: .orange, hidden: hidden("categories")) { Breakdown(ops: ops) }
-        }
-      }.padding()
-    }.background(Color(uiColor: .systemGroupedBackground)).navigationTitle("Звіти").toolbar { Button { reportSettings = true } label: { Image(systemName: "slider.horizontal.3") }.accessibilityLabel("Налаштування звітів") }
-      .sheet(isPresented: $reportSettings) { NavigationStack { Form {
-        Toggle("Діаграма", isOn: flag(\.reportsShowChart))
-        Toggle("За місяцями", isOn: flag(\.reportsShowMonths))
-        Toggle("Категорії", isOn: flag(\.reportsShowCategories))
-        Text("Діаграми також залежать від загального режиму оформлення.").font(.caption)
-      }.navigationTitle("Налаштування звітів").toolbar { Button("Готово") { reportSettings = false } } } }
-  }
-}
 struct More: View {
   @EnvironmentObject var s: Store
   @State private var menuSettings=false
@@ -1084,8 +1010,8 @@ struct More: View {
   var body: some View {
     ScrollView { VStack(alignment: .leading, spacing: 20) {
       VStack(alignment: .leading, spacing: 6) {
-        Text("finami.").font(.system(.largeTitle, design: .rounded).weight(.bold))
-        Text("Твій фінансовий простір").font(.subheadline).foregroundStyle(.secondary)
+        Text("Finami").font(.system(size: 40, weight: .bold, design: .rounded))
+        Text("Особисті фінанси.").font(.subheadline).foregroundStyle(.secondary)
       }.frame(maxWidth: .infinity, alignment: .leading).padding(18).modifier(FinamiCardStyle(tint: .teal))
       FinamiMenuGroup("Планування") {
         NavigationLink { SubscriptionsView() } label: { FinamiMenuLabel(title: "Підписки", icon: "repeat", color: .purple) }
@@ -1137,7 +1063,7 @@ struct More: View {
         }
       }
       VStack(alignment: .leading) {
-        Text("Finami · 5.0 Preview 5\nБез реклами, серверів та платних API.").font(.footnote)
+        Text("Finami · 5.0 Preview 6\nБез реклами, серверів та платних API.").font(.footnote)
           .foregroundStyle(.secondary)
       }
     }.padding() }.background(Color(uiColor: .systemGroupedBackground)).navigationTitle("Ще").toolbar{Button{menuSettings=true} label:{Image(systemName:"slider.horizontal.3")}.accessibilityLabel("Налаштування меню")}.sheet(isPresented:$menuSettings){NavigationStack{Form{Toggle("Компактні ілюстрації",isOn:Binding(get:{s.db.preferences?.menuCompact ?? false},set:{v in s.change{d in var p=d.preferences ?? .init();p.menuCompact=v;d.preferences=p}}));NavigationLink("Студія дизайну"){AppearanceView()};NavigationLink("Блоки головної"){DashboardSettings()};NavigationLink("Рахунки"){FinamiAccountSettings()}}.navigationTitle("Налаштування меню").toolbar{Button("Готово"){menuSettings=false}}}}

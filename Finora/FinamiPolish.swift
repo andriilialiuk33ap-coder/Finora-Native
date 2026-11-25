@@ -56,6 +56,7 @@ struct FinamiEmptyCard: View {
     }
 }
 struct FinamiReportPanel<Content: View>: View {
+    @EnvironmentObject private var s: Store
     var title: String
     var icon: String
     var tint: Color
@@ -64,7 +65,7 @@ struct FinamiReportPanel<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack { FinamiIconTile(icon: icon, tint: tint, side: 36); Text(title).font(.headline); Spacer(minLength: 4)
-                Button { hidden.toggle() } label: { Image(systemName: hidden ? "eye.slash" : "eye").frame(minWidth: 44, minHeight: 44) }.buttonStyle(.plain).accessibilityLabel(hidden ? "Показати суми" : "Приховати суми")
+                Button { hidden.toggle() } label: { Image(systemName: hidden ? "eye.slash" : "eye").frame(minWidth: 44, minHeight: 44) }.buttonStyle(.plain).disabled(s.privateAmounts).accessibilityLabel(hidden ? "Показати суми" : "Приховати суми")
             }
             if hidden { Text("••••").font(.title.bold()).accessibilityLabel("Суми приховано") } else { content() }
         }.padding(16).frame(maxWidth: .infinity, alignment: .leading).modifier(FinamiCardStyle(tint: tint))
