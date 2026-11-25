@@ -14,6 +14,23 @@ struct AppearancePreferences: Codable {
     var showIncome: Bool? = nil
     var showExpenses: Bool? = nil
     var noCharts: Bool? = nil
+    var accountsLayout: String? = nil
+    var accountsMode: String? = nil
+    var accountsShowHidden: Bool? = nil
+    var accountsShowLimit: Bool? = nil
+    var accountsShowUsed: Bool? = nil
+    var accountsShowAvailable: Bool? = nil
+    var homeTitle: String? = nil
+    var voiceHideHint: Bool? = nil
+    var homeAccountLayout: String? = nil
+    var homeAccountRight: String? = nil
+    var homeAccountFields: [String]? = nil
+    var operationsFilter: String? = nil
+    var operationsSort: String? = nil
+    var reportsShowChart: Bool? = nil
+    var reportsShowMonths: Bool? = nil
+    var reportsShowCategories: Bool? = nil
+    var menuCompact: Bool? = nil
 }
 struct IzanamiTheme: Identifiable {
     var id: String { name }
@@ -64,7 +81,7 @@ struct IzanamiLabel: View {
         let p = s.db.preferences ?? .init()
         let tint = (p.colorfulDashboard ?? true) ? color : (IzanamiTheme.all.first(where: { $0.name == p.theme })?.color ?? finoraAccent)
         HStack(spacing: 12) {
-            FinamiArt(icon: icon, tint: tint, size: 56)
+            FinamiArt(icon: icon, tint: tint, size: p.menuCompact == true ? 36 : 56)
             Text(title).font(.body).foregroundStyle(.primary).fixedSize(horizontal: false, vertical: true)
         }.frame(minHeight: 46, alignment: .leading).padding(.vertical, 2)
     }
@@ -79,7 +96,7 @@ struct AppearanceView: View {
     @State private var preview: FinamiDesign?
     var body: some View {
         Form {
-            Section("Шість дизайнів · натисни для перегляду") {
+            Section("Десять дизайнів · натисни для перегляду") {
                 ForEach(FinamiDesign.allCases) { preset in Button { preview=preset } label: { VStack(alignment:.leading,spacing:8) { FinamiDesignPreview(design:preset); Text(preset.rawValue).font(.headline);Text(preset.description).font(.caption).foregroundStyle(.secondary) } }.buttonStyle(.plain) }
             }
             Section("Картки та приватність") {
@@ -212,6 +229,7 @@ struct DashboardItem: Codable, Identifiable {
     var showPaymentRemaining: Bool? = nil
     var showPaymentDate: Bool? = nil
     var showPaymentImage: Bool? = nil
+    var hideAmounts: Bool? = nil
     static var defaults: [Self] { DashboardKind.allCases.map { k in
         .init(kind: k, enabled: [.ownFunds,.categories,.obligations,.recent].contains(k), size: [.balance,.ownFunds,.categories,.obligations,.creditPortfolio,.recent].contains(k) ? .large : .medium)
     } }
@@ -239,8 +257,9 @@ struct DashboardSettings: View {
                     }
                 }.onMove { from, to in s.change { d in var all = DashboardItem.merged(d.dashboard); all.move(fromOffsets: from, toOffset: to); d.dashboard = all } }
             }
+            Section("Назва вкладки") { Picker("Назва", selection: Binding(get: { s.db.preferences?.homeTitle ?? "Головна" }, set: { v in s.change { d in var p=d.preferences ?? .init();p.homeTitle=v;d.preferences=p } })) { ForEach(["Головна","Огляд","Мої фінанси","Гаманець"],id:\.self){Text($0).tag($0)} } }
             Button("Повернути стандартні блоки") { s.change { $0.dashboard = DashboardItem.defaults } }
-        }.navigationTitle("Блоки огляду").toolbar { EditButton() }
+        }.navigationTitle("Блоки головної").toolbar { EditButton() }
     }
 }
 struct CustomDashboard: View {
@@ -254,7 +273,7 @@ struct CustomDashboard: View {
     var rows: [[DashboardItem]] {
         var result: [[DashboardItem]] = []; var pair: [DashboardItem] = []
         for item in items {
-            if item.size == .small && ![.balance,.ownFunds,.creditLimit,.creditPortfolio,.obligations,.allAvailable,.monthlyPayments].contains(item.kind) && !dynamicTypeSize.isAccessibilitySize { pair.append(item); if pair.count == 2 { result.append(pair); pair = [] } }
+            if item.size == .small && ![.balance,.ownFunds,.creditLimit,.creditPortfolio,.obligations,.allAvailable,.monthlyPayments,.accounts].contains(item.kind) && !dynamicTypeSize.isAccessibilitySize { pair.append(item); if pair.count == 2 { result.append(pair); pair = [] } }
             else { if !pair.isEmpty { result.append(pair); pair = [] }; result.append([item]) }
         }
         if !pair.isEmpty { result.append(pair) }; return result
@@ -270,7 +289,7 @@ struct CustomDashboard: View {
                     }
                 }
             }.padding()
-        }.background(Color(uiColor: .systemGroupedBackground)).navigationTitle("Finami")
+        }.background(Color(uiColor: .systemGroupedBackground)).navigationTitle(s.db.preferences?.homeTitle ?? "Головна")
             .toolbar { Button { s.change { d in var p=d.preferences ?? .init();p.hideAmounts = !(p.hideAmounts ?? false);d.preferences=p } } label: { Image(systemName:s.privateAmounts ? "eye.slash" : "eye") }.accessibilityLabel("Приховати або показати суми"); Button { configure = true } label: { Image(systemName: "slider.horizontal.3").font(.title2) }.accessibilityLabel("Налаштувати блоки") }
             .safeAreaInset(edge: .bottom) {
                 HStack { Button { add = true } label: { Label("Додати операцію", systemImage: "plus.circle.fill").font(.headline).frame(maxWidth: .infinity).padding(.vertical, 5) }.buttonStyle(.borderedProminent); Button { voice=true } label:{Image(systemName:"mic.fill").frame(minWidth:44,minHeight:34)}.buttonStyle(.bordered).accessibilityLabel("Голосовий запис") }.padding(.horizontal).padding(.vertical,5).background(.regularMaterial)
@@ -287,9 +306,13 @@ struct DashboardTile: View {
     var inc: Int64 { s.totals(ops,.income) }
     var exp: Int64 { s.totals(ops,.expense) }
     var balance: Int64 { s.includedAccounts.reduce(0) { $0 + s.balance($1) } }
-    var small: Bool { item.size == .small && ![.balance,.ownFunds,.creditLimit,.creditPortfolio,.obligations,.allAvailable,.monthlyPayments].contains(item.kind) && !dynamicTypeSize.isAccessibilitySize }
+    var small: Bool { item.size == .small && ![.balance,.ownFunds,.creditLimit,.creditPortfolio,.obligations,.allAvailable,.monthlyPayments,.accounts].contains(item.kind) && !dynamicTypeSize.isAccessibilitySize }
     @State private var paymentDetails: FinamiPayment?
-    var showCharts:Bool { s.db.preferences?.noCharts == false && !s.privateAmounts }
+    @State private var accountSettings = false
+    var masked: Bool { s.privateAmounts || item.hideAmounts == true }
+    func display(_ n:Int64)->String { masked ? "••••" : s.displayed(n) }
+    func visible(_ n:Int64,_ code:String = "UAH")->String { masked ? "••••" : s.visibleMoney(n,code) }
+    var showCharts:Bool { s.db.preferences?.noCharts == false && !masked }
     var detailed: Bool { item.size == .large }
     var color: Color {
         let p = s.db.preferences ?? .init()
@@ -298,18 +321,23 @@ struct DashboardTile: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .center, spacing: 9) {
-                FinamiArt(icon: item.kind.icon, tint: color, size: small ? 34 : 50)
-                Text(item.kind.title).font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 0)
+            if small {
+                HStack {FinamiArt(icon:item.kind.icon,tint:color,size:34);Spacer(minLength:0);privacyButton}
+                Text(item.kind.title).font(.subheadline.weight(.semibold)).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true)
+            } else {
+                HStack(alignment:.center,spacing:9){FinamiArt(icon:item.kind.icon,tint:color,size:50);Text(item.kind == .accounts ? "Мої рахунки" : item.kind.title).font(.subheadline.weight(.semibold)).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true);Spacer(minLength:0);if item.kind == .accounts { Button { accountSettings = true } label: { Image(systemName:"slider.horizontal.3").frame(minWidth:44,minHeight:44) }.buttonStyle(.plain).accessibilityLabel("Налаштування карток рахунків") };privacyButton}
             }
             content
         }
         .frame(maxWidth: .infinity, minHeight: small ? 94 : nil, alignment: .topLeading)
         .padding(small ? 12 : 16)
         .modifier(FinamiCardStyle(tint:color,template:item.template))
+        .environment(\.finamiMask, masked)
         .sheet(item:$paymentDetails) { FinamiPaymentDetails(payment:$0) }
+        .sheet(isPresented:$accountSettings) { NavigationStack { FinamiHomeAccountsSettings().toolbar { ToolbarItem(placement:.cancellationAction) { Button("Готово") { accountSettings = false } } } } }
+    }
+    var privacyButton: some View {
+        Button { s.change { d in var all=DashboardItem.merged(d.dashboard);if let i=all.firstIndex(where:{$0.id==item.id}){all[i].hideAmounts = !(all[i].hideAmounts ?? false)};d.dashboard=all } } label:{Image(systemName:masked ? "eye.slash" : "eye").frame(minWidth:44,minHeight:44)}.buttonStyle(.plain).accessibilityLabel("Показати або приховати суми блоку").disabled(s.privateAmounts)
     }
     var cardBackground: some View {
         ZStack {
@@ -325,7 +353,7 @@ struct DashboardTile: View {
             .foregroundStyle(.primary).accessibilityAddTraits(.isHeader)
     }
     @ViewBuilder func amount(_ n: Int64) -> some View {
-        let pieces = s.displayed(n).components(separatedBy: " · ")
+        let pieces = display(n).components(separatedBy: " · ")
         value(pieces.first ?? money(n))
         if pieces.count > 1 {
             Text(pieces[1]).font(.caption).monospacedDigit().foregroundStyle(.secondary)
@@ -337,7 +365,7 @@ struct DashboardTile: View {
     func metric(_ title: String, _ n: Int64, _ tint: Color) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title).font(.caption).foregroundStyle(.secondary)
-            Text(s.displayed(n)).font(.headline).monospacedDigit().foregroundStyle(tint)
+            Text(display(n)).font(.headline).monospacedDigit().foregroundStyle(tint)
                 .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2).minimumScaleFactor(0.7)
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -373,21 +401,11 @@ struct DashboardTile: View {
         return (s.db.preferences?.colorfulDashboard ?? true) ? palette[index % palette.count] : color
     }
     @ViewBuilder var accounts: some View {
-        let shown = s.db.accounts.filter{$0.hiddenInOverview != true}
-        if shown.isEmpty { detail("Немає рахунків") }
+        let shown = finamiOrderedAccounts(s.db.accounts).filter { $0.hiddenInOverview != true }
+        if shown.isEmpty { detail("Немає рахунків. Додай рахунок у вкладці «Рахунки» або увімкни його в налаштуваннях блоку.") }
         ForEach(shown) { a in
-            HStack(alignment: .center, spacing: 8) {
-                if !small { IzanamiGlyph(icon: a.isCredit ? "creditcard.fill" : a.id == cash ? "banknote.fill" : "wallet.pass.fill", color: color, compact: true) }
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(a.name).font(.subheadline.weight(.medium)).lineLimit(2)
-                    if !small { detail(a.typeName) }
-                }
-                Spacer(minLength: 4)
-                Text(s.visibleMoney(s.ownFunds(a), a.code)).font(.subheadline.weight(.semibold)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.65)
-            }
-            if a.id != shown.last?.id { Divider() }
+            FinamiHomeAccountCard(accountID: a.id, date: date, fallbackTint: color)
         }
-        
     }
     @ViewBuilder var content: some View {
         switch item.kind {
@@ -403,7 +421,7 @@ struct DashboardTile: View {
             else {
                 let shown = Array(ops.sorted{$0.date > $1.date}.prefix(detailed ? 5 : 2))
                 ForEach(shown) { o in
-                    if small { Text(s.visibleMoney(o.amount)).font(.subheadline.weight(.semibold)).monospacedDigit(); detail(o.note.isEmpty ? o.category : o.note) }
+                    if small { Text(visible(o.amount)).font(.subheadline.weight(.semibold)).monospacedDigit(); detail(o.note.isEmpty ? o.category : o.note) }
                     else { OperationRow(o: o) }
                     if o.id != shown.last?.id { Divider() }
                 }
@@ -411,7 +429,7 @@ struct DashboardTile: View {
         case .accounts: accounts
         case .budget:
             if s.db.budget > 0 {
-                amount(max(0,s.db.budget-exp)); detail("Залишок бюджету · з \(s.visibleMoney(s.db.budget))")
+                amount(max(0,s.db.budget-exp)); detail("Залишок бюджету · з \(visible(s.db.budget))")
                 if showCharts { ProgressView(value: max(0,min(1, Double(exp)/Double(s.db.budget)))).tint(color) }
             } else { detail("Не задано") }
         case .obligations:
@@ -427,7 +445,7 @@ struct DashboardTile: View {
         case .debt: metric("Мені винні", s.db.obligations.filter{$0.kind == .owed}.reduce(0){$0+$1.remaining}, .green); metric("Я винен", s.db.obligations.filter{$0.kind == .owe}.reduce(0){$0+$1.remaining}, .orange)
         case .installments: obligationSummary([.installment])
         case .recurring: obligationSummary([.recurring])
-        case .statistics: value(String(ops.count)); detail("Операцій · потік \(s.visibleMoney(inc-exp))")
+        case .statistics: value(String(ops.count)); detail("Операцій · потік \(visible(inc-exp))")
         case .fees: amount(ops.filter{$0.kind == .expense && $0.category == "🏦 Комісії"}.reduce(0){$0+$1.amount})
         case .ownFunds:
             amount(s.totalOwnFunds); detail("Без кредитних коштів")
@@ -436,7 +454,7 @@ struct DashboardTile: View {
         case .creditDebt: amount(s.totalAccountDebt); detail("Використані кредитні кошти")
         case .availableCredit: amount(s.totalAvailableCredit); detail("Не є власними коштами")
         case .review: value(String(ops.filter{$0.kind.needsReview}.count)); detail("Потребують перевірки")
-        case .savings: value(s.privateAmounts ? "••••" : inc > 0 ? ((Double(inc-exp)/Double(inc)).formatted(.percent.precision(.fractionLength(1)))) : "—"); detail("Частка доходу після витрат")
+        case .savings: value(masked ? "••••" : inc > 0 ? ((Double(inc-exp)/Double(inc)).formatted(.percent.precision(.fractionLength(1)))) : "—"); detail("Частка доходу після витрат")
         }
     }
     @ViewBuilder func obligationSummary(_ kinds: [ObligationKind]) -> some View {
@@ -446,15 +464,16 @@ struct DashboardTile: View {
 }
 struct DashboardCategoryLine: View {
     @EnvironmentObject var s:Store
+    @Environment(\.finamiMask) private var masked
     var title: String; var amount: Int64; var total: Int64; var color: Color; var showChart: Bool = false
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(title).font(.subheadline).lineLimit(2)
                 Spacer(minLength: 3)
-                Text(s.visibleMoney(amount)).font(.subheadline.weight(.semibold)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
+                Text(masked ? "••••" : s.visibleMoney(amount)).font(.subheadline.weight(.semibold)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
             }
-            if showChart && !s.privateAmounts { ProgressView(value: total > 0 ? min(1, max(0, Double(amount)/Double(total))) : 0).tint(color).accessibilityLabel(title).accessibilityValue(money(amount)) }
+            if showChart && !s.privateAmounts && !masked { ProgressView(value: total > 0 ? min(1, max(0, Double(amount)/Double(total))) : 0).tint(color).accessibilityLabel(title).accessibilityValue(money(amount)) }
         }
     }
 }

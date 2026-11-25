@@ -57,6 +57,16 @@ enum Kind: String, Codable, CaseIterable, Identifiable {
     }
   }
 }
+// Optional appearance data is intentionally independent of ledger balances.
+struct AccountCardOptions: Codable {
+  var style: String? = nil
+  var right: String? = nil
+  var fields: [String]? = nil
+  var photo: Data? = nil
+  var pinned: Bool? = nil
+  var order: Int? = nil
+  var accent: String? = nil
+}
 struct Account: Codable, Identifiable {
   var id = UUID().uuidString
   var name: String
@@ -69,6 +79,8 @@ struct Account: Codable, Identifiable {
   var hiddenInAccounts: Bool? = nil
   var hiddenInOverview: Bool? = nil
   var excludedFromTotals: Bool? = nil
+  var hideAmounts: Bool? = nil
+  var cardOptions: AccountCardOptions? = nil
   var code: String { currency ?? "UAH" }
   var isCredit: Bool { accountType == "credit" }
   var limit: Int64 { isCredit ? max(0,creditLimit ?? 0) : 0 }
@@ -105,6 +117,41 @@ struct Operation: Codable, Identifiable {
   }
   var expenseValue: Int64 { kind == .expense ? amount : kind == .refund ? -amount : neutralFee }
   var expenseGroup: String { kind == .expense || kind == .refund ? category : "🏦 Комісії" }
+}
+// Native currency amounts, matching the existing ledger convention. Transfers
+// appear in activity but never inflate income or spending.
+struct AccountActivity {
+  let accountID: String
+  let history: [Operation]
+  let income: Int64
+  let spending: Int64
+  let count: Int
+  init(account: Account, operations: [Operation], month: Date, calendar: Calendar = .current) {
+    accountID = account.id
+    history = operations.filter { $0.account == account.id || ($0.kind == .transfer && $0.destination == account.id) }.sorted { $0.date == $1.date ? $0.id < $1.id : $0.date > $1.date }
+    let period = history.filter { calendar.isDate($0.date, equalTo: month, toGranularity: .month) }
+    count = period.count
+    income = period.filter { $0.account == account.id && $0.kind == .income }.reduce(0) { $0 + ($1.sourceMinor ?? $1.amount) }
+    spending = period.filter { $0.account == account.id }.reduce(0) { total, o in
+      if o.kind == .expense { return total + (o.sourceMinor ?? o.amount) }
+      if o.kind == .refund { return total - (o.sourceMinor ?? o.amount) }
+      return total + (account.code == "UAH" ? o.neutralFee : 0)
+    }
+  }
+  func signed(_ o: Operation) -> Int64 {
+    if o.kind == .transfer && o.destination == accountID { return o.destinationMinor ?? o.amount }
+    return o.signedNative
+  }
+}
+func finamiOrderedAccounts(_ accounts: [Account]) -> [Account] {
+  accounts.enumerated().sorted { lhs, rhs in
+    let l = lhs.element.cardOptions, r = rhs.element.cardOptions
+    let lp = l?.pinned == true, rp = r?.pinned == true
+    if lp != rp { return lp }
+    let lo = l?.order ?? Int.max, ro = r?.order ?? Int.max
+    if lo != ro { return lo < ro }
+    return lhs.offset < rhs.offset
+  }.map(\.element)
 }
 enum ObligationKind: String, Codable, CaseIterable, Identifiable {
   case installment, owe, owed, recurring, goal
@@ -378,7 +425,7 @@ struct Root: View {
         }.onAppear(perform: unlock)
       } else {
         TabView {
-          NavigationStack { CustomDashboard() }.tabItem { Label("Огляд", systemImage: "house.fill") }
+          NavigationStack { CustomDashboard() }.tabItem { Label(store.db.preferences?.homeTitle ?? "Головна", systemImage: "house.fill") }
           NavigationStack { Operations() }.tabItem {
             Label("Операції", systemImage: "arrow.left.arrow.right")
           }
@@ -535,6 +582,7 @@ struct Breakdown: View {
 }
 struct OperationRow: View {
   @EnvironmentObject var s: Store
+  @Environment(\.finamiMask) private var masked
   var o: Operation
   var body: some View {
     HStack {
@@ -553,8 +601,8 @@ struct OperationRow: View {
       }
       Spacer()
       VStack(alignment:.trailing) {
-        Text(s.privateAmounts ? "••••" : (o.kind == .transfer ? "" : o.kind.incoming ? "+" : "−") + money(o.amount)).font(.subheadline.bold()).foregroundStyle(o.kind == .income ? Color.green : Color.primary)
-        if let n=o.originalAmount, let code=o.originalCurrency, code != "UAH" { Text(s.visibleMoney(n,code)).font(.caption).foregroundStyle(.secondary) }
+        Text((s.privateAmounts || masked) ? "••••" : (o.kind == .transfer ? "" : o.kind.incoming ? "+" : "−") + money(o.amount)).font(.subheadline.bold()).foregroundStyle(o.kind == .income ? Color.green : Color.primary)
+        if let n=o.originalAmount, let code=o.originalCurrency, code != "UAH" { Text(masked ? "••••" : s.visibleMoney(n,code)).font(.caption).foregroundStyle(.secondary) }
       }
     }
   }
@@ -563,15 +611,18 @@ struct Operations: View {
   @EnvironmentObject var s: Store
   @State private var search = ""
   @State private var edit: Operation?
-  @State private var filter = "all"
-  @State private var sort = OperationSort.newest
+  @State private var operationSettings = false
+  var filter: String { s.db.preferences?.operationsFilter ?? "all" }
+  var sort: OperationSort { OperationSort(rawValue:s.db.preferences?.operationsSort ?? "") ?? .newest }
+  var filterBinding:Binding<String>{Binding(get:{filter},set:{v in s.change{d in var p=d.preferences ?? .init();p.operationsFilter=v;d.preferences=p}})}
+  var sortBinding:Binding<OperationSort>{Binding(get:{sort},set:{v in s.change{d in var p=d.preferences ?? .init();p.operationsSort=v.rawValue;d.preferences=p}})}
   var body: some View {
     List {
-      Picker("Тип", selection: $filter) {
+      Picker("Тип", selection: filterBinding) {
         Text("Усі").tag("all")
         ForEach(Kind.allCases) { Text($0.title).tag($0.rawValue) }
       }.pickerStyle(.menu)
-      Picker("Сортування", selection: $sort) { ForEach(OperationSort.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
+      Picker("Сортування", selection: sortBinding) { ForEach(OperationSort.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
       ForEach(
         s.db.operations.filter { o in
           (filter == "all" || o.kind.rawValue == filter)
@@ -588,12 +639,13 @@ struct Operations: View {
       }
     }.searchable(text: $search, prompt: "Магазин, категорія, сума").navigationTitle("Операції")
       .toolbar {
+        Button {operationSettings=true} label:{Image(systemName:"slider.horizontal.3")}.accessibilityLabel("Налаштування операцій")
         Button {
           edit = Operation(account: s.db.accounts.first?.id ?? cash)
         } label: {
           Image(systemName: "plus")
         }
-      }.sheet(item: $edit) { OpEditor(original: $0) }
+      }.sheet(item: $edit) { OpEditor(original: $0) }.sheet(isPresented:$operationSettings){NavigationStack{Form{Picker("Тип",selection:filterBinding){Text("Усі").tag("all");ForEach(Kind.allCases){Text($0.title).tag($0.rawValue)}};Picker("Сортування",selection:sortBinding){ForEach(OperationSort.allCases,id:\.self){Text($0.rawValue).tag($0)}}}.navigationTitle("Налаштування операцій").toolbar{Button("Готово"){operationSettings=false}}}}
   }
 }
 struct OpEditor: View {
@@ -714,26 +766,55 @@ struct OpEditor: View {
 struct Accounts: View {
   @EnvironmentObject var s: Store
   @State private var edit: Account?
-  @State private var showHidden = false
+  @State private var configure = false
+  @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+  var prefs: AppearancePreferences { s.db.preferences ?? .init() }
+  var mode: String { prefs.accountsMode ?? "own" }
+  func update(_ action:(inout AppearancePreferences)->Void) { s.change { d in var p=d.preferences ?? .init();action(&p);d.preferences=p } }
+  var shown:[Account] { s.db.accounts.filter { (prefs.accountsShowHidden == true || $0.hiddenInAccounts != true) && (mode == "all" || (mode == "credit" ? $0.isCredit : (!$0.isCredit || s.ownFunds($0)>0))) } }
   var body: some View {
-    ScrollView {
-      VStack(spacing: 16) {
-        FinamiMoneyCard(title: "Власні кошти", amount: s.displayed(s.totalOwnFunds), icon: "wallet.pass.fill", tint: .green, subtitle: "Без кредитного ліміту")
-        FinamiCreditSummary(showLimit: true, showUsed: true, showAvailable: true)
-        Toggle("Показати приховані рахунки", isOn: $showHidden).padding(12)
-        ForEach(s.db.accounts.filter { showHidden || $0.hiddenInAccounts != true }) { a in
-          Button { edit = a } label: { CreditAccountRow(a:a) }.buttonStyle(.plain)
+    ScrollView { VStack(spacing: 14) {
+      if prefs.accountsLayout == "full" || dynamicTypeSize.isAccessibilitySize { VStack(spacing:10){summary("own");summary("credit")} }
+      else { HStack(alignment:.top,spacing:10){summary("own");summary("credit")} }
+      Picker("Розділ",selection:Binding(get:{mode},set:{v in update{$0.accountsMode=v}})){Text("Власні").tag("own");Text("Кредитні").tag("credit");Text("Усі").tag("all")}.pickerStyle(.segmented)
+      if mode != "own" { FinamiCreditSummary(showLimit:prefs.accountsShowLimit ?? true,showUsed:prefs.accountsShowUsed ?? true,showAvailable:prefs.accountsShowAvailable ?? true) }
+      ForEach(shown) { a in
+        VStack(alignment:.leading,spacing:6) {
+          HStack { Spacer(); Button { s.change { d in if let i=d.accounts.firstIndex(where:{$0.id==a.id}){d.accounts[i].hideAmounts = !(d.accounts[i].hideAmounts ?? false)} } } label:{Image(systemName:(s.privateAmounts || a.hideAmounts == true) ? "eye.slash" : "eye").frame(minWidth:44,minHeight:44)}.buttonStyle(.plain).disabled(s.privateAmounts).accessibilityLabel("Приховати суми рахунку") }
+          Button { edit=a } label:{CreditAccountRow(a:a, mode:mode)}.buttonStyle(.plain)
         }
-        NavigationLink("Перевірити старі імпортовані операції") { CreditImportCorrection() }
-      }.padding()
-    }.background(Color(uiColor: .systemGroupedBackground)).navigationTitle("Рахунки").toolbar {
-      Button { edit = Account(name: "") } label: { Image(systemName: "plus.circle.fill") }
-    }.sheet(item: $edit) { AccountEditor(a: $0) }
+      }
+      Button {edit=Account(name:"",accountType:"debit")} label:{Label("Додати рахунок",systemImage:"plus.circle.fill").frame(maxWidth:.infinity).padding(8)}.buttonStyle(.borderedProminent)
+      NavigationLink("Перевірити старі імпортовані операції") { CreditImportCorrection() }
+    }.padding() }.background(Color(uiColor:.systemGroupedBackground)).navigationTitle("Рахунки").toolbar {
+      ToolbarItemGroup(placement:.navigationBarTrailing) {
+        Button {configure=true} label:{Image(systemName:"slider.horizontal.3")}.accessibilityLabel("Налаштування рахунків")
+        Button {edit=Account(name:"",accountType:"debit")} label:{Image(systemName:"plus.circle.fill")}.accessibilityLabel("Додати рахунок")
+      }
+    }.sheet(item:$edit){AccountEditor(a:$0)}.sheet(isPresented:$configure){NavigationStack{FinamiAccountSettings()}}
   }
+  func summary(_ kind:String)->some View {
+    let own=kind == "own"
+    let tint:Color=own ? .green : .blue
+    return Button {update{$0.accountsMode=kind}} label:{VStack(alignment:.leading,spacing:8){FinamiArt(icon:own ? "wallet.pass.fill" : "creditcard.fill",tint:tint,size:44);Text(own ? "Власні кошти" : "Кредитні кошти").font(.caption.weight(.semibold));Text(s.displayed(own ? s.totalOwnFunds : s.totalAvailableCredit)).font(.title3.bold()).monospacedDigit().minimumScaleFactor(0.65);Text(own ? "Без кредиту" : "Доступний кредит").font(.caption2).foregroundStyle(.secondary)}.frame(maxWidth:.infinity,alignment:.leading).padding(12).modifier(FinamiCardStyle(tint:tint)).overlay{if mode==kind{RoundedRectangle(cornerRadius:18).strokeBorder(tint.opacity(0.6),lineWidth:1)}}}.buttonStyle(.plain)
+  }
+}
+struct FinamiAccountSettings:View {
+  @EnvironmentObject var s:Store
+  @Environment(\.dismiss) var dismiss
+  func binding<T>(_ key:WritableKeyPath<AppearancePreferences,T?>,_ fallback:T)->Binding<T>{Binding(get:{(s.db.preferences ?? .init())[keyPath:key] ?? fallback},set:{v in s.change{d in var p=d.preferences ?? .init();p[keyPath:key]=v;d.preferences=p}})}
+  var body:some View {Form {
+    Section("Відображення") {Picker("Картки",selection:binding(\.accountsLayout,"split")){Text("Дві половини").tag("split");Text("На всю ширину").tag("full")};Toggle("Показати приховані рахунки",isOn:binding(\.accountsShowHidden,false));Toggle("Приховати всі суми",isOn:binding(\.hideAmounts,false))}
+    Section("Кредитні показники") {Toggle("Загальний ліміт",isOn:binding(\.accountsShowLimit,true));Toggle("Використано",isOn:binding(\.accountsShowUsed,true));Toggle("Доступно",isOn:binding(\.accountsShowAvailable,true))}
+    Section("Оформлення головної") { NavigationLink("Вигляд, показники та порядок") { FinamiHomeAccountsSettings() } }
+    Section("Рахунки") {ForEach(s.db.accounts){a in Toggle(a.name,isOn:Binding(get:{s.db.accounts.first(where:{$0.id==a.id})?.hiddenInAccounts != true},set:{v in s.change{d in if let i=d.accounts.firstIndex(where:{$0.id==a.id}){d.accounts[i].hiddenInAccounts = !v}}}))}}
+  }.navigationTitle("Налаштування рахунків").toolbar{ToolbarItem(placement:.confirmationAction){Button("Готово"){dismiss()}}} }
 }
 struct CreditAccountRow: View {
   @EnvironmentObject var s: Store
   let a: Account
+  var mode = "all"
+  func display(_ n:Int64)->String { a.hideAmounts == true ? "••••" : s.visibleMoney(n,a.code) }
   var body: some View {
     VStack(alignment: .leading, spacing: 14) {
       HStack {
@@ -742,12 +823,12 @@ struct CreditAccountRow: View {
         Spacer(minLength: 0)
         if a.hiddenInAccounts == true { Image(systemName: "eye.slash") }
       }
-      FinamiMetric(title: "Власні кошти", value: s.visibleMoney(s.ownFunds(a),a.code), tint: .primary)
-      if a.isCredit {
-        FinamiMetric(title: "Кредитний ліміт", value: s.visibleMoney(a.limit,a.code), tint: .primary)
-        FinamiMetric(title: "Використано", value: s.visibleMoney(s.debt(a),a.code), tint: .orange)
-        FinamiMetric(title: "Доступний кредит", value: s.visibleMoney(max(0,a.limit-s.debt(a)),a.code), tint: .green)
-      } else if s.nativeBalance(a) < 0 { FinamiMetric(title: "Чистий залишок", value: s.visibleMoney(s.nativeBalance(a),a.code), tint: .orange) }
+      if mode != "credit" { FinamiMetric(title: "Власні кошти", value: display(s.ownFunds(a)), tint: .primary) }
+      if a.isCredit && mode != "own" {
+        FinamiMetric(title: "Кредитний ліміт", value: display(a.limit), tint: .primary)
+        FinamiMetric(title: "Використано", value: display(s.debt(a)), tint: .orange)
+        FinamiMetric(title: "Доступний кредит", value: display(max(0,a.limit-s.debt(a))), tint: .green)
+      } else if s.nativeBalance(a) < 0 { FinamiMetric(title: "Чистий залишок", value: display(s.nativeBalance(a)), tint: .orange) }
       if a.excludedFromTotals == true { Text("Не враховується в загальних сумах").font(.caption).foregroundStyle(.secondary) }
     }.padding(18).frame(maxWidth:.infinity,alignment:.leading).modifier(FinamiCardStyle(tint:.teal))
   }
@@ -804,6 +885,7 @@ struct AccountEditor: View {
         if a.isCredit {FinamiField("Кредитний ліміт, \(a.code)", text: $limitText, keyboard: .decimalPad)}
         Picker("Валюта рахунку",selection:Binding(get:{a.code},set:{a.currency=$0})){Text("UAH").tag("UAH");Text("USD").tag("USD")}.disabled(s.db.operations.contains{$0.account==a.id || $0.destination==a.id})
         Section("Видимість") {
+          Toggle("Приховати суми рахунку", isOn: Binding(get:{a.hideAmounts ?? false},set:{a.hideAmounts=$0}))
           Toggle("Приховати в рахунках", isOn: Binding(get:{a.hiddenInAccounts ?? false},set:{a.hiddenInAccounts=$0}))
           Toggle("Приховати на огляді", isOn: Binding(get:{a.hiddenInOverview ?? false},set:{a.hiddenInOverview=$0}))
           Toggle("Не враховувати в загальних сумах", isOn: Binding(get:{a.excludedFromTotals ?? false},set:{a.excludedFromTotals=$0}))
@@ -871,6 +953,8 @@ struct AnnualCashFlowChart: View {
 }
 struct Reports: View {
   @EnvironmentObject var s: Store
+  @State private var reportSettings=false
+  func flag(_ key:WritableKeyPath<AppearancePreferences,Bool?>)->Binding<Bool>{Binding(get:{(s.db.preferences ?? .init())[keyPath:key] ?? true},set:{v in s.change{d in var p=d.preferences ?? .init();p[keyPath:key]=v;d.preferences=p}})}
   @State private var year = Calendar.current.component(.year, from: Date())
   var months: [Date] {
     (1...12).compactMap {
@@ -919,11 +1003,11 @@ struct Reports: View {
           Text("Повернення покупок: \(money(s.totals(ops,.refund)))").font(.caption)
           Text("Неуточнені рухи: \(ops.filter{$0.kind.needsReview}.count)").font(.caption)
         }
-        Panel {
+        if s.db.preferences?.reportsShowChart != false { Panel {
           Text("Доходи та витрати").font(.headline)
           AnnualCashFlowChart(points: chartPoints)
-        }
-        Panel {
+        } }
+        if s.db.preferences?.reportsShowMonths != false { Panel {
           Text("За місяцями").font(.headline)
           ForEach(months, id: \.self) { d in
             HStack {
@@ -938,16 +1022,18 @@ struct Reports: View {
             Divider()
           }
         }
-        Panel {
+        }
+        if s.db.preferences?.reportsShowCategories != false { Panel {
           Text("Структура витрат").font(.headline)
           Breakdown(ops: ops)
-        }
+        } }
       }.padding()
-    }.background(Color(uiColor: .systemGroupedBackground)).navigationTitle("Звіти")
+    }.background(Color(uiColor: .systemGroupedBackground)).navigationTitle("Звіти").toolbar{Button{reportSettings=true} label:{Image(systemName:"slider.horizontal.3")}}.sheet(isPresented:$reportSettings){NavigationStack{Form{Toggle("Діаграма",isOn:flag(\.reportsShowChart));Toggle("За місяцями",isOn:flag(\.reportsShowMonths));Toggle("Категорії",isOn:flag(\.reportsShowCategories))}.navigationTitle("Налаштування звітів").toolbar{Button("Готово"){reportSettings=false}}}}
   }
 }
 struct More: View {
   @EnvironmentObject var s: Store
+  @State private var menuSettings=false
   func obligationIcon(_ kind: ObligationKind) -> String {
     switch kind { case .installment: return "creditcard.fill"; case .owe: return "arrow.up.right"; case .owed: return "arrow.down.left"; case .recurring: return "repeat"; case .goal: return "target" }
   }
@@ -1005,10 +1091,10 @@ struct More: View {
         }
       }
       Section {
-        Text("Finami · 5.0 Preview 1\nБез реклами, серверів та платних API.").font(.footnote)
+        Text("Finami · 5.0 Preview 3\nБез реклами, серверів та платних API.").font(.footnote)
           .foregroundStyle(.secondary)
       }
-    }.navigationTitle("Ще")
+    }.navigationTitle("Ще").toolbar{Button{menuSettings=true} label:{Image(systemName:"slider.horizontal.3")}.accessibilityLabel("Налаштування меню")}.sheet(isPresented:$menuSettings){NavigationStack{Form{Toggle("Компактні ілюстрації",isOn:Binding(get:{s.db.preferences?.menuCompact ?? false},set:{v in s.change{d in var p=d.preferences ?? .init();p.menuCompact=v;d.preferences=p}}));NavigationLink("Студія дизайну"){AppearanceView()};NavigationLink("Блоки головної"){DashboardSettings()};NavigationLink("Рахунки"){FinamiAccountSettings()}}.navigationTitle("Налаштування меню").toolbar{Button("Готово"){menuSettings=false}}}}
   }
 }
 struct Budgets: View {
@@ -1136,7 +1222,7 @@ struct ObligationEditor: View {
     _monthly = State(initialValue: amountText(original.monthly))
     _remainingText = State(initialValue: amountText(original.remaining))
   }
-  var baseTarget: Int64? { o.kind == .installment ? cents(remainingText).map { max(o.target, o.paid + $0) } : cents(target) }
+  var baseTarget: Int64? { cents(target) }
   var basePaid: Int64? { o.kind == .installment ? cents(remainingText).flatMap { r in baseTarget.map { $0 - r } } : cents(paid) }
   var valid: Bool {
     !o.name.trimmingCharacters(in: .whitespaces).isEmpty && (baseTarget ?? 0) > 0
@@ -1151,8 +1237,9 @@ struct ObligationEditor: View {
     NavigationStack {
       Form {
         Section("Параметри") {
-          TextField("Назва / особа", text: $o.name)
+          FinamiField("Назва", text: $o.name)
           if o.kind == .installment {
+            FinamiField("Загальний кредит, ₴", text: $target, keyboard: .decimalPad)
             FinamiField("Поточний залишок розстрочки, ₴", text: $remainingText, keyboard: .decimalPad)
             Text("Введи залишок боргу, не суму вже сплачених платежів.").font(.caption)
           } else {

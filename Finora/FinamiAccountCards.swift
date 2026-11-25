@@ -1,0 +1,425 @@
+import SwiftUI
+import PhotosUI
+import UIKit
+import ImageIO
+
+// These identifiers are stored as strings to allow older data and future styles.
+private enum HomeAccountStyle: String, CaseIterable, Identifiable {
+    case premium, detailed, compact, physical
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .premium: return "Комбінований Premium"
+        case .detailed: return "Детальний банківський"
+        case .compact: return "Компактний"
+        case .physical: return "Банківська картка"
+        }
+    }
+}
+private enum HomeAccountRight: String, CaseIterable, Identifiable {
+    case art, photo, expenses, credit, actions, last, count, none
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .art: return "Ілюстрація рахунку"
+        case .photo: return "Власна фотографія"
+        case .expenses: return "Витрати за місяць"
+        case .credit: return "Кредитний ліміт"
+        case .actions: return "Швидкі дії"
+        case .last: return "Остання операція"
+        case .count: return "Кількість операцій"
+        case .none: return "Без правої частини"
+        }
+    }
+}
+private enum HomeAccountField: String, CaseIterable, Identifiable {
+    case own, limit, used, available, currency, type, income, expenses, last, updated, count, actions
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .own: return "Власні кошти"
+        case .limit: return "Кредитний ліміт"
+        case .used: return "Використано кредиту"
+        case .available: return "Доступний кредит"
+        case .currency: return "Валюта рахунку"
+        case .type: return "Тип рахунку"
+        case .income: return "Доходи за місяць"
+        case .expenses: return "Витрати за місяць"
+        case .last: return "Остання операція"
+        case .updated: return "Дата останньої операції"
+        case .count: return "Кількість операцій"
+        case .actions: return "Швидкі дії"
+        }
+    }
+    static let defaults = [own, limit, used, available, currency, type, expenses, last, updated, actions].map(\.rawValue)
+}
+private func accountStyle(_ value: String?) -> HomeAccountStyle { HomeAccountStyle(rawValue: value ?? "") ?? .premium }
+private func accountRight(_ value: String?, style: HomeAccountStyle) -> HomeAccountRight {
+    HomeAccountRight(rawValue: value ?? "") ?? (style == .compact ? .none : style == .detailed ? .expenses : .art)
+}
+private func accountArtIcon(_ a: Account) -> String {
+    a.accountType == "cash" || a.id == cash ? "banknote.fill" : a.isCredit || a.accountType == "debit" ? "creditcard.fill" : "wallet.pass.fill"
+}
+private func accountTint(_ a: Account, fallback: Color) -> Color {
+    if let accent = a.cardOptions?.accent, let theme = IzanamiTheme.all.first(where: { $0.name == accent }) { return theme.color }
+    let name = (a.bankName ?? a.name).lowercased()
+    if name.contains("пумб") || name.contains("pumb") { return .pink }
+    if name.contains("mono") || name.contains("моно") { return .gray }
+    if name.contains("приват") || name.contains("privat") || name.contains("а-банк") || name.contains("а банк") || name.contains("abank") || a.id == cash || a.accountType == "cash" { return .green }
+    return fallback
+}
+
+// An original local illustration: a bank-card stack or a cash wallet.
+private struct HomeAccountArt: View {
+    var account: Account
+    var tint: Color
+    var body: some View {
+        ZStack {
+            Circle().fill(tint.opacity(0.12)).frame(width: 90, height: 90)
+            Circle().strokeBorder(tint.opacity(0.12), lineWidth: 1).frame(width: 106, height: 106)
+            if account.id == cash || account.accountType == "cash" {
+                RoundedRectangle(cornerRadius: 7).fill(tint.opacity(0.28)).frame(width: 70, height: 40).rotationEffect(.degrees(-15)).offset(y: -13)
+                RoundedRectangle(cornerRadius: 13).fill(LinearGradient(colors: [tint.opacity(0.75), tint.opacity(0.32)], startPoint: .topLeading, endPoint: .bottomTrailing)).frame(width: 92, height: 58).rotationEffect(.degrees(5))
+                Image(systemName: "banknote.fill").font(.system(size: 28, weight: .medium)).foregroundStyle(.primary)
+            } else {
+                RoundedRectangle(cornerRadius: 10).fill(tint.opacity(0.30)).frame(width: 89, height: 56).rotationEffect(.degrees(-15)).offset(x: -6, y: -10)
+                ZStack(alignment: .topLeading) {
+                    RoundedRectangle(cornerRadius: 10).fill(LinearGradient(colors: [tint.opacity(0.85), tint.opacity(0.32)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                    VStack(alignment: .leading, spacing: 7) {
+                        Image(systemName: "creditcard.fill").font(.system(size: 15, weight: .medium))
+                        RoundedRectangle(cornerRadius: 2).fill(Color.white.opacity(0.75)).frame(width: 18, height: 12)
+                        HStack(spacing: 3) { Capsule().fill(Color.white.opacity(0.65)).frame(width: 19, height: 3); Spacer(); Circle().fill(Color.white.opacity(0.55)).frame(width: 9); Circle().fill(Color.white.opacity(0.35)).frame(width: 9) }
+                    }.padding(8).foregroundStyle(.white)
+                }.frame(width: 95, height: 60).rotationEffect(.degrees(8)).offset(x: 5, y: 7)
+            }
+        }.frame(width: 112, height: 108).accessibilityHidden(true)
+    }
+}
+
+struct FinamiHomeAccountCard: View {
+    @EnvironmentObject private var s: Store
+    @Environment(\.finamiMask) private var blockMasked
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    var accountID: String
+    var date: Date
+    var fallbackTint: Color
+    @State private var route: Route?
+    private enum Route: Identifiable {
+        case settings, history, edit(Account), operation(Operation)
+        var id: String { switch self { case .settings: return "settings"; case .history: return "history"; case .edit: return "edit"; case .operation: return "operation" } }
+    }
+    var body: some View {
+        if let a = s.db.accounts.first(where: { $0.id == accountID }) {
+            let style = accountStyle(a.cardOptions?.style ?? s.db.preferences?.homeAccountLayout)
+            let right = accountRight(a.cardOptions?.right ?? s.db.preferences?.homeAccountRight, style: style)
+            let fields = Set(a.cardOptions?.fields ?? s.db.preferences?.homeAccountFields ?? HomeAccountField.defaults)
+            let activity = AccountActivity(account: a, operations: s.db.operations, month: date)
+            let tint = accountTint(a, fallback: fallbackTint)
+            card(a, style: style, right: right, fields: fields, activity: activity, tint: tint)
+                .sheet(item: $route) { route in
+                    switch route {
+                    case .settings: NavigationStack { FinamiHomeAccountSettings(accountID: a.id, closeButton: true) }
+                    case .history: NavigationStack { HomeAccountHistory(accountID: a.id, blockMasked: blockMasked) }
+                    case .edit(let account): AccountEditor(a: account)
+                    case .operation(let operation): OpEditor(original: operation)
+                    }
+                }
+        }
+    }
+    private func isMasked(_ a: Account) -> Bool { blockMasked || s.privateAmounts || a.hideAmounts == true }
+    private func amount(_ n: Int64, _ a: Account) -> String { isMasked(a) ? "****" : currencyMoney(n, a.code) }
+    private func start(_ kind: Kind, _ a: Account) { route = .operation(Operation(kind: kind, category: "Без категорії", account: a.id, entryCurrency: a.code)) }
+    private func toggleMask(_ a: Account) {
+        s.change { d in if let i = d.accounts.firstIndex(where: { $0.id == a.id }) { d.accounts[i].hideAmounts = !(d.accounts[i].hideAmounts ?? false) } }
+    }
+    private func header(_ a: Account, fields: Set<String>, tint: Color) -> some View {
+        HStack(spacing: 8) {
+            FinamiArt(icon: accountArtIcon(a), tint: tint, size: 40)
+            Button { route = .history } label: {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(a.name).font(.headline).foregroundStyle(.primary).fixedSize(horizontal: false, vertical: true)
+                    let info = [fields.contains("type") ? a.typeName : nil, fields.contains("currency") ? a.code : nil].compactMap { $0 }.joined(separator: " · ")
+                    if !info.isEmpty { Text(info).font(.caption).foregroundStyle(.secondary) }
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }.buttonStyle(.plain).accessibilityLabel("Історія: " + a.name)
+            if a.cardOptions?.pinned == true { Image(systemName: "pin.fill").font(.caption).foregroundStyle(tint).accessibilityLabel("Закріплений") }
+            Button { toggleMask(a) } label: { Image(systemName: isMasked(a) ? "eye.slash" : "eye").frame(minWidth: 44, minHeight: 44) }
+                .buttonStyle(.plain).disabled(blockMasked || s.privateAmounts).accessibilityLabel("Приховати або показати суми рахунку")
+            Menu {
+                Button { route = .settings } label: { Label("Оформлення картки", systemImage: "paintpalette") }
+                Button { route = .history } label: { Label("Історія операцій", systemImage: "clock") }
+                Button { route = .edit(a) } label: { Label("Редагувати рахунок / залишок", systemImage: "pencil") }
+                Button { s.change { d in if let i = d.accounts.firstIndex(where: { $0.id == a.id }) { var o = d.accounts[i].cardOptions ?? .init(); o.pinned = !(o.pinned ?? false); d.accounts[i].cardOptions = o } } } label: { Label(a.cardOptions?.pinned == true ? "Відкріпити" : "Закріпити зверху", systemImage: "pin") }
+                Button { s.change { d in if let i = d.accounts.firstIndex(where: { $0.id == a.id }) { d.accounts[i].hiddenInOverview = true } } } label: { Label("Приховати на головній", systemImage: "eye.slash") }
+            } label: { Image(systemName: "ellipsis").frame(minWidth: 44, minHeight: 44) }.accessibilityLabel("Дії рахунку")
+        }
+    }
+    private func card(_ a: Account, style: HomeAccountStyle, right: HomeAccountRight, fields: Set<String>, activity: AccountActivity, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: style == .compact ? 10 : 14) {
+            header(a, fields: fields, tint: tint)
+            if fields.contains("own") || right != .none {
+                if dynamicTypeSize.isAccessibilitySize || right == .none || !fields.contains("own") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        if fields.contains("own") { own(a) }
+                        rightPanel(right, a: a, activity: activity, tint: tint)
+                    }
+                } else {
+                    HStack(alignment: .center, spacing: 10) {
+                        own(a).frame(maxWidth: .infinity, alignment: .leading)
+                        rightPanel(right, a: a, activity: activity, tint: tint).frame(width: right == .art ? 112 : 116)
+                    }
+                }
+            }
+            if a.isCredit { creditFields(a, fields: fields, right: right, style: style) }
+            activityFields(a, fields: fields, right: right, activity: activity, style: style)
+            if fields.contains("actions") && right != .actions { quickActions(a, vertical: dynamicTypeSize.isAccessibilitySize) }
+        }
+        .padding(style == .compact ? 12 : 14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            if style == .physical || style == .premium {
+                RoundedRectangle(cornerRadius: 20).fill(LinearGradient(colors: [tint.opacity(0.23), tint.opacity(0.07)], startPoint: .topLeading, endPoint: .bottomTrailing))
+            } else { RoundedRectangle(cornerRadius: 16).fill(tint.opacity(0.08)) }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: style == .compact ? 16 : 20))
+        .contextMenu {
+            Button { route = .settings } label: { Label("Оформлення", systemImage: "paintpalette") }
+            Button { route = .history } label: { Label("Історія", systemImage: "clock") }
+            Button { start(.expense, a) } label: { Label("Нова витрата", systemImage: "minus.circle") }
+        }
+    }
+    private func own(_ a: Account) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Власні кошти").font(.caption).foregroundStyle(.secondary)
+            Text(amount(s.ownFunds(a), a)).font(.title2.bold()).monospacedDigit().lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2).minimumScaleFactor(0.72)
+            Text("Без кредиту").font(.caption2).foregroundStyle(.secondary)
+        }
+    }
+    private func metric(_ title: String, _ value: String, tint: Color = .primary) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Text(value).font(.headline).monospacedDigit().foregroundStyle(tint).lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2).minimumScaleFactor(0.70)
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+    private func panel<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        content().padding(10).frame(maxWidth: .infinity, alignment: .leading).background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 12))
+    }
+    @ViewBuilder private func rightPanel(_ right: HomeAccountRight, a: Account, activity: AccountActivity, tint: Color) -> some View {
+        switch right {
+        case .art: HomeAccountArt(account: a, tint: tint)
+        case .photo:
+            if isMasked(a) { HomeAccountArt(account: a, tint: tint) }
+            else if let data = a.cardOptions?.photo, let image = UIImage(data: data) {
+                Image(uiImage: image).resizable().scaledToFill().frame(width: 110, height: 92).clipped().clipShape(RoundedRectangle(cornerRadius: 13)).accessibilityLabel("Фото рахунку")
+            } else { Button { route = .settings } label: { VStack(spacing: 4) { HomeAccountArt(account: a, tint: tint); Text("Додати фото").font(.caption2) } }.buttonStyle(.plain) }
+        case .expenses: panel { metric("Витрати за місяць", amount(activity.spending, a), tint: .primary) }
+        case .credit:
+            if a.isCredit { panel { metric("Кредитний ліміт", amount(a.limit, a)) } }
+            else { HomeAccountArt(account: a, tint: tint) }
+        case .actions: quickActions(a, vertical: true)
+        case .last: panel { if let o = activity.history.first { metric("Остання операція", amount(activity.signed(o), a)); Text(o.note.isEmpty ? o.category : o.note).font(.caption2).foregroundStyle(.secondary).lineLimit(2) } else { Text("Немає операцій").font(.caption).foregroundStyle(.secondary) } }
+        case .count: panel { metric("Операцій за місяць", String(activity.count)) }
+        case .none: EmptyView()
+        }
+    }
+    @ViewBuilder private func creditFields(_ a: Account, fields: Set<String>, right: HomeAccountRight, style: HomeAccountStyle) -> some View {
+        let showLimit = fields.contains("limit") && right != .credit
+        let showUsed = fields.contains("used")
+        let showAvailable = fields.contains("available")
+        if showLimit || showUsed || showAvailable {
+            Divider()
+            if showLimit { metric("Кредитний ліміт", amount(a.limit, a)) }
+            if showUsed || showAvailable {
+                if style == .compact || dynamicTypeSize.isAccessibilitySize || !showUsed || !showAvailable {
+                    VStack(spacing: 8) {
+                        if showUsed { panel { metric("Використано кредиту", amount(s.debt(a), a), tint: .orange) } }
+                        if showAvailable { panel { metric("Доступний кредит", amount(max(0, a.limit - s.debt(a)), a), tint: .teal) } }
+                    }
+                } else {
+                    HStack(alignment: .top, spacing: 8) {
+                        panel { metric("Використано", amount(s.debt(a), a), tint: .orange) }
+                        panel { metric("Доступний кредит", amount(max(0, a.limit - s.debt(a)), a), tint: .teal) }
+                    }
+                }
+            }
+        }
+    }
+    @ViewBuilder private func activityFields(_ a: Account, fields: Set<String>, right: HomeAccountRight, activity: AccountActivity, style: HomeAccountStyle) -> some View {
+        let showIncome = fields.contains("income")
+        let showExpenses = fields.contains("expenses") && right != .expenses
+        if showIncome || showExpenses {
+            if showIncome && showExpenses && !dynamicTypeSize.isAccessibilitySize && style != .compact {
+                HStack(alignment: .top, spacing: 8) {
+                    panel { metric("Доходи за місяць", amount(activity.income, a), tint: .teal) }
+                    panel { metric("Витрати за місяць", amount(activity.spending, a)) }
+                }
+            } else {
+                if showIncome { panel { metric("Доходи за місяць", amount(activity.income, a), tint: .teal) } }
+                if showExpenses { panel { metric("Витрати за місяць", amount(activity.spending, a)) } }
+            }
+        }
+        if fields.contains("count") && right != .count { metric("Операцій за місяць", String(activity.count)) }
+        if let last = activity.history.first {
+            if fields.contains("last") && right != .last {
+                Button { route = .history } label: {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Остання операція").font(.caption).foregroundStyle(.secondary)
+                        Text(last.note.isEmpty ? last.category : last.note).font(.subheadline).foregroundStyle(.primary).lineLimit(2)
+                        Text(amount(activity.signed(last), a)).font(.headline).monospacedDigit().foregroundStyle(.primary)
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                }.buttonStyle(.plain)
+            }
+            if fields.contains("updated") { Text("Останній запис: " + last.date.formatted(date: .abbreviated, time: .shortened)).font(.caption2).foregroundStyle(.secondary) }
+        } else if fields.contains("last") && right != .last { Text("Немає записаних операцій").font(.caption).foregroundStyle(.secondary) }
+    }
+    private func action(_ kind: Kind, _ label: String, _ icon: String, _ a: Account) -> some View {
+        Button { start(kind, a) } label: {
+            VStack(spacing: 4) { Image(systemName: icon).font(.body.weight(.medium)); Text(label).font(.caption2).fixedSize(horizontal: false, vertical: true) }
+                .frame(maxWidth: .infinity, minHeight: 44).padding(.vertical, 3).background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
+        }.buttonStyle(.plain).accessibilityLabel(label + " — " + a.name)
+            .disabled(kind == .transfer && s.db.accounts.count < 2)
+    }
+    @ViewBuilder private func quickActions(_ a: Account, vertical: Bool) -> some View {
+        if vertical {
+            VStack(spacing: 5) { action(.expense, "Витрата", "minus.circle", a); action(.income, "Дохід", "plus.circle", a); action(.transfer, "Переказ", "arrow.left.arrow.right", a) }
+        } else {
+            HStack(spacing: 5) { action(.expense, "Витрата", "minus.circle", a); action(.income, "Дохід", "plus.circle", a); action(.transfer, "Переказ", "arrow.left.arrow.right", a) }
+        }
+    }
+}
+
+// General defaults and sorting. Hidden accounts remain available here.
+struct FinamiHomeAccountsSettings: View {
+    @EnvironmentObject private var s: Store
+    private var accounts: [Account] { finamiOrderedAccounts(s.db.accounts) }
+    private func preference<T>(_ key: WritableKeyPath<AppearancePreferences, T?>, fallback: T) -> Binding<T> {
+        Binding(get: { (s.db.preferences ?? .init())[keyPath: key] ?? fallback }, set: { value in s.change { d in var p = d.preferences ?? .init(); p[keyPath: key] = value; d.preferences = p } })
+    }
+    private func field(_ field: HomeAccountField) -> Binding<Bool> {
+        Binding(get: { (s.db.preferences?.homeAccountFields ?? HomeAccountField.defaults).contains(field.rawValue) }, set: { enabled in
+            s.change { d in var p = d.preferences ?? .init(); var values = p.homeAccountFields ?? HomeAccountField.defaults; values.removeAll { $0 == field.rawValue }; if enabled { values.append(field.rawValue) }; p.homeAccountFields = values; d.preferences = p }
+        })
+    }
+    var body: some View {
+        List {
+            Section("Загальний стиль") {
+                Picker("Шаблон", selection: Binding(get: { accountStyle(s.db.preferences?.homeAccountLayout).rawValue }, set: { v in s.change { d in var p = d.preferences ?? .init(); p.homeAccountLayout = v; d.preferences = p } })) {
+                    ForEach(HomeAccountStyle.allCases) { Text($0.title).tag($0.rawValue) }
+                }
+                Picker("Права частина", selection: preference(\.homeAccountRight, fallback: "")) {
+                    Text("За шаблоном").tag(""); ForEach(HomeAccountRight.allCases) { Text($0.title).tag($0.rawValue) }
+                }
+                Text("Права частина налаштовується окремо. Якщо показник вибраний праворуч, він не дублюється нижче.").font(.caption).foregroundStyle(.secondary)
+            }
+            Section("Показники за замовчуванням") { ForEach(HomeAccountField.allCases) { f in Toggle(f.title, isOn: field(f)) } }
+            Section("Закріплені") { accountRows(accounts.filter { $0.cardOptions?.pinned == true }, pinned: true) }
+            Section("Інші рахунки") { accountRows(accounts.filter { $0.cardOptions?.pinned != true }, pinned: false) }
+            Section { Text("Натисни «Редагувати», щоб змінити порядок у кожній групі. Персональне оформлення має пріоритет над загальними налаштуваннями. Історія й залишки не змінюються.").font(.caption) }
+        }.navigationTitle("Мої рахунки").toolbar { EditButton() }
+    }
+    @ViewBuilder private func accountRows(_ rows: [Account], pinned: Bool) -> some View {
+        if rows.isEmpty { Text("Немає рахунків").foregroundStyle(.secondary) }
+        ForEach(rows) { a in
+            NavigationLink { FinamiHomeAccountSettings(accountID: a.id) } label: {
+                HStack { FinamiArt(icon: accountArtIcon(a), tint: accountTint(a, fallback: .teal), size: 36); VStack(alignment: .leading) { Text(a.name); Text(a.hiddenInOverview == true ? "Приховано на головній" : accountStyle(a.cardOptions?.style ?? s.db.preferences?.homeAccountLayout).title).font(.caption).foregroundStyle(.secondary) } }
+            }
+        }.onMove { source, destination in
+            var moved = rows; moved.move(fromOffsets: source, toOffset: destination)
+            let ids = (pinned ? moved + accounts.filter { $0.cardOptions?.pinned != true } : accounts.filter { $0.cardOptions?.pinned == true } + moved).map(\.id)
+            s.change { d in for (order, id) in ids.enumerated() { if let i = d.accounts.firstIndex(where: { $0.id == id }) { var options = d.accounts[i].cardOptions ?? .init(); options.order = order; d.accounts[i].cardOptions = options } } }
+        }
+    }
+}
+
+struct FinamiHomeAccountSettings: View {
+    @EnvironmentObject private var s: Store
+    @Environment(\.dismiss) private var dismiss
+    var accountID: String
+    var closeButton = false
+    @State private var photo: PhotosPickerItem?
+    @State private var photoError = false
+    @State private var photoLoading = false
+    private var account: Account? { s.db.accounts.first { $0.id == accountID } }
+    private var options: AccountCardOptions { account?.cardOptions ?? .init() }
+    private func update(_ action: (inout AccountCardOptions) -> Void) {
+        s.change { d in if let i = d.accounts.firstIndex(where: { $0.id == accountID }) { var o = d.accounts[i].cardOptions ?? .init(); action(&o); d.accounts[i].cardOptions = o } }
+    }
+    private func selection(_ key: WritableKeyPath<AccountCardOptions, String?>) -> Binding<String> {
+        Binding(get: { options[keyPath: key] ?? "" }, set: { v in update { $0[keyPath: key] = v.isEmpty ? nil : v } })
+    }
+    private func field(_ f: HomeAccountField) -> Binding<Bool> {
+        Binding(get: { (options.fields ?? s.db.preferences?.homeAccountFields ?? HomeAccountField.defaults).contains(f.rawValue) }, set: { v in
+            update { o in var fields = o.fields ?? s.db.preferences?.homeAccountFields ?? HomeAccountField.defaults; fields.removeAll { $0 == f.rawValue }; if v { fields.append(f.rawValue) }; o.fields = fields }
+        })
+    }
+    var body: some View {
+        Form {
+            if let a = account {
+                Section("На головній") {
+                    Toggle("Показувати рахунок", isOn: Binding(get: { account?.hiddenInOverview != true }, set: { v in s.change { d in if let i = d.accounts.firstIndex(where: { $0.id == accountID }) { d.accounts[i].hiddenInOverview = !v } } }))
+                    Toggle("Закріпити зверху", isOn: Binding(get: { options.pinned == true }, set: { v in update { $0.pinned = v } }))
+                    Toggle("Приховати суми", isOn: Binding(get: { account?.hideAmounts == true }, set: { v in s.change { d in if let i = d.accounts.firstIndex(where: { $0.id == accountID }) { d.accounts[i].hideAmounts = v } } }))
+                }
+                Section("Дизайн") {
+                    Picker("Шаблон", selection: selection(\.style)) { Text("Загальний").tag(""); ForEach(HomeAccountStyle.allCases) { Text($0.title).tag($0.rawValue) } }
+                    Picker("Права частина", selection: selection(\.right)) { Text("Загальна").tag(""); ForEach(HomeAccountRight.allCases) { Text($0.title).tag($0.rawValue) } }
+                    Picker("Акцент", selection: selection(\.accent)) { Text("Автоматично").tag(""); ForEach(IzanamiTheme.all) { theme in Label(theme.name, systemImage: "circle.fill").foregroundStyle(theme.color).tag(theme.name) } }
+                    if !a.isCredit { Text("Кредитні показники відображаються лише для кредитних рахунків.").font(.caption).foregroundStyle(.secondary) }
+                }
+                Section("Фото рахунку") {
+                    if let data = options.photo, let image = UIImage(data: data) { Image(uiImage: image).resizable().scaledToFit().frame(maxHeight: 140).clipShape(RoundedRectangle(cornerRadius: 12)) }
+                    PhotosPicker(selection: $photo, matching: .images) { Label("Вибрати фото", systemImage: "photo") }.disabled(photoLoading)
+                    if photoLoading { ProgressView("Обробка фото") }
+                    if options.photo != nil { Button("Видалити фото", role: .destructive) { update { $0.photo = nil; if $0.right == "photo" { $0.right = "art" } } } }
+                    Text("Фото зберігається локально у резервній копії. Не додавай фото з повним номером картки або CVV.").font(.caption).foregroundStyle(.secondary)
+                }
+                Section("Інформація на картці") {
+                    Toggle("Використовувати загальні показники", isOn: Binding(get: { options.fields == nil }, set: { v in update { $0.fields = v ? nil : (s.db.preferences?.homeAccountFields ?? HomeAccountField.defaults) } }))
+                    if options.fields != nil { ForEach(HomeAccountField.allCases) { f in Toggle(f.title, isOn: field(f)) } }
+                }
+                Section { Button("Скинути індивідуальний дизайн") { update { $0.style = nil; $0.right = nil; $0.fields = nil; $0.accent = nil } } }
+            } else { Text("Рахунок не знайдено") }
+        }.navigationTitle(account?.name ?? "Оформлення рахунку")
+            .toolbar { if closeButton { ToolbarItem(placement: .confirmationAction) { Button("Готово") { dismiss() } } } }
+            .onChange(of: photo) { item in
+                guard let item = item else { return }
+                photoLoading = true
+                Task { @MainActor in
+                    defer { photoLoading = false; photo = nil }
+                    let thumbnailOptions: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceThumbnailMaxPixelSize: 640]
+                    guard let data = try? await item.loadTransferable(type: Data.self),
+                          let source = CGImageSourceCreateWithData(data as CFData, nil),
+                          let thumb = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions as CFDictionary),
+                          let jpeg = UIImage(cgImage: thumb).jpegData(compressionQuality: 0.75) else { photoError = true; return }
+                    update { $0.photo = jpeg; $0.right = "photo" }
+                }
+            }
+            .alert("Не вдалося завантажити фото", isPresented: $photoError) { Button("Гаразд", role: .cancel) {} }
+    }
+}
+
+private struct HomeAccountHistory: View {
+    @EnvironmentObject private var s: Store
+    @Environment(\.dismiss) private var dismiss
+    var accountID: String
+    var blockMasked: Bool
+    @State private var edit: Operation?
+    var body: some View {
+        List {
+            if let a = s.db.accounts.first(where: { $0.id == accountID }) {
+                let activity = AccountActivity(account: a, operations: s.db.operations, month: Date())
+                let mask = blockMasked || s.privateAmounts || a.hideAmounts == true
+                if activity.history.isEmpty { Text("Немає операцій") }
+                ForEach(activity.history) { o in
+                    Button { edit = o } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(o.note.isEmpty ? o.category : o.note).font(.headline).foregroundStyle(.primary)
+                            Text(o.kind.title + " · " + o.date.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary)
+                            Text(mask ? "****" : currencyMoney(activity.signed(o), a.code)).font(.title3.weight(.semibold)).foregroundStyle(.primary).monospacedDigit()
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                    }.buttonStyle(.plain)
+                }
+            } else { Text("Рахунок не знайдено") }
+        }.navigationTitle("Операції рахунку").toolbar { ToolbarItem(placement: .confirmationAction) { Button("Готово") { dismiss() } } }.sheet(item: $edit) { OpEditor(original: $0) }
+    }
+}
