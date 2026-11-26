@@ -13,7 +13,8 @@ struct FinamiStatementMatchIndex {
                 else { bySigned[o.signedNative, default: []].append(o) }
             }
             if o.kind == .transfer && o.destination == account && o.account != account {
-                if let key = o.destinationBankKey { keys.append(key) }
+                if let parts = o.groupedBankParts { keys.append(contentsOf: parts.map(\.key)) }
+                else if let key = o.destinationBankKey { keys.append(key) }
                 else { bySigned[o.destinationMinor ?? o.amount, default: []].append(o) }
             }
         }
@@ -33,8 +34,30 @@ func finamiAttachStatement(_ row: BankRow, to operation: inout Operation, accoun
     if operation.account == account, operation.bankKey == nil, operation.signedNative == row.signed {
         operation.bankKey = row.key; return true
     }
-    if operation.kind == .transfer, operation.destination == account, operation.account != account, operation.destinationBankKey == nil, (operation.destinationMinor ?? operation.amount) == row.signed {
+    if operation.kind == .transfer, operation.destination == account, operation.account != account, operation.destinationBankKey == nil, operation.groupedBankParts == nil, (operation.destinationMinor ?? operation.amount) == row.signed {
         operation.destinationBankKey = row.key; return true
     }
     return false
+}
+
+// Reimport can enrich existing bank metadata, without recording money again.
+func finamiEnrichStatementMetadata(_ batch:BankBatch,operations:[Operation],account:String)->(operations:[Operation],count:Int) {
+    let byKey=Dictionary(grouping:batch.rows,by:\.key)
+    let old=Dictionary(grouping:operations.filter{$0.account==account && $0.bankKey != nil && $0.groupedBankParts==nil},by:{$0.bankKey ?? ""})
+    var result=operations,count=0
+    for i in result.indices where result[i].account==account && result[i].groupedBankParts==nil {
+        guard let key=result[i].bankKey,old[key]?.count==1,let rows=byKey[key],rows.count==1,let row=rows.first else{continue}
+        var o=result[i]
+        if let iban=batch.statementIBAN {
+            guard o.statementIBAN==nil || o.statementIBAN==iban else{continue}
+            o.statementIBAN=iban
+        }
+        if row.postingKnown==true {
+            if o.bankPostingDate==nil {o.bankPostingDate=row.postingDate}
+            o.bankPostingKnown=true
+        }
+        if o.creditContractSuffix==nil {o.creditContractSuffix=row.creditContractSuffix}
+        if o != result[i] {result[i]=o;count+=1}
+    }
+    return (result,count)
 }

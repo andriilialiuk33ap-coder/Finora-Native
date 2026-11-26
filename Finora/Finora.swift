@@ -75,6 +75,10 @@ struct Account: Codable, Identifiable {
   var accountType: String? = nil
   var bankName: String? = nil
   var lastFour: String? = nil
+  var statementIBAN: String? = nil
+  var additionalCardMasks: [String]? = nil
+  var reconciliationDate: Date? = nil
+  var reconciliationNet: Int64? = nil
   var creditLimit: Int64? = nil
   var hiddenInAccounts: Bool? = nil
   var hiddenInOverview: Bool? = nil
@@ -85,6 +89,18 @@ struct Account: Codable, Identifiable {
   var isCredit: Bool { accountType == "credit" }
   var limit: Int64 { isCredit ? max(0,creditLimit ?? 0) : 0 }
   var typeName: String { isCredit ? "Кредитна картка" : accountType == "debit" ? "Дебетова картка" : id == cash || accountType == "cash" ? "Готівка" : "Інший рахунок" }
+}
+// Original bank legs of a confirmed grouped conversion; not separate ledger movements.
+struct FinamiBankPart: Codable, Equatable {
+  var key: String
+  var date: Date
+  var amount: Int64
+  var note: String
+  var importBatch: String?
+  var sourceBank: String?
+  var originalAmount: Int64?
+  var originalCurrency: String?
+  var postingDate: Date?
 }
 struct Operation: Codable, Identifiable, Equatable {
   var id = UUID().uuidString
@@ -97,6 +113,12 @@ struct Operation: Codable, Identifiable, Equatable {
   var destination = ""
   var bankKey: String? = nil
   var destinationBankKey: String? = nil
+  var groupedBankParts: [FinamiBankPart]? = nil
+  var refundOriginalID: String? = nil
+  var statementIBAN: String? = nil
+  var bankPostingDate: Date? = nil
+  var bankPostingKnown: Bool? = nil
+  var creditContractSuffix: String? = nil
   var destinationBankNote: String? = nil
   var mergedImportBatches: [String]? = nil
   var sourceBank: String? = nil
@@ -127,7 +149,10 @@ struct Operation: Codable, Identifiable, Equatable {
 struct FinamiLedgerIndex {
   private var deltas: [String: Int64] = [:]
   private var histories: [String: [Operation]] = [:]
-  init(operations: [Operation]) {
+  private var anchors: [String: Date] = [:]
+  private var anchoredDeltas: [String: Int64] = [:]
+  init(operations: [Operation], accounts:[Account] = []) {
+    for a in accounts { if let date=a.reconciliationDate,a.reconciliationNet != nil {anchors[a.id]=date} }
     for o in operations {
       if o.kind == .transfer {
         deltas[o.account, default: 0] -= o.sourceMinor ?? o.amount
@@ -135,9 +160,36 @@ struct FinamiLedgerIndex {
         if o.destination != o.account { histories[o.destination, default: []].append(o) }
       } else { deltas[o.account, default: 0] += o.signedNative }
       histories[o.account, default: []].append(o)
+      if let d=anchors[o.account] { anchoredDeltas[o.account,default:0] += Self.movement(o,account:o.account,after:d,until:nil) }
+      if o.kind == .transfer,o.destination != o.account,let d=anchors[o.destination] { anchoredDeltas[o.destination,default:0] += Self.movement(o,account:o.destination,after:d,until:nil) }
     }
   }
-  func balance(_ a: Account) -> Int64 { a.opening + (deltas[a.id] ?? 0) }
+  // Bank legs retain their actual timestamps for historical balances.
+  private static func movement(_ o:Operation,account:String,after:Date?,until:Date?)->Int64 {
+    func includes(_ date:Date)->Bool {(after.map{date>$0} ?? true) && (until.map{date<=$0} ?? true)}
+    var value:Int64=0
+    if o.account==account,includes(o.date){value += o.signedNative}
+    if o.kind == .transfer,o.destination==account {
+      if let parts=o.groupedBankParts {for p in parts where includes(p.date) {value += p.amount}}
+      else if includes(o.date){value += o.destinationMinor ?? o.amount}
+    }
+    return value
+  }
+  func balance(_ a: Account) -> Int64 {
+    if let date=a.reconciliationDate,let net=a.reconciliationNet {
+      if anchors[a.id]==date {return net+(anchoredDeltas[a.id] ?? 0)}
+      return net+history(a.id).reduce(0){$0+Self.movement($1,account:a.id,after:date,until:nil)}
+    }
+    return a.opening + (deltas[a.id] ?? 0)
+  }
+  func balanceAt(_ a:Account,date:Date)->Int64 {
+    let rows=history(a.id)
+    if let anchor=a.reconciliationDate,let net=a.reconciliationNet {
+      if date>=anchor {return net+rows.reduce(0){$0+Self.movement($1,account:a.id,after:anchor,until:date)}}
+      return net-rows.reduce(0){$0+Self.movement($1,account:a.id,after:date,until:anchor)}
+    }
+    return a.opening+rows.reduce(0){$0+Self.movement($1,account:a.id,after:nil,until:date)}
+  }
   func history(_ id: String) -> [Operation] { histories[id] ?? [] }
 }
 // Native currency amounts, matching the existing ledger convention. Transfers
@@ -196,6 +248,7 @@ struct Obligation: Codable, Identifiable {
   var paid: Int64 = 0
   var monthly: Int64 = 0
   var due = Date()
+  var creditContractSuffix: String? = nil
   var scanFingerprint: String? = nil
   var scanImageID: String? = nil
   var scanSourceIDs: [String]? = nil
@@ -251,6 +304,7 @@ struct Database: Codable {
   var paymentPhotos: [String: Data]? = nil
   var paidRecords: [FinamiPaidRecord]? = nil
   var scanImages: [String: Data]? = nil
+  var reconciliationUndo: Data? = nil
 }
 struct Legacy: Decodable {
   struct Entry: Decodable {
@@ -280,6 +334,7 @@ struct DataFile: FileDocument {
       mutationVersion &+= 1
       if oldValue.operations != db.operations { ledgerIndex = nil; reportCache.removeAll(); comparisonCache.removeAll(); activityCache.removeAll(); historyCache.removeAll() }
       if oldValue.accounts.map(\.id) != db.accounts.map(\.id) || oldValue.accounts.map(\.name) != db.accounts.map(\.name) { historyCache.removeAll() }
+      if oldValue.accounts.map(\.reconciliationDate) != db.accounts.map(\.reconciliationDate) || oldValue.accounts.map(\.id) != db.accounts.map(\.id) {ledgerIndex=nil}
     }
   }
   private var mutationVersion: UInt64 = 0
@@ -303,7 +358,7 @@ struct DataFile: FileDocument {
   }
   private var indexedLedger: FinamiLedgerIndex {
     if let ledgerIndex { return ledgerIndex }
-    let index = FinamiLedgerIndex(operations: db.operations)
+    let index = FinamiLedgerIndex(operations: db.operations,accounts:db.accounts)
     ledgerIndex = index
     return index
   }
@@ -399,6 +454,11 @@ struct DataFile: FileDocument {
       error = "Операція пов’язана з оплаченим платежем. Зміна суми, рахунку, дати, типу або видалення заблоковані, щоб не порушити графік."
       return false
     }
+    guard finamiSynchronizeRefundLinks(&copy.operations) else {error="Повернення пов’язано з покупкою. Спочатку перевір або відв’яжи повернення.";return false}
+    if !finamiGroupedTransfersPreserved(before:db.operations,after:copy.operations) {
+      guard copy.reconciliationUndo == nil,let data=db.reconciliationUndo,let undo=try? JSONDecoder().decode(FinamiBalanceUndo.self,from:data),undo.restore(current:db.operations)==copy.operations else {error="Груповий переказ захищено. Спочатку скасуй звірку.";return false}
+    }
+    if db.operations != copy.operations, db.reconciliationUndo == copy.reconciliationUndo {copy.reconciliationUndo=nil}
     if let images = copy.scanImages {
       let references = Set(copy.operations.compactMap(\.scanImageID) + copy.obligations.compactMap(\.scanImageID))
       copy.scanImages = images.filter { references.contains($0.key) }
@@ -436,6 +496,9 @@ struct DataFile: FileDocument {
     let version = mutationVersion
     var copy = db; copy.operations = operations; copy.appearanceRevision = UUID().uuidString
     guard finamiLinkedOperationsPreserved(before: db, after: copy) else { error = "Імпорт змінює операцію, пов’язану з платежем. Перевір зіставлення."; return false }
+    guard finamiSynchronizeRefundLinks(&copy.operations) else {error="Імпорт порушує зв’язок повернення з покупкою.";return false}
+    guard finamiGroupedTransfersPreserved(before:db.operations,after:copy.operations) else {error="Імпорт змінює груповий переказ.";return false}
+    if db.operations != copy.operations {copy.reconciliationUndo=nil}
     let candidate = copy
     do {
       let data = try await Task.detached(priority:.userInitiated) { try JSONEncoder().encode(candidate) }.value
@@ -507,16 +570,17 @@ struct DataFile: FileDocument {
   func accountName(_ id: String) -> String { db.accounts.first { $0.id == id }?.name ?? "Рахунок" }
   func restore(_ data: Data) {
     do {
-      let decoded = try JSONDecoder().decode(Database.self, from: data)
+      var decoded = try JSONDecoder().decode(Database.self, from: data)
       guard !decoded.accounts.isEmpty,
         Set(decoded.accounts.map(\.id)).count == decoded.accounts.count,
-        decoded.accounts.allSatisfy({ ["UAH","USD"].contains($0.code) && $0.opening >= -1_000_000_000_000 && $0.opening <= 1_000_000_000_000 && ($0.creditLimit ?? 0) >= 0 && ($0.creditLimit ?? 0) <= 1_000_000_000_000 }),
+        decoded.accounts.allSatisfy({ ["UAH","USD"].contains($0.code) && $0.opening >= -1_000_000_000_000 && $0.opening <= 1_000_000_000_000 && ($0.creditLimit ?? 0) >= 0 && ($0.creditLimit ?? 0) <= 1_000_000_000_000 && ($0.reconciliationNet.map{$0 >= -1_000_000_000_000 && $0 <= 1_000_000_000_000} ?? true) && (($0.reconciliationDate == nil) == ($0.reconciliationNet == nil)) }),
         (!decoded.accounts.contains(where:{$0.code=="USD"}) || fxRate(decoded.currencyPreferences?.usdRate ?? "") != nil),
         Set(decoded.operations.map(\.id)).count == decoded.operations.count,
         decoded.obligations.allSatisfy({ o in (o.importedSchedule ?? []).allSatisfy { $0.amount > 0 && $0.amount <= 1_000_000_000_000 } && (o.currentDuePaid.map { $0 >= 0 && $0 < o.monthly && $0 <= o.paid } ?? true) }),
         (decoded.balanceObservations ?? [:]).values.allSatisfy({ $0.available >= 0 && $0.available <= 1_000_000_000_000 && ["UAH","USD"].contains($0.currency) }),
         decoded.operations.allSatisfy({ o in
           o.amount > 0 && o.amount <= 1_000_000_000_000
+            && finamiValidGroupedBankParts(o)
             && (o.sourceMinor.map { $0 > 0 && $0 <= 1_000_000_000_000 } ?? true)
             && (o.destinationMinor.map { $0 > 0 && $0 <= 1_000_000_000_000 } ?? true)
             && (decoded.accounts.first(where:{$0.id==o.account})?.code != "USD" || (o.sourceMinor != nil && fxRate(o.exchangeRate ?? "") != nil))
@@ -527,6 +591,7 @@ struct DataFile: FileDocument {
                 && decoded.accounts.contains(where: { a in a.id == o.destination })))
         })
       else { throw CocoaError(.fileReadCorruptFile) }
+      guard finamiSynchronizeRefundLinks(&decoded.operations) else {error="Копія містить некоректні зв’язки повернень.";return}
       _ = write(decoded)
     } catch { self.error = "Не вдалося відновити JSON: \(error.localizedDescription)" }
   }
@@ -881,6 +946,7 @@ struct AccountEditor: View {
   @State var a: Account
   @State var opening: String
   @State private var limitText: String = ""
+  @State private var masksText: String = ""
   @State private var actualText: String = ""
   @State private var correctBalance = false
   @State private var actualMode = "net"
@@ -896,7 +962,7 @@ struct AccountEditor: View {
     if a.isCredit && actualMode == "components" { guard let n=enteredCardNet else{return nil}; net=n }
     else { guard let actual=bankMinor(actualText), actualMode != "available" || actual>=0 else{return nil}; net=actualMode == "available" && a.isCredit ? actual-(bankMinor(limitText) ?? 0) : actual }
     let old=s.db.accounts.first{$0.id==a.id}
-    let history=old.map{s.nativeBalance($0)-$0.opening} ?? 0
+    let history=old.map{ old in var unanchored=old;unanchored.reconciliationDate=nil;unanchored.reconciliationNet=nil;return s.nativeBalance(unanchored)-unanchored.opening} ?? 0
     let result=net-history
     return abs(result)<=1_000_000_000_000 ? result : nil
   }
@@ -914,6 +980,7 @@ struct AccountEditor: View {
     _a = State(initialValue: a)
     _opening = State(initialValue: amountText(a.opening))
     _limitText = State(initialValue:amountText(a.limit))
+    _masksText = State(initialValue:(a.additionalCardMasks ?? []).joined(separator:", "))
   }
   var body: some View {
     NavigationStack {
@@ -923,6 +990,8 @@ struct AccountEditor: View {
           Text("Готівка").tag("cash");Text("Дебетова картка").tag("debit");Text("Кредитна картка").tag("credit");Text("Інший рахунок").tag("other")
         }
         TextField("Банк (необов’язково)",text:Binding(get:{a.bankName ?? ""},set:{a.bankName=$0}))
+        TextField("IBAN рахунку (необов’язково)",text:Binding(get:{a.statementIBAN ?? ""},set:{a.statementIBAN=$0.uppercased()})).textInputAutocapitalization(.characters).autocorrectionDisabled()
+        TextField("Додаткові маски карток через кому",text:$masksText)
         TextField("Останні 4 цифри (необов’язково)",text:Binding(get:{a.lastFour ?? ""},set:{a.lastFour=String($0.filter{$0.isASCII && $0.isNumber}.prefix(4))})).keyboardType(.numberPad)
         if a.isCredit {FinamiField("Кредитний ліміт, \(a.code)", text: $limitText, keyboard: .decimalPad)}
         Picker("Валюта рахунку",selection:Binding(get:{a.code},set:{a.currency=$0})){Text("UAH").tag("UAH");Text("USD").tag("USD")}.disabled(s.db.operations.contains{$0.account==a.id || $0.destination==a.id})
@@ -933,6 +1002,7 @@ struct AccountEditor: View {
           Toggle("Не враховувати в загальних сумах", isOn: Binding(get:{a.excludedFromTotals ?? false},set:{a.excludedFromTotals=$0}))
           Text("Видимість не видаляє операції та не змінює історію.").font(.caption)
         }
+        if let date=a.reconciliationDate {Text("Контрольний баланс на "+date.formatted(date:.abbreviated,time:.shortened)+". Зміна початкової суми або ручна корекція скине цю прив’язку.").font(.caption)}
         Toggle("Звірити з поточним балансом банку",isOn:$correctBalance)
         if correctBalance {
           if a.isCredit {Picker("Яку суму показує банк",selection:$actualMode){Text("Чистий баланс (+ власні / − борг)").tag("net");Text("Доступно разом з кредитом").tag("available");Text("Власні кошти та використаний кредит").tag("components")}}
@@ -953,7 +1023,10 @@ struct AccountEditor: View {
         ToolbarItem(placement: .confirmationAction) {
           Button("Зберегти") {
             guard let n = newOpening, validLimit else { return }
+            if a.opening != n || correctBalance {a.reconciliationDate=nil;a.reconciliationNet=nil}
             a.opening = n
+            a.statementIBAN = bankNormalizedIBAN(a.statementIBAN ?? "")
+            a.additionalCardMasks = Array(Set(masksText.split(separator:",").map{String($0).trimmingCharacters(in:.whitespacesAndNewlines)}.filter{$0.count==4 && $0.allSatisfy{$0.isASCII && $0.isNumber}})).sorted()
             a.creditLimit = a.isCredit ? bankMinor(limitText) : nil
             if s.change({ d in
               if let i = d.accounts.firstIndex(where: { $0.id == a.id }) {
@@ -965,7 +1038,7 @@ struct AccountEditor: View {
               dismiss()
             }
           }.disabled(
-            a.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || newOpening == nil || !validLimit || (a.code == "USD" && s.currentRate == nil))
+            a.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || (!(a.statementIBAN ?? "").trimmingCharacters(in:.whitespacesAndNewlines).isEmpty && bankNormalizedIBAN(a.statementIBAN ?? "") == nil) || newOpening == nil || !validLimit || (a.code == "USD" && s.currentRate == nil))
         }
       }
     }
@@ -1222,6 +1295,7 @@ struct ObligationEditor: View {
         Section("Параметри") {
           FinamiField("Назва", text: $o.name)
           if o.kind == .installment {
+            TextField("Останні 4 цифри договору (необов’язково)",text:Binding(get:{o.creditContractSuffix ?? ""},set:{o.creditContractSuffix=String($0.filter{$0.isASCII && $0.isNumber}.prefix(4))})).keyboardType(.numberPad)
             FinamiField("Загальний кредит, ₴", text: $target, keyboard: .decimalPad)
             FinamiField("Поточний залишок розстрочки, ₴", text: $remainingText, keyboard: .decimalPad)
             Text("Введи залишок боргу, не суму вже сплачених платежів.").font(.caption)

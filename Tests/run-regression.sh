@@ -6,7 +6,7 @@ trap 'rm -rf "$tmp"' EXIT
 swiftc -warnings-as-errors -typecheck Finora/BankCore.swift Finora/MoneyCore.swift Finora/AutomationCore.swift Finora/FinamiScanCore.swift
 swiftc Finora/BankCore.swift Finora/MoneyCore.swift Finora/AutomationCore.swift Tests/main.swift -o "$tmp/finami-core-tests"
 "$tmp/finami-core-tests"
-for test in check-model check-finami check-preview2 check-preview3 check-preview4 check-preview5 check-preview6 check-preview9 check-preview10 check-preview102 check-preview103 check-preview104 check-preview105 check-51 check-52 check-53 check-export-report; do
+for test in check-model check-finami check-preview2 check-preview3 check-preview4 check-preview5 check-preview6 check-preview9 check-preview10 check-preview102 check-preview103 check-preview104 check-preview105 check-51 check-52 check-53 check-export-report check-532; do
   echo "=== $test ==="
   bash "Tests/$test.sh"
 done

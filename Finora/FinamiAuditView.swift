@@ -14,6 +14,7 @@ struct FinamiAuditView: View {
                 LabeledContent("Операцій",value:String(s.db.operations.count))
                 LabeledContent("Потребують уточнення типу",value:String(s.db.operations.filter{$0.kind.needsReview}.count))
                 LabeledContent("Можливі суперечності",value:String(issues.count))
+                NavigationLink("Розумна звірка та валютний обмін") { FinamiBalanceView() }
                 NavigationLink("Звірка з банківським залишком") { FinamiReconciliation() }
                 NavigationLink("Категорії та правила") { FinamiRulesView() }
                 Text("Перевірка не змінює суми, рахунки або історію без підтвердження.").font(.caption)
@@ -44,9 +45,9 @@ struct FinamiAuditView: View {
         Button("Підтвердити всі як доходи"){confirmIncome=true}
     } }
     @ViewBuilder private func historicalRow(_ obligation:Obligation)->some View {
-        let candidates=s.db.operations.filter{ o in obligation.monthly>0 && (o.sourceMinor ?? o.amount)==obligation.monthly && finamiHistoricalPaymentRecord(obligation:obligation,operation:o,accounts:s.db.accounts,records:s.db.paidRecords ?? []) != nil }
+        let candidates=s.db.operations.filter{ o in finamiContractMatches(obligation:obligation,operation:o) && finamiHistoricalPaymentRecord(obligation:obligation,operation:o,accounts:s.db.accounts,records:s.db.paidRecords ?? []) != nil }
         if !candidates.isEmpty { DisclosureGroup(obligation.name) {
-            Text("Збіг суми не доводить оплату. Якщо вона вже врахована в залишку, додай тільки до історії. Якщо ще не врахована, відкрий операцію та зв’яжи її з поточним платежем.").font(.caption)
+            Text("Збіг суми або маски договору не доводить оплату. Якщо вона вже врахована в залишку, додай тільки до історії. Якщо ще не врахована, відкрий операцію та зв’яжи її з поточним платежем.").font(.caption)
             ForEach(candidates.prefix(20)) { o in
                 VStack(alignment:.leading,spacing:6) {
                     Text(s.accountName(o.account)+" · "+o.date.formatted(date:.abbreviated,time:.omitted));Text(s.visibleMoney(o.amount)).font(.caption)

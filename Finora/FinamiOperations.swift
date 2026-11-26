@@ -118,11 +118,18 @@ struct OpEditor: View {
   @State private var learnRule = false
   @State private var entryCurrency = "UAH"
   @State private var rate = ""
+  @State private var exactReceived = ""
   @State private var linkedPaymentID = ""
   @State private var separatePayment = false
   private var linkedRecord: FinamiPaidRecord? { (s.db.paidRecords ?? []).first { $0.operationID == o.id } }
+  private var financialLocked: Bool {linkedRecord != nil || o.groupedBankParts != nil}
   private var savedOperation: Bool { s.db.operations.contains { $0.id == o.id } }
-  private var paymentChoices: [FinamiPayment] { s.upcomingPayments.filter { $0.currency == sourceCode && $0.amount > 0 } }
+  private var paymentChoices: [FinamiPayment] {
+    let choices=s.upcomingPayments.filter { $0.currency == sourceCode && $0.amount > 0 }
+    guard let suffix=o.creditContractSuffix,suffix.count==4 else{return choices}
+    let ids=Set(s.db.obligations.filter{$0.creditContractSuffix==suffix}.map(\.id))
+    return choices.filter{ids.contains($0.id)} + choices.filter{!ids.contains($0.id)}
+  }
   private var selectedPayment: FinamiPayment? { paymentChoices.first { $0.id == linkedPaymentID } }
   private var nativeAmount: Int64? { sourceCode == "USD" ? bankMinor(amount) : converted }
   private var similarPayments: [Operation] {
@@ -138,6 +145,7 @@ struct OpEditor: View {
     _amount = State(initialValue: input == 0 ? "" : amountText(input))
     _entryCurrency = State(initialValue: original.entryCurrency ?? "UAH")
     _rate = State(initialValue: original.exchangeRate ?? "")
+    _exactReceived = State(initialValue: original.entryCurrency == "USD" && original.kind == .transfer && original.destinationMinor != nil ? amountText(original.destinationMinor ?? 0) : (original.kind == .income && original.entryCurrency == "USD" && original.originalCurrency == "USD" ? amountText(original.amount):""))
   }
   var categories: [String] { let list = o.kind == .income ? s.db.incomeCategories : s.db.expenseCategories; let hidden = o.kind == .income ? (s.db.hiddenIncomeCategories ?? []) : (s.db.hiddenExpenseCategories ?? []); let available = list.filter { !hidden.contains($0) || $0 == o.category }; return Array(Set(available + ["Без категорії",o.category])).sorted() }
   var allowedKinds: [Kind] {
@@ -146,10 +154,13 @@ struct OpEditor: View {
   }
   var sourceCode:String { s.db.accounts.first(where:{$0.id==o.account})?.code ?? "UAH" }
   var destinationCode:String { s.db.accounts.first(where:{$0.id==o.destination})?.code ?? "UAH" }
+  private var supportsExactUAH:Bool {o.sourceBank == nil && ((o.kind == .transfer && sourceCode == "USD" && destinationCode == "UAH") || (o.kind == .income && sourceCode == "UAH" && entryCurrency == "USD"))}
+  private var exactMode:Bool {supportsExactUAH && !exactReceived.isEmpty}
   var requiresRate:Bool { entryCurrency == "USD" || (o.kind == .transfer && destinationCode == "USD") }
-  var usedRate:Decimal? {fxRate(rate)}
+  var usedRate:Decimal? {if exactMode,let n=bankMinor(amount),n>0,let actual=bankMinor(exactReceived),actual>0{return Decimal(actual)/Decimal(n)};return fxRate(rate)}
   var converted:Int64? {
     guard let n=bankMinor(amount), n>0 else{return nil}
+    if exactMode {guard let actual=bankMinor(exactReceived),actual>0 else{return nil};return actual}
     if entryCurrency == "USD" {guard let r=usedRate else{return nil};return fxMinor(n,rate:r)}
     return n
   }
@@ -159,7 +170,7 @@ struct OpEditor: View {
     return uah
   }
   var valid: Bool {
-    paymentSelectionValid && (converted ?? 0)>0 && s.db.accounts.contains { $0.id == o.account } && (!requiresRate || usedRate != nil)
+    paymentSelectionValid && (converted ?? 0)>0 && s.db.accounts.contains { $0.id == o.account } && (!requiresRate || usedRate.map{fxRate(finamiFXRateText($0)) != nil} == true)
       && (sourceCode != "USD" || entryCurrency == "USD")
       && (o.kind != .transfer || (o.account != o.destination && s.db.accounts.contains { $0.id == o.destination } && (received ?? 0)>0 && entryCurrency == sourceCode))
   }
@@ -167,29 +178,33 @@ struct OpEditor: View {
     NavigationStack {
       Form {
         Picker("Тип", selection: $o.kind) { ForEach(allowedKinds) { Text($0.title).tag($0) } }
-          .pickerStyle(.menu).disabled(linkedRecord != nil)
+          .pickerStyle(.menu).disabled(financialLocked)
         if o.kind.needsReview { Text("Не входить у доходи чи витрати до уточнення. Баланс враховує рух коштів.").font(.caption) }
-        FinamiField("Сума, \(entryCurrency)", text: $amount, keyboard: .decimalPad).disabled(linkedRecord != nil)
+        FinamiField("Сума, \(entryCurrency)", text: $amount, keyboard: .decimalPad).disabled(financialLocked)
         if o.kind != .transfer && sourceCode == "UAH" && o.sourceBank == nil {
-          Picker("Валюта введення",selection:$entryCurrency){Text("Гривня").tag("UAH");Text("Долар").tag("USD")}.disabled(linkedRecord != nil)
+          Picker("Валюта введення",selection:$entryCurrency){Text("Гривня").tag("UAH");Text("Долар").tag("USD")}.disabled(financialLocked)
         }
-        if requiresRate { FinamiField("Курс UAH за 1 USD", text: $rate, keyboard: .decimalPad).disabled(linkedRecord != nil); if let n=converted { LabeledContent("Сума у гривнях",value:money(n)) } }
-        DatePicker("Дата і час", selection: $o.date, displayedComponents: [.date,.hourAndMinute]).disabled(linkedRecord != nil)
+        if requiresRate { FinamiField("Курс UAH за 1 USD", text: $rate, keyboard: .decimalPad).disabled(financialLocked); if let n=converted { LabeledContent("Сума у гривнях",value:money(n)) } }
+        if supportsExactUAH && o.kind == .income {FinamiField("Фактично отримано UAH (необов’язково)",text:$exactReceived,keyboard:.decimalPad).disabled(financialLocked)}
+        DatePicker("Дата і час", selection: $o.date, displayedComponents: [.date,.hourAndMinute]).disabled(financialLocked)
         Picker("Рахунок", selection: $o.account) {
           ForEach(s.db.accounts.filter{o.sourceBank == nil || $0.code == "UAH"}) { Text($0.name).tag($0.id) }
-        }.disabled(linkedRecord != nil)
+        }.disabled(financialLocked)
         if o.kind == .transfer {
           Picker("Куди", selection: $o.destination) {
             Text("Вибрати").tag("")
             ForEach(s.db.accounts) { Text($0.name).tag($0.id) }
-          }.disabled(linkedRecord != nil)
+          }.disabled(financialLocked)
+          if sourceCode == "USD" && destinationCode == "UAH" && o.sourceBank == nil {FinamiField("Фактично отримано UAH (необов’язково)",text:$exactReceived,keyboard:.decimalPad).disabled(financialLocked);if exactMode {Text("Сума зарахування має пріоритет над введеним курсом.").font(.caption)}}
           if let n=received, !o.destination.isEmpty { LabeledContent("Зарахувати",value:currencyMoney(n,destinationCode)) }
         } else if o.kind.isReportCategory {
           Picker("Категорія", selection: $o.category) {
             ForEach(categories, id: \.self) { Text($0).tag($0) }
           }
         }
-        if let record = linkedRecord {
+        if let parts=o.groupedBankParts {
+          Section("Звірені надходження") {Text("\(parts.count) банківських рядків. Для зміни суми або рахунку спочатку скасуй групову звірку.").font(.caption);ForEach(Array(parts.enumerated()),id:\.offset){_,part in LabeledContent(part.date.formatted(date:.abbreviated,time:.shortened),value:s.visibleMoney(part.amount))}}
+        } else if let record = linkedRecord {
           Section("Пов’язаний платіж") {
             LabeledContent("Оплачено", value: s.db.obligations.first(where: { $0.id == record.paymentID })?.name ?? s.db.subscriptions?.first(where: { $0.id == record.paymentID })?.name ?? "Платіж з історії").accessibilityIdentifier("qa.operation.linked")
             Text("Ця операція вже оновила графік. Фінансові поля та видалення захищені від випадкової зміни; примітку й категорію можна редагувати.").font(.caption)
@@ -212,6 +227,8 @@ struct OpEditor: View {
         }
         TextField("Магазин / примітка / теги", text: $o.note)
         if let bank = o.sourceBank { LabeledContent("Джерело", value: bank) }
+        if let suffix=o.creditContractSuffix {LabeledContent("Договір",value:"••"+suffix)}
+        if o.bankPostingKnown == true {LabeledContent("Дата постінгу",value:o.bankPostingDate?.formatted(date:.abbreviated,time:.omitted) ?? "Невідомо — звірити з банком")}
         if let description = o.destinationBankNote { LabeledContent("Опис другої сторони",value:description) }
         if let capture = o.captureSource { LabeledContent("Джерело запису", value: capture) }
         if let imageID = o.scanImageID { NavigationLink("Вкладений скриншот") { FinamiScanAttachment(imageID: imageID) } }
@@ -221,13 +238,14 @@ struct OpEditor: View {
           Button("Визначити категорію") { o.category = suggestedCategory(o.note, kind: o.kind, database: s.db) }
           Toggle("Запам’ятати категорію для цього продавця", isOn: $learnRule)
         }
-        if savedOperation && linkedRecord == nil {
+        if savedOperation && !financialLocked {
           Button("Видалити операцію", role: .destructive) { confirm = true }
         }
       }.navigationTitle("Операція").navigationBarTitleDisplayMode(.inline).toolbar {
         ToolbarItem(placement: .cancellationAction) { Button("Скасувати") { dismiss() } }
         ToolbarItem(placement: .confirmationAction) {
           Button("Зберегти") {
+            if o.groupedBankParts != nil { if s.change({d in if let i=d.operations.firstIndex(where:{$0.id==o.id}) {d.operations[i].note=o.note}}) {dismiss()};return }
             guard let n=converted, let entered=bankMinor(amount), valid else {return}
             o.amount=n
             if o.sourceBank != nil {o.classificationReviewed=true}
@@ -235,7 +253,7 @@ struct OpEditor: View {
             o.sourceMinor=sourceCode == "USD" ? entered : n
             o.destinationMinor=o.kind == .transfer ? received : nil
             o.entryCurrency=entryCurrency
-            o.exchangeRate=requiresRate ? rate : nil
+            o.exchangeRate=requiresRate ? (exactMode ? usedRate.map{finamiFXRateText($0)}:rate) : nil
             if o.sourceBank == nil {o.originalAmount=entered;o.originalCurrency=entryCurrency}
             if !linkedPaymentID.isEmpty {
               guard let payment = selectedPayment else { return }
@@ -251,7 +269,7 @@ struct OpEditor: View {
             }) {
               dismiss()
             }
-          }.disabled(!valid)
+          }.disabled(o.groupedBankParts == nil && !valid)
         }
       }.onAppear {if sourceCode == "USD" {entryCurrency="USD"};if rate.isEmpty {rate=s.db.currencyPreferences?.usdRate ?? ""}}
       .onChange(of:o.account) { _ in entryCurrency=sourceCode; linkedPaymentID=""; separatePayment=false }

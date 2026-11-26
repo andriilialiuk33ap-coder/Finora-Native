@@ -13,7 +13,7 @@ func finamiAuditIssues(operations: [Operation], accounts: [Account], records: [F
     for o in operations where !accountIDs.contains(o.account) || (o.kind == .transfer && (!accountIDs.contains(o.destination) || o.destination == o.account)) {
         result.append(.init(id:"account-"+o.id,title:"Некоректний рахунок",detail:"Перевір джерело та призначення операції.",operationIDs:[o.id]))
     }
-    let keys = operations.flatMap { o in [o.bankKey,o.destinationBankKey].compactMap{$0}.filter{!$0.isEmpty}.map{($0,o.id)} }
+    let keys = operations.flatMap { o in ([o.bankKey,o.destinationBankKey].compactMap{$0} + (o.groupedBankParts ?? []).map(\.key)).filter{!$0.isEmpty}.map{($0,o.id)} }
     for (key,rows) in Dictionary(grouping:keys,by:{$0.0}) where rows.count > 1 { result.append(.init(id:"key-"+key,title:"Повтор банківського ключа",detail:"Перевір виписку; нічого не видалено.",operationIDs:rows.map{$0.1})) }
     let candidates = operations.filter{$0.kind.needsReview && $0.amount > 0}
     let groups = Dictionary(grouping:candidates) { o in "\(o.amount)|\(o.date.timeIntervalSince1970)|\(finamiMerchantKey(o.note))" }
@@ -67,4 +67,10 @@ func finamiHistoricalPaymentRecord(obligation:Obligation,operation:Operation,acc
     let tracked=records.filter{$0.paymentID==obligation.id}.reduce(Int64(0)){$0+$1.amount}
     guard amount>0,tracked<=obligation.paid,amount<=obligation.paid-tracked else{return nil}
     return FinamiPaidRecord(paymentID:obligation.id,scheduledDate:operation.date,paidDate:operation.date,amount:amount,currency:"UAH",accountID:operation.account,operationID:operation.id,historicalOnly:true)
+}
+
+func finamiContractMatches(obligation:Obligation,operation:Operation)->Bool {
+    let expected=obligation.creditContractSuffix ?? "", found=operation.creditContractSuffix ?? ""
+    if expected.count==4,found.count==4 {return expected==found}
+    return obligation.monthly>0 && (operation.sourceMinor ?? operation.amount)==obligation.monthly
 }

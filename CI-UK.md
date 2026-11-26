@@ -24,3 +24,6 @@ Build 28. SHA і номер версії записуються у toolchain.txt
 ## 5.3.1 (Build 31)
 
 Виправлено тайм-аут компілятора у FinamiExportView.swift: підготовка таблиць винесена в FinamiExportReport.swift. Новий `Tests/check-export-report.sh` перевіряє реальний модуль, а не лише синтаксис. Запускайте новий workflow на новому коміті, не Re-run jobs попередньої збірки. Повна компіляція iOS ще потребує підтвердження.
+
+### 5.3.2, build 32
+Новий `Tests/check-532.sh` включено в регресійний сценарій. Запусти новий Test Finami on iOS Simulator після commit/push. PDFKit та SwiftUI перевіряються лише на macOS/iOS. Не додавай приватні виписки у GitHub.

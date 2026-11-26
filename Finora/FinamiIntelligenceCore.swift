@@ -92,7 +92,7 @@ struct FinamiReconciliationResult: Equatable {
 func finamiReconcile(account: Account, operations: [Operation], observedAt: Date, reported: Int64) -> FinamiReconciliationResult {
     let relevant = operations.filter { $0.account == account.id || ($0.kind == .transfer && $0.destination == account.id) }
     let historical = relevant.filter { $0.date <= observedAt }
-    let available = CardPosition(net: FinamiLedgerIndex(operations: historical).balance(account), limit: account.limit).available
+    let available = CardPosition(net: FinamiLedgerIndex(operations: relevant).balanceAt(account,date:observedAt), limit: account.limit).available
     return .init(computedAtObservation: available, reported: reported, laterOperations: relevant.count - historical.count, possibleUnclassified: historical.filter { $0.kind.needsReview }.count)
 }
 

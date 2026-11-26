@@ -18,6 +18,7 @@ private enum StatementPDF {
         let pattern = pumb ? #"^\d{4}-\d{2}-\d{2}$"# : #"^\d{2}\.\d{2}\.\d{4}$"#
         var result = BankBatch()
         result.statementLastFour = bankStatementLastFour(String(first.prefix(1800)))
+        if pumb { result.statementIBAN = bankStatementIBAN(first) }
         for i in 0..<doc.pageCount {
             guard let page = doc.page(at:i) else { continue }
             let bounds = page.bounds(for:.mediaBox), scale = bounds.width / width
@@ -51,10 +52,22 @@ private enum StatementPDF {
                     if let match = head.range(of:timePattern,options:.regularExpression) { time = String(head[match]) }
                 }
                 cells[0] = date + (time.map { " " + $0 } ?? "")
-                if let row = pumb ? pumbRow(cells) : abankRow(cells) { result.rows.append(row) } else { result.rejected += 1 }
+                if var row = pumb ? pumbRow(cells) : abankRow(cells) {
+                    if pumb {
+                        row.postingKnown = true
+                        row.postingDate = bankDate(column((150,201),top,bottom))
+                        row.cardLastFour = bankRowMask(cells[4])
+                    }
+                    result.rows.append(row)
+                } else { result.rejected += 1 }
             }
         }
         let summary = pumb ? (doc.page(at:doc.pageCount-1)?.string ?? "") : first
+        if pumb {
+            result.opening=bankSummary(summary,label:"Баланс рахунку на початок періоду")
+            result.closing=bankSummary(summary,label:"Баланс рахунку на кінець періоду")
+            result.statementMasks=Array(Set(result.rows.compactMap(\.cardLastFour))).sorted()
+        }
         result.reconciliation = bankReconcile(result,debit:bankSummary(summary,label:pumb ? "Всього списань за період" : "Сума витрат за період"),credit:bankSummary(summary,label:pumb ? "Всього зарахувань за період" : "Сума зарахувань за період"))
         guard !result.rows.isEmpty else { throw BankFailure.empty }
         return result
@@ -194,7 +207,18 @@ struct BankCenter: View {
         Section("Перевірка") {
             Text("Розпізнано \(batch.rows.count), пропущено \(batch.rejected)")
             if let last=batch.statementLastFour { Text("Картка у заголовку: ••"+last).font(.caption) }
-            if let a=supportedLocalAccounts.first(where:{$0.id==account}), let last=batch.statementLastFour, let own=a.lastFour, own != last { Text("Номер картки не збігається. Обери правильний рахунок.").foregroundStyle(.orange).font(.caption) }
+            if let iban=batch.statementIBAN { Text("IBAN: ••••"+String(iban.suffix(4))).font(.caption) }
+            if !batch.statementMasks.isEmpty { Text("Картки рахунку: "+batch.statementMasks.map{"••"+$0}.joined(separator:", ")).font(.caption) }
+            if let a=supportedLocalAccounts.first(where:{$0.id==account}),finamiStatementConflict(batch,account:a,accounts:supportedLocalAccounts) { Text("Рахунок суперечить реквізитам виписки. Виправ вибір або реквізити рахунку.").foregroundStyle(.orange).font(.caption) }
+            if let a=supportedLocalAccounts.first(where:{$0.id==account}), !finamiStatementConflict(batch,account:a,accounts:supportedLocalAccounts), let iban=batch.statementIBAN, a.statementIBAN != iban || !Set(batch.statementMasks).isSubset(of:finamiAccountMasks(a)) {
+                Button("Запам’ятати IBAN та маски для вибраного рахунку") { s.change { d in
+                    guard let i=d.accounts.firstIndex(where:{$0.id==account}) else{return}
+                    d.accounts[i].statementIBAN=iban
+                    if let bank=batch.rows.first?.source {d.accounts[i].bankName=bank}
+                    d.accounts[i].additionalCardMasks=Array(finamiAccountMasks(d.accounts[i]).union(batch.statementMasks)).sorted()
+                } }
+            }
+            if let a=supportedLocalAccounts.first(where:{$0.id==account}), let last=batch.statementLastFour, let own=a.lastFour, !finamiAccountMasks(a).contains(last), !own.isEmpty { Text("Номер картки не збігається. Обери правильний рахунок.").foregroundStyle(.orange).font(.caption) }
             if let bank=batch.rows.first?.source,let a=supportedLocalAccounts.first(where:{$0.id==account}),let assigned=a.bankName,!assigned.isEmpty,bankCanonicalName(bank) != bankCanonicalName(assigned) { Text("Банк виписки відрізняється від банку рахунку. Перевір вибір.").foregroundStyle(.orange).font(.caption) }
             Picker("Рахунок Finami", selection: $account) {
                 Text("Вибрати").tag("")
@@ -205,7 +229,7 @@ struct BankCenter: View {
             NavigationLink("Переглянути та імпортувати") {
                 BankReview(batch: batch, account: account)
             }
-            .disabled(account.isEmpty || (batch.statementLastFour.map { last in supportedLocalAccounts.first(where:{$0.id==account})?.lastFour.map{$0 != last} ?? false } ?? false))
+            .disabled(account.isEmpty || (supportedLocalAccounts.first(where:{$0.id==account}).map{finamiStatementConflict(batch,account:$0,accounts:supportedLocalAccounts)} ?? true))
         }
     }
     private func importFile(_ result: Result<URL, Error>) {
@@ -225,10 +249,7 @@ struct BankCenter: View {
                     return parsed
                 }.value
                 pending = batch; account = ""
-                if let last=batch.statementLastFour, let bank=batch.rows.first?.source {
-                    let candidates=supportedLocalAccounts.filter{$0.lastFour==last && bankCanonicalName($0.bankName ?? "")==bankCanonicalName(bank)}
-                    if candidates.count==1 {account=candidates[0].id}
-                }
+                account = finamiStatementAccount(batch,accounts:supportedLocalAccounts) ?? ""
             } catch { s.error = error.localizedDescription }
         }
     }
@@ -250,22 +271,25 @@ struct BankReview: View {
     @State private var linked: [String: String] = [:]
     @State private var confirm = false
     @State private var saving = false
-    private func isSelected(_ row: BankRow, matches: [Operation]) -> Bool {
-        linked[row.id] == nil && !excluded.contains(row.id) && (matches.isEmpty || includedMatches.contains(row.id))
+    private var otherAccountKeys:Set<String> {Set(s.db.operations.flatMap { o in [o.account != account ? o.bankKey : nil,o.destination != account ? o.destinationBankKey : nil].compactMap{$0} + (o.destination != account ? (o.groupedBankParts ?? []).map(\.key) : []) })}
+    private func isSelected(_ row: BankRow, matches: [Operation], otherKeys:Set<String>) -> Bool {
+        linked[row.id] == nil && !excluded.contains(row.id) && ((matches.isEmpty && !otherKeys.contains(row.key)) || includedMatches.contains(row.id))
     }
     private func setSelected(_ row: BankRow, _ value: Bool) {
         if value { excluded.remove(row.id); includedMatches.insert(row.id); linked.removeValue(forKey:row.id) }
         else { excluded.insert(row.id); includedMatches.remove(row.id) }
     }
-    private func rowView(_ row: BankRow, matches: [Operation]) -> some View {
+    private func rowView(_ row: BankRow, matches: [Operation], otherKeys:Set<String>) -> some View {
         VStack(alignment:.leading,spacing:8) {
-            Toggle(isOn:Binding(get:{isSelected(row,matches:matches)},set:{setSelected(row,$0)})) {
+            Toggle(isOn:Binding(get:{isSelected(row,matches:matches,otherKeys:otherKeys)},set:{setSelected(row,$0)})) {
                 VStack(alignment:.leading,spacing:4) {
                     Text(row.note.isEmpty ? "Без опису":row.note)
                     Text(s.visibleMoney(row.signed)).bold()
                     Text(row.date.formatted(date:.abbreviated,time:.shortened)).font(.caption)
                     Text(kind(row).title).font(.caption).foregroundStyle(kind(row).needsReview ? Color.orange : Color.secondary)
                     Text(category(row)).font(.caption)
+                    if otherKeys.contains(row.key) {Text("Цей ключ уже на іншому рахунку. Перевір у майстрі звірки.").font(.caption).foregroundStyle(.orange)}
+                    if row.postingKnown == true && row.postingDate == nil {Text("Дата постінгу відсутня — звірити з банком").font(.caption).foregroundStyle(.orange)}
                     if let warning=row.warning {Text(warning).font(.caption).foregroundStyle(.orange)}
                     if row.fee>0 {Text("Комісія: "+s.visibleMoney(row.fee)).font(.caption)}
                 }
@@ -289,26 +313,30 @@ struct BankReview: View {
         let index = FinamiStatementMatchIndex(operations:s.historyForAccount(account),account:account)
         let rows = index.newRows(batch.rows)
         let matches = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, index.candidates($0)) })
-        let selected = rows.filter { isSelected($0,matches:matches[$0.id] ?? []) }
+        let otherKeys=otherAccountKeys
+        let selected = rows.filter { isSelected($0,matches:matches[$0.id] ?? [],otherKeys:otherKeys) }
         let linkedCount = rows.filter { linked[$0.id] != nil }.count
-        let otherKeys=Set(s.db.operations.flatMap { o in [o.account != account ? o.bankKey : nil,o.destination != account ? o.destinationBankKey : nil].compactMap{$0} })
-        let needsReview = rows.filter { !(matches[$0.id] ?? []).isEmpty && linked[$0.id] == nil && !isSelected($0,matches:matches[$0.id] ?? []) }.count
+        let enrichCount=finamiEnrichStatementMetadata(batch,operations:s.db.operations,account:account).count
+        let needsReview = rows.filter { (!(matches[$0.id] ?? []).isEmpty || otherKeys.contains($0.key)) && linked[$0.id] == nil && !isSelected($0,matches:matches[$0.id] ?? [],otherKeys:otherKeys) }.count
         return List {
             Section {
                 LabeledContent("Рахунок",value:s.accountName(account))
                 LabeledContent("Нові рядки",value:String(rows.count))
-                if batch.rows.contains(where:{otherKeys.contains($0.key)}) { Text("Деякі банківські ключі вже є на іншому рахунку. Перевір, чи обрано правильну картку; імпорт не об’єднує їх автоматично.").font(.caption).foregroundStyle(.orange) }
+                if batch.rows.contains(where:{otherKeys.contains($0.key)}) { Text("Деякі банківські ключі вже є на іншому рахунку. Перевір, чи обрано правильну картку; їх пропущено за замовчуванням. Увімкни рядок лише якщо це дійсно окрема операція.").font(.caption).foregroundStyle(.orange) }
                 LabeledContent("Уже імпортовано / повтори",value:String(batch.rows.count-rows.count))
                 LabeledContent("Потребують звірки",value:String(needsReview))
                 LabeledContent("Нових операцій до запису",value:String(selected.count))
                 LabeledContent("Звірити без списання",value:String(linkedCount))
+                if enrichCount>0 {LabeledContent("Оновити реквізити наявних",value:String(enrichCount))}
                 LabeledContent("Не розпізнано / не проведено",value:String(batch.rejected))
+                if let n=batch.opening {LabeledContent("Початковий баланс банку",value:s.visibleMoney(n))}
+                if let n=batch.closing {LabeledContent("Кінцевий баланс банку",value:s.visibleMoney(n))}
                 if let message=batch.reconciliation {Text(message).font(.caption).foregroundStyle(message.hasPrefix("Суми") ? Color.green : Color.orange)}
                 if rows.isEmpty {Label("У цій виписці немає нових операцій",systemImage:"checkmark.shield").foregroundStyle(.green)}
                 else {Text("Повторно імпортуються лише ще не записані рядки. Схожі ручні, скановані та автоматичні операції пропущено до підтвердження.").font(.caption)}
             }
-            ForEach(rows) { row in rowView(row,matches:matches[row.id] ?? []) }
-        }.disabled(saving).overlay { if saving { ProgressView("Збереження…").padding().background(.regularMaterial,in:RoundedRectangle(cornerRadius:12)) } }.navigationTitle("Перевірити імпорт").toolbar{Button("Зберегти (\(selected.count + linkedCount))"){confirm=true}.disabled(saving || (selected.isEmpty && linkedCount==0))}.confirmationDialog("Зберегти вибрані операції?",isPresented:$confirm){Button("Зберегти") { save() }}
+            ForEach(rows) { row in rowView(row,matches:matches[row.id] ?? [],otherKeys:otherKeys) }
+        }.disabled(saving).overlay { if saving { ProgressView("Збереження…").padding().background(.regularMaterial,in:RoundedRectangle(cornerRadius:12)) } }.navigationTitle("Перевірити імпорт").toolbar{Button("Зберегти (\(selected.count + linkedCount + enrichCount))"){confirm=true}.disabled(saving || (selected.isEmpty && linkedCount==0 && enrichCount==0))}.confirmationDialog("Зберегти вибрані операції?",isPresented:$confirm){Button("Зберегти") { save() }}
     }
     func kind(_ row: BankRow) -> Kind {
         let credit = s.db.accounts.first(where: {$0.id == account})?.isCredit ?? false
@@ -323,31 +351,33 @@ struct BankReview: View {
         return "Без категорії"
     }
     func save() {
-        guard !saving, s.db.accounts.contains(where:{$0.id == account && $0.code == "UAH"}) else {return}
+        guard !saving, let selectedAccount=s.db.accounts.first(where:{$0.id == account && $0.code == "UAH"}), !finamiStatementConflict(batch,account:selectedAccount,accounts:s.db.accounts) else {return}
         let version = s.databaseVersion
         // Recompute against the live ledger immediately before committing.
         let index = FinamiStatementMatchIndex(operations:s.historyForAccount(account),account:account)
         let rows = index.newRows(batch.rows)
-        var operations = s.db.operations
+        let enriched=finamiEnrichStatementMetadata(batch,operations:s.db.operations,account:account)
+        var operations = enriched.operations
         let positions = Dictionary(operations.enumerated().map { ($0.element.id,$0.offset) },uniquingKeysWith:{first,_ in first})
+        let otherKeys=otherAccountKeys
         let batchID = UUID().uuidString
         var added = 0, matched = 0
         for row in rows {
             if let id = linked[row.id] {
                 guard let i = positions[id], finamiAttachStatement(row,to:&operations[i],account:account) else { s.error="Операція змінилася. Перевір звірку ще раз.";return }
                 matched += 1
-            } else if isSelected(row,matches:index.candidates(row)) {
+            } else if isSelected(row,matches:index.candidates(row),otherKeys:otherKeys) {
                 var o=Operation(kind:kind(row),amount:abs(row.signed),date:row.date,category:category(row),note:row.note,account:account)
-                o.importBatch=batchID; o.bankKey=row.key; o.sourceBank=row.source; o.originalAmount=row.original; o.originalCurrency=row.currency; o.bankFee=row.fee; o.bankMCC=row.mcc; o.bankType=row.operationType
+                o.importBatch=batchID; o.bankKey=row.key; o.sourceBank=row.source; o.originalAmount=row.original; o.originalCurrency=row.currency; o.bankFee=row.fee; o.bankMCC=row.mcc; o.bankType=row.operationType; o.statementIBAN=batch.statementIBAN; o.bankPostingDate=row.postingDate; o.bankPostingKnown=row.postingKnown; o.creditContractSuffix=row.creditContractSuffix
                 operations.append(o);added += 1
             }
         }
-        guard added+matched>0 else {s.error="Немає нових або вибраних рядків.";return}
+        guard added+matched+enriched.count>0 else {s.error="Немає нових або вибраних рядків.";return}
         saving = true
-        let prepared = operations, newCount = added, linkedCount = matched
+        let prepared = operations, newCount = added, linkedCount = matched, updatedCount=enriched.count
         Task { @MainActor in
             defer { saving = false }
-            if await s.replaceOperationsForImport(prepared,expectedVersion:version) {s.error="Додано: \(newCount). Звірено без зміни балансу: \(linkedCount)."; dismiss()}
+            if await s.replaceOperationsForImport(prepared,expectedVersion:version) {s.error="Додано: \(newCount). Звірено без зміни балансу: \(linkedCount). Оновлено реквізитів: \(updatedCount)."; dismiss()}
         }
     }
 }
