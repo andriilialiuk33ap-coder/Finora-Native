@@ -275,3 +275,10 @@ WidgetKit-віджети, App Intents/Команди Wallet та SMS, автом
 - Ще: горизонтальні пункти з іконками та переходами, групові картки, без видалення функцій.
 - Apple Pay: в Командах додано App Shortcut «Перевірка зв’язку», що не записує операцію. Час тесту та останньої події Apple Pay зберігається окремо. Для запуску використовується існуючий App Intent; персональний тригер Transaction та його параметри потрібно налаштувати вручну. Тест дії не доводить, що реальний тригер працює. Необхідна перевірка доступності на встановленій IPA.
 - Bundle ID, Finora.json та фінансова логіка без змін. Нове поле налаштувань звітів опційне. Попередні тести та новий тест сумісності/приватності звітів пройшли на Linux; синтаксис Swift перевірено. Xcode, UI на iPhone та реальна автоматизація Apple Pay не перевірені.
+
+## Finami 5.0 Preview 8 — build 16
+
+- Expanded installment OCR label and date parser; candidate values can be assigned directly to a field in the review screen. Ambiguous amounts remain unconfirmed; generic paid amounts are not used to infer principal.
+- Retry Vision without language correction if first pass returns no text. Actual bank screenshot recognition still needs device testing.
+- Added AppShortcutsProvider entries for Wallet, bank notification and bank SMS, in addition to diagnostics. These are app shortcuts/actions, not a signed shareable personal automation. Configure the trigger, input and account manually in Shortcuts. To distribute a real importable template, create and export a working shortcut using Apple Shortcuts and share its iCloud link. No fake link or unsigned file is supplied.
+- Foundation tests and Swift syntax checked locally. iOS SDK compilation, real OCR, App Shortcuts discovery and Apple Pay/push behavior not verified.
