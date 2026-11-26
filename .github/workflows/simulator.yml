@@ -1,51 +1,115 @@
 name: Test Finami on iOS Simulator
 on:
   workflow_dispatch:
+    inputs:
+      build_ipa:
+        description: 'Build unsigned IPA after all tests pass'
+        type: boolean
+        default: true
   push:
-    paths: ["Finora/**", "Tests/**", "UITests/**", "project.yml", ".github/workflows/simulator.yml"]
+    paths: ['Finora/**', 'FinamiWidgets/**', 'WidgetShared/**', 'Config/**', 'Tests/**', 'UITests/**', 'project.yml', 'project-widget-groups.yml', '.github/workflows/simulator.yml']
   pull_request:
-    paths: ["Finora/**", "Tests/**", "UITests/**", "project.yml", ".github/workflows/simulator.yml"]
+    paths: ['Finora/**', 'FinamiWidgets/**', 'WidgetShared/**', 'Config/**', 'Tests/**', 'UITests/**', 'project.yml', 'project-widget-groups.yml', '.github/workflows/simulator.yml']
 permissions:
   contents: read
+concurrency:
+  group: finami-qa-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
-  simulator-smoke:
+  simulator:
     runs-on: macos-26
-    timeout-minutes: 35
+    timeout-minutes: 65
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
-      - name: Test encrypted backup on Apple platform
-        run: bash Tests/check-encryption-macos.sh
-      - name: Generate project
+      - name: Record toolchain
+        run: |
+          mkdir -p simulator-results
+          { git rev-parse HEAD; grep -E 'MARKETING_VERSION|CURRENT_PROJECT_VERSION' project.yml; sw_vers; xcodebuild -version; swift --version; } | tee simulator-results/toolchain.txt
+          xcrun simctl list devices available -j > simulator-results/devices.json
+      - name: Run financial regression and encryption tests
+        run: bash Tests/run-regression.sh 2>&1 | tee simulator-results/regression.log
+      - name: Generate Xcode project
         run: |
           command -v xcodegen || brew install xcodegen
           xcodegen generate
-          xcodebuild -resolvePackageDependencies -project Finora.xcodeproj -scheme Finora
-      - name: Select and boot a simulator
+          xcodebuild -resolvePackageDependencies -project Finora.xcodeproj -scheme Finora 2>&1 | tee simulator-results/dependencies.log
+      - name: Select and boot a compatible iPhone simulator
         run: |
-          mkdir -p simulator-results
-          xcodebuild -version | tee simulator-results/xcode.txt
-          xcrun simctl list devices available -j > simulator-results/devices.json
-          device=$(python3 -c 'import json; d=json.load(open("simulator-results/devices.json"))["devices"]; print(next(x["udid"] for k,vs in sorted(d.items(),reverse=True) if "iOS" in k for x in vs if x.get("isAvailable") and x["name"].startswith("iPhone")))')
+          device=$(python3 - <<'PY'
+          import json, re
+          devices=json.load(open('simulator-results/devices.json'))['devices']
+          runtimes=sorted((k for k in devices if '.iOS-' in k),key=lambda k:tuple(map(int,re.findall(r'\d+',k.split('.iOS-')[-1]))),reverse=True)
+          for runtime in runtimes:
+              phones=[x for x in devices[runtime] if x.get('isAvailable') and x['name'].startswith('iPhone')]
+              if phones:
+                  print(phones[0]['udid']); break
+          else:
+              raise SystemExit('No available iPhone simulator in selected Xcode')
+          PY
+          )
           echo "SIM_DEVICE=$device" >> "$GITHUB_ENV"
+          echo "$device" > simulator-results/device.txt
           xcrun simctl boot "$device" || true
-          xcrun simctl bootstatus "$device" -b
-      - name: Build for iOS Simulator
+          xcrun simctl bootstatus "$device" -b 2>&1 | tee simulator-results/boot.log
+          xcrun simctl status_bar "$device" override --time '9:41' --dataNetwork wifi --wifiMode active --wifiBars 3 --batteryState unplugged --batteryLevel 100 || true
+      - name: Build iOS app for simulator
         run: |
-          set -o pipefail
-          xcodebuild -project Finora.xcodeproj -scheme Finora -configuration Debug -sdk iphonesimulator -destination "id=$SIM_DEVICE" -derivedDataPath simulator-build CODE_SIGNING_ALLOWED=NO build | tee simulator-results/build.log
-      - name: Install and launch on a clean simulator
+          xcodebuild -project Finora.xcodeproj -scheme Finora -configuration Debug -sdk iphonesimulator -destination "platform=iOS Simulator,id=$SIM_DEVICE" -derivedDataPath simulator-build CODE_SIGNING_ALLOWED=NO build-for-testing 2>&1 | tee simulator-results/build.log
+      - name: Verify widget extension packaging
+        run: |
+          test -d simulator-build/Build/Products/Debug-iphonesimulator/Finora.app/PlugIns/FinamiWidgets.appex
+          /usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' simulator-build/Build/Products/Debug-iphonesimulator/Finora.app/PlugIns/FinamiWidgets.appex/Info.plist | grep -Fx com.apple.widgetkit-extension
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleURLTypes:0:CFBundleURLSchemes:0' simulator-build/Build/Products/Debug-iphonesimulator/Finora.app/Info.plist | grep -Fx finami-widget
+          app=simulator-build/Build/Products/Debug-iphonesimulator/Finora.app
+          for key in CFBundleVersion CFBundleShortVersionString; do
+            parent=$(/usr/libexec/PlistBuddy -c "Print :$key" "$app/Info.plist")
+            widget=$(/usr/libexec/PlistBuddy -c "Print :$key" "$app/PlugIns/FinamiWidgets.appex/Info.plist")
+            echo "$key: app=$parent widget=$widget"
+            test "$parent" = "$widget"
+          done
+      - name: Install and capture initial home
         run: |
           xcrun simctl install "$SIM_DEVICE" simulator-build/Build/Products/Debug-iphonesimulator/Finora.app
-          xcrun simctl launch "$SIM_DEVICE" ua.finora.personal | tee simulator-results/launch.txt
+          xcrun simctl launch "$SIM_DEVICE" ua.finora.personal --finami-qa --finami-qa-reset | tee simulator-results/launch.txt
           sleep 5
           xcrun simctl io "$SIM_DEVICE" screenshot simulator-results/home.png
-      - name: Execute interaction and OCR regression tests
+          xcrun simctl terminate "$SIM_DEVICE" ua.finora.personal || true
+      - name: Execute XCUITest interactions and actual Vision OCR
         run: |
-          set -o pipefail
-          xcodebuild test -project Finora.xcodeproj -scheme Finora -configuration Debug -destination "id=$SIM_DEVICE" -derivedDataPath simulator-build -parallel-testing-enabled NO -resultBundlePath simulator-results/FinamiQA.xcresult CODE_SIGNING_ALLOWED=NO | tee simulator-results/ui-tests.log
+          xcodebuild test-without-building -project Finora.xcodeproj -scheme Finora -configuration Debug -destination "platform=iOS Simulator,id=$SIM_DEVICE" -derivedDataPath simulator-build -parallel-testing-enabled NO -resultBundlePath simulator-results/FinamiQA.xcresult CODE_SIGNING_ALLOWED=NO 2>&1 | tee simulator-results/ui-tests.log
+      - name: Export test reports and attachments
+        if: always()
+        run: |
+          if [ -d simulator-results/FinamiQA.xcresult ]; then
+            xcrun xcresulttool get test-results summary --path simulator-results/FinamiQA.xcresult > simulator-results/test-summary.json || true
+            xcrun xcresulttool export attachments --path simulator-results/FinamiQA.xcresult --output-path simulator-results/attachments || true
+            xcrun xcresulttool export diagnostics --path simulator-results/FinamiQA.xcresult --output-path simulator-results/diagnostics || true
+          fi
+          if [ -n "${SIM_DEVICE:-}" ]; then
+            xcrun simctl io "$SIM_DEVICE" screenshot simulator-results/final-screen.png || true
+            xcrun simctl spawn "$SIM_DEVICE" log show --last 30m --style compact --predicate 'process == "Finora" OR process == "FinamiUITests-Runner"' > simulator-results/simulator-process.log 2>&1 || true
+            xcrun simctl shutdown "$SIM_DEVICE" || true
+          fi
+      - name: Build unsigned IPA (only after successful tests)
+        if: success() && github.event_name == 'workflow_dispatch' && inputs.build_ipa
+        run: |
+          xcodebuild -project Finora.xcodeproj -scheme Finora -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath device-build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build 2>&1 | tee simulator-results/ipa-build.log
+          mkdir -p dist/Payload
+          cp -R device-build/Build/Products/Release-iphoneos/Finora.app dist/Payload/
+          (cd dist && zip -qry Finami.ipa Payload)
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: Finami-Simulator-Results
           path: simulator-results/
           if-no-files-found: warn
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: success() && github.event_name == 'workflow_dispatch' && inputs.build_ipa
+        with:
+          name: Finami-IPA-Tested
+          path: dist/Finami.ipa
+          if-no-files-found: error

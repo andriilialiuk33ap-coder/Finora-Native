@@ -6,24 +6,16 @@ permissions:
 jobs:
   build:
     runs-on: macos-15-intel
-    timeout-minutes: 20
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
-      - name: Test bank and currency logic
+      - name: Record version and commit
         run: |
-          swiftc -warnings-as-errors -typecheck Finora/BankCore.swift Finora/MoneyCore.swift Finora/AutomationCore.swift Finora/FinamiScanCore.swift
-          swiftc Finora/BankCore.swift Finora/MoneyCore.swift Finora/AutomationCore.swift Tests/main.swift -o /tmp/izanami-tests
-          /tmp/izanami-tests
-          bash Tests/check-model.sh
-          bash Tests/check-finami.sh
-          bash Tests/check-preview2.sh
-          bash Tests/check-preview3.sh
-          bash Tests/check-preview4.sh
-          bash Tests/check-preview5.sh
-          bash Tests/check-preview6.sh
-          bash Tests/check-preview9.sh
-          bash Tests/check-preview10.sh
-          bash Tests/check-encryption-macos.sh
+          git rev-parse HEAD
+          grep -E 'MARKETING_VERSION|CURRENT_PROJECT_VERSION' project.yml
+          xcodebuild -version
+      - name: Test bank and currency logic
+        run: bash Tests/run-regression.sh
       - name: Generate Xcode project
         run: |
           command -v xcodegen || brew install xcodegen
@@ -33,6 +25,14 @@ jobs:
       - name: Build unsigned iPhone application
         run: |
           xcodebuild -project Finora.xcodeproj -scheme Finora -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+          app=build/Build/Products/Release-iphoneos/Finora.app
+          test -d "$app/PlugIns/FinamiWidgets.appex"
+          for key in CFBundleVersion CFBundleShortVersionString; do
+            parent=$(/usr/libexec/PlistBuddy -c "Print :$key" "$app/Info.plist")
+            widget=$(/usr/libexec/PlistBuddy -c "Print :$key" "$app/PlugIns/FinamiWidgets.appex/Info.plist")
+            echo "$key: app=$parent widget=$widget"
+            test "$parent" = "$widget"
+          done
           mkdir -p dist/Payload
           cp -R build/Build/Products/Release-iphoneos/Finora.app dist/Payload/
           cd dist
