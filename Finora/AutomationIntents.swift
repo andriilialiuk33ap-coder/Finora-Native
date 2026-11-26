@@ -42,19 +42,27 @@ struct CaptureBankNotificationIntent: AppIntent {
     static var title: LocalizedStringResource = "Finami: сповіщення банку"
     static var description: IntentDescription? = IntentDescription("Записати операцію з тексту банківського сповіщення, переданого Командами")
     static var openAppWhenRun: Bool = false
-    @Parameter(title: "Текст сповіщення") var message: String
+    @Parameter(title: "Текст сповіщення") var message: String?
     @Parameter(title: "Заголовок сповіщення (необов’язково)") var notificationTitle: String?
-    @Parameter(title: "Код рахунку Finami або auto") var account: String
+    @Parameter(title: "Код рахунку Finami або auto") var account: String?
     @Parameter(title: "Банк (необов’язково)") var bank: String?
     static var parameterSummary: some ParameterSummary {
-        Summary("Записати сповіщення \(\.$message) на рахунок \(\.$account)")
+        Summary("Записати сповіщення \(\.$message) на рахунок \(\.$account)") {
+            \.$notificationTitle
+            \.$bank
+        }
     }
-    func perform() async throws -> some IntentResult & ProvidesDialog {
-        var event = try captureBankNotification(title: notificationTitle, body: message, account: account)
-        if event.bankHint == nil, let bank { event.bankHint = finamiBankHint(bank) }
-        try CaptureInbox.enqueue(event, in: CaptureInbox.folder())
-        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "finami.lastBankNotification")
-        return .result(dialog: "Сповіщення прийнято. Відкрий Finami для обробки.")
+    func perform() async throws -> some IntentResult {
+        let status = finamiHandleNotification(title: notificationTitle, body: message, account: account, bank: bank) { event in
+            try CaptureInbox.enqueue(event, in: CaptureInbox.folder())
+        }
+        let defaults = UserDefaults.standard
+        let now = Date().timeIntervalSince1970
+        defaults.set(status.rawValue, forKey: "finami.lastNotificationStatus")
+        defaults.set(now, forKey: "finami.lastNotificationAttempt")
+        if status == .queued { defaults.set(now, forKey: "finami.lastBankNotification") }
+        // No dialog or thrown parse error for an unattended automation.
+        return .result()
     }
 }
 
@@ -64,6 +72,7 @@ struct FinamiShortcutCheckIntent: AppIntent {
     static var description: IntentDescription? = IntentDescription("Перевірка без запису фінансової операції")
     static var openAppWhenRun: Bool = false
     func perform() async throws -> some IntentResult & ProvidesDialog {
+        guard finamiNotificationSelfTest() else { return .result(dialog: "Локальний тест розпізнавання не пройдено. Фінансові дані не змінено.") }
         _ = try captureWallet(amount: 1.25, merchant: "Test", account: "diagnostic", currency: "UAH")
         UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "finami.lastShortcutCheck")
         return .result(dialog: "Finami відповідає. Фінансові дані не змінено.")

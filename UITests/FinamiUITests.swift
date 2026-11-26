@@ -82,4 +82,33 @@ final class FinamiUITests: XCTestCase {
         visible(test); test.tap(); visible(app.staticTexts["Тест пройдено"])
         capture("diagnostics")
     }
+    func testAccountReportFieldsIndependentAndPersist() {
+        app.terminate()
+        app.launchArguments = ["--finami-qa", "--finami-qa-reset", "--finami-qa-reports-fixture"]
+        app.launch()
+        app.tabBars.buttons["Звіти"].tap()
+        func openSettings(_ account: String) {
+            let button = app.buttons["qa.report.account.settings." + account]
+            for _ in 0..<16 { if button.exists && button.isHittable { break }; app.swipeUp() }
+            visible(button); button.tap()
+        }
+        openSettings("qa-pumb")
+        let compact = app.buttons["qa.report.fields.compact"]
+        visible(compact); compact.tap()
+        let income = app.switches["qa.report.fields.toggle.income"]
+        visible(income); XCTAssertEqual(income.value as? String, "1")
+        income.tap(); XCTAssertEqual(income.value as? String, "0")
+        app.navigationBars.buttons["Готово"].tap()
+        let expense = app.descendants(matching: .any).matching(identifier: "qa.report.account.row.qa-pumb.expense").firstMatch
+        visible(expense)
+        XCTAssertFalse(app.descendants(matching: .any).matching(identifier: "qa.report.account.row.qa-pumb.income").firstMatch.exists)
+        capture("compact-account-report")
+        app.terminate(); app.launchArguments = ["--finami-qa"]; app.launch()
+        app.tabBars.buttons["Звіти"].tap(); openSettings("qa-pumb")
+        visible(income); XCTAssertEqual(income.value as? String, "0")
+        app.navigationBars.buttons["Готово"].tap()
+        openSettings("qa-otp"); visible(income); XCTAssertEqual(income.value as? String, "1")
+        app.navigationBars.buttons["Готово"].tap()
+    }
+
 }

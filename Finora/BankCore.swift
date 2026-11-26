@@ -72,7 +72,7 @@ func bankRedact(_ s: String) -> String {
 }
 func pumbRow(_ c: [String]) -> BankRow? {
     guard c.count == 7, let d = bankDate(bankClean(c[0])), let original = bankMoneyCell(c[1]), let amount = bankMoneyCell(c[2]), amount.1 == "UAH", amount.0 != 0, let commission = bankMoneyCell(c[3]), commission.1 == "UAH" else { return nil }
-    let type = c[6].lowercased(); let positive = type.contains("надходження") || type.contains("повернення")
+    let type = c[6].lowercased(); let positive = type.contains("надходження") || type.contains("повернення") || ["дохід", "зарплата", "заробітна плата", "кешбек", "пенсія"].contains(bankClean(type))
     guard positive || type.contains("покупка") || type.contains("списання") else { return nil }
     let fee = abs(commission.0), magnitude = abs(amount.0)
     // PUMB exposes fee separately; do not silently guess whether included. Review required when nonzero.
@@ -160,7 +160,7 @@ func bankKind(signed: Int64, note: String, mcc: Int?, operationType: String?, cr
         if has(["повернення покупки", "повернення товару", "refund", "reversal"]) || t == "повернення" { return "refund" }
         if has(["погашення кредиту", "погашення заборгованості", "repayment", "погашення кредитної"]) { return creditAccount ? "creditRepaymentIncoming" : "unclassifiedCredit" }
         if has(["видача кредиту", "отримання кредиту", "кредитні кошти", "loan disbursement"]) { return "creditDraw" }
-        if has(["зарплата", "заробітна плата", "salary", "кешбек", "cashback", "виплата винагороди", "нарахування відсотків", "пенсія"]) { return "income" }
+        if !transfer && (t == "дохід" || has(["зарплата", "заробітна плата", "salary", "кешбек", "cashback", "виплата винагороди", "нарахування відсотків", "пенсія"])) { return "income" }
         if transfer { return "unclassifiedCredit" }
         return "unclassifiedCredit"
     }

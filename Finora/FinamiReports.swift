@@ -4,6 +4,7 @@ struct Reports: View {
     @EnvironmentObject var s: Store
     @State private var date = Date()
     @State private var settings = false
+    @State private var accountSettings: FinamiAccountReportSelection?
     private var prefs: AppearancePreferences { s.db.preferences ?? .init() }
     private var annual: Bool { prefs.reportsPeriod != "month" }
     private var selectedAccount: String { s.db.accounts.contains(where: { $0.id == prefs.reportsAccount }) ? (prefs.reportsAccount ?? "all") : "all" }
@@ -43,6 +44,9 @@ struct Reports: View {
             Button { s.change { d in var p = d.preferences ?? .init(); p.hideAmounts = !(p.hideAmounts ?? false); d.preferences = p } } label: { Image(systemName: s.privateAmounts ? "eye.slash" : "eye") }.accessibilityLabel("Приховати або показати всі суми")
             Button { settings = true } label: { Image(systemName: "slider.horizontal.3") }.accessibilityLabel("Налаштування звітів")
         }.sheet(isPresented: $settings) { NavigationStack { reportSettings } }
+        .sheet(item: $accountSettings) { selection in
+            NavigationStack { FinamiAccountReportSettings(account: selection.id) }
+        }
     }
     private var controls: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -69,6 +73,7 @@ struct Reports: View {
             if showIncome { metric("Доходи", x.totals.income, .green, "arrow.down.left") }
             metric("Чисті витрати", x.totals.expense, .orange, "arrow.up.right")
             if x.totals.refunds != 0 { metric("Повернення покупок", x.totals.refunds, .blue, "arrow.uturn.backward") }
+            movementLines(x.totals)
             Text("Операцій за період: \(x.totals.count)").font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -111,21 +116,73 @@ struct Reports: View {
             Text("Повернення зменшують витрати відповідної категорії.").font(.caption).foregroundStyle(.secondary)
         }
     }
+    private func movementLine(_ title: String, _ amount: Int64, tint: Color = .secondary, masked: Bool = false) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(title).font(.subheadline).foregroundStyle(.secondary)
+            Spacer(minLength: 8)
+            Text(masked ? "••••" : s.visibleMoney(amount)).font(.subheadline.weight(.medium)).monospacedDigit().foregroundStyle(tint)
+        }
+    }
+    @ViewBuilder private func movementLines(_ t: FinamiReportTotals, masked: Bool = false) -> some View {
+        if t.transfersIn != 0 { movementLine("Вхідні перекази / поповнення", t.transfersIn, tint: .blue, masked: masked) }
+        if t.transfersOut != 0 { movementLine("Вихідні перекази / зняття", t.transfersOut, masked: masked) }
+        if t.creditDraw != 0 { movementLine("Отримано кредиту", t.creditDraw, masked: masked) }
+        if t.creditTopUp != 0 { movementLine("Поповнення кредитки", t.creditTopUp, masked: masked) }
+        if t.creditRepayment != 0 { movementLine("Погашення кредиту", t.creditRepayment, masked: masked) }
+        if t.unclassifiedIn != 0 { movementLine("Неуточнені надходження", t.unclassifiedIn, tint: .orange, masked: masked) }
+        if t.unclassifiedOut != 0 { movementLine("Неуточнені списання", t.unclassifiedOut, tint: .orange, masked: masked) }
+    }
     private func accounts(_ x: FinamiReportSnapshot) -> some View {
-        let ids = x.accounts.keys.filter { id in let t = x.accounts[id] ?? .init(); return t.expense != 0 || (showIncome && t.income != 0) }.sorted { a,b in
+        let ids = x.accounts.keys.sorted { a,b in
             let l = x.accounts[a]?.expense ?? 0, r = x.accounts[b]?.expense ?? 0; return l == r ? a < b : l > r
         }
         return FinamiReportPanel(title: "За рахунками", icon: "creditcard.fill", tint: .blue, hidden: hidden("accounts")) {
-            if ids.isEmpty { Text("Немає доходів або витрат за рахунками").font(.subheadline).foregroundStyle(.secondary) }
+            if ids.isEmpty { Text("Немає руху коштів за рахунками").font(.subheadline).foregroundStyle(.secondary) }
             ForEach(ids, id: \.self) { id in
                 if let t = x.accounts[id] {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Label(s.accountName(id), systemImage: "wallet.pass").font(.subheadline.weight(.semibold))
-                        Text("Витрати: " + s.visibleMoney(t.expense)).font(.subheadline)
-                        if showIncome { Text("Доходи: " + s.visibleMoney(t.income)).font(.subheadline).foregroundStyle(.green) }
-                    }.frame(maxWidth: .infinity, alignment: .leading).padding(10).background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
+                    let masked = s.db.accounts.first(where: { $0.id == id })?.hideAmounts == true
+                    let fields = FinamiAccountReportField.selected(account: id, preferences: prefs.reportsAccountFields)
+                        .filter { $0.isVisible(in: t, showIncome: showIncome) }
+                    VStack(alignment: .leading, spacing: 9) {
+                        HStack(spacing: 8) {
+                            Label(s.accountName(id), systemImage: "wallet.pass").font(.headline)
+                            Spacer(minLength: 4)
+                            Button { accountSettings = FinamiAccountReportSelection(id: id) } label: {
+                                Image(systemName: "slider.horizontal.3").foregroundStyle(.secondary)
+                                    .frame(width: 44, height: 44).contentShape(Rectangle())
+                            }.buttonStyle(.plain)
+                                .accessibilityLabel("Показники звіту: \(s.accountName(id))")
+                                .accessibilityIdentifier("qa.report.account.settings.\(id)")
+                        }
+                        if fields.isEmpty {
+                            Text("Немає вибраних показників з даними").font(.caption).foregroundStyle(.secondary)
+                        }
+                        ForEach(fields) { field in
+                            if field == .review {
+                                NavigationLink {
+                                    FinamiReportReviewList(ids: x.reviewIDs, account: id, maskAmounts: masked)
+                                } label: {
+                                    Label("Уточнити операції (\(t.review))", systemImage: "checklist").font(.subheadline.weight(.medium)).frame(minHeight: 44)
+                                }.accessibilityIdentifier("qa.report.account.row.\(id).review")
+                            } else if let amount = field.amount(t) {
+                                movementLine(field.title, amount, tint: accountFieldTint(field, amount: amount), masked: masked)
+                                    .accessibilityElement(children: .combine)
+                                    .accessibilityIdentifier("qa.report.account.row.\(id).\(field.rawValue)")
+                            }
+                        }
+                    }.frame(maxWidth: .infinity, alignment: .leading).padding(12).background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
                 }
             }
+            Text("Повернення вже відняті від чистих витрат. Перекази, кредити й неуточнені рухи показано окремо; вони не є доходом.").font(.caption).foregroundStyle(.secondary)
+        }
+    }
+    private func accountFieldTint(_ field: FinamiAccountReportField, amount: Int64) -> Color {
+        switch field {
+        case .income: return .green
+        case .expense, .unclassifiedIn, .unclassifiedOut: return .orange
+        case .refunds, .transfersIn: return .blue
+        case .net: return amount >= 0 ? .green : .orange
+        default: return .secondary
         }
     }
     private func timeline(_ x: FinamiReportSnapshot) -> some View {
@@ -135,8 +192,10 @@ struct Reports: View {
                 if let t = x.periods[day] {
                     VStack(alignment: .leading, spacing: 5) {
                         Text(annual ? day.formatted(.dateTime.month(.wide).locale(Locale(identifier: "uk_UA"))).capitalized : day.formatted(.dateTime.day().month(.wide).locale(Locale(identifier: "uk_UA")))).font(.subheadline.weight(.semibold))
-                        Text("Витрати: " + s.visibleMoney(t.expense)).font(.subheadline)
+                        Text("Чисті витрати: " + s.visibleMoney(t.expense)).font(.subheadline)
                         if showIncome { Text("Доходи: " + s.visibleMoney(t.income)).font(.subheadline).foregroundStyle(.green) }
+                        movementLines(t)
+                        if showIncome { movementLine("Чистий потік", t.net, tint: t.net >= 0 ? .green : .orange) }
                         Text("\(t.count) операцій").font(.caption).foregroundStyle(.secondary)
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(10).background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
                 }
@@ -146,6 +205,11 @@ struct Reports: View {
     private func review(_ x: FinamiReportSnapshot) -> some View {
         FinamiReportPanel(title: "Якість обліку", icon: "checkmark.shield", tint: .teal, hidden: hidden("review")) {
             Text(x.totals.review == 0 ? "Немає операцій, що потребують уточнення" : "Потребують уточнення: \(x.totals.review)").font(.subheadline)
+            if x.totals.review > 0 {
+                NavigationLink { FinamiReportReviewList(ids: x.reviewIDs, account: nil, maskAmounts: false) } label: {
+                    Label("Переглянути та уточнити", systemImage: "checklist").frame(minHeight: 44)
+                }
+            }
             Text("Неуточнені рухи не враховуються в доходах і витратах, крім підтверджених окремих комісій.").font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -181,5 +245,78 @@ struct Reports: View {
                 Button("Скинути приховування окремих блоків") { s.change { d in var p = d.preferences ?? .init(); p.reportsHiddenSections = []; d.preferences = p } }
             }
         }.navigationTitle("Налаштування звітів").toolbar { Button("Готово") { settings = false } }
+    }
+}
+
+private struct FinamiAccountReportSelection: Identifiable { let id: String }
+
+private struct FinamiAccountReportSettings: View {
+    @EnvironmentObject private var s: Store
+    @Environment(\.dismiss) private var dismiss
+    let account: String
+    private var chosen: [FinamiAccountReportField] {
+        FinamiAccountReportField.selected(account: account, preferences: s.db.preferences?.reportsAccountFields)
+    }
+    private func save(_ fields: [FinamiAccountReportField]) {
+        s.change { d in
+            var p = d.preferences ?? .init()
+            p.reportsAccountFields = FinamiAccountReportField.updating(p.reportsAccountFields, account: account, fields: fields)
+            d.preferences = p
+        }
+    }
+    private func selection(_ field: FinamiAccountReportField) -> Binding<Bool> {
+        Binding(get: { chosen.contains(field) }, set: { enabled in
+            var values = chosen.filter { $0 != field }
+            if enabled { values.append(field) }
+            save(values)
+        })
+    }
+    var body: some View {
+        Form {
+            Section {
+                Button("Компактний: витрати й доходи") { save(FinamiAccountReportField.compact) }
+                    .accessibilityIdentifier("qa.report.fields.compact")
+                Button("Показати всі показники") { save(FinamiAccountReportField.allCases) }
+                    .accessibilityIdentifier("qa.report.fields.all")
+            } header: { Text("Швидке налаштування") }
+            Section {
+                ForEach(FinamiAccountReportField.allCases) { field in
+                    Toggle(field.title, isOn: selection(field))
+                        .accessibilityIdentifier("qa.report.fields.toggle.\(field.rawValue)")
+                }
+            } header: { Text("Показувати в картці") } footer: {
+                Text("Зміни діють лише для цього рахунку й зберігаються автоматично. Нульові додаткові рухи не відображаються. Глобальне приховування доходів має пріоритет. Підсумки, баланс та операції не змінюються.")
+            }
+        }
+        .navigationTitle(s.accountName(account))
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Готово") { dismiss() } } }
+    }
+}
+
+// Live list of the selected report's unresolved entries, without changing balances.
+private struct FinamiReportReviewList: View {
+    @EnvironmentObject private var s: Store
+    let ids: [String]
+    let account: String?
+    let maskAmounts: Bool
+    @State private var edited: Operation?
+    private var entries: [Operation] {
+        let selected = Set(ids)
+        return s.db.operations.filter { selected.contains($0.id) && $0.kind.needsReview && (account == nil || $0.account == account) }.sorted { $0.date > $1.date }
+    }
+    var body: some View {
+        List {
+            Section { Text("Оберіть операцію та уточніть її тип. Дохід — лише справжнє надходження, а не переказ власних коштів або кредит.").font(.caption) }
+            Section {
+                if entries.isEmpty { Text("Усі операції уточнено").foregroundStyle(.secondary) }
+                ForEach(entries) { o in
+                    Button { edited = o } label: {
+                        OperationRow(o: o).environment(\.finamiMask, maskAmounts || s.db.accounts.first(where: { $0.id == o.account })?.hideAmounts == true)
+                    }.buttonStyle(.plain)
+                }
+            }
+        }.navigationTitle("Уточнення операцій")
+            .sheet(item: $edited) { OpEditor(original: $0) }
     }
 }

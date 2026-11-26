@@ -99,6 +99,8 @@ struct AutomationCenter: View {
     @AppStorage("finami.lastShortcutCheck") private var lastShortcutCheck: Double = 0
     @AppStorage("finami.lastWalletCapture") private var lastWalletCapture: Double = 0
     @AppStorage("finami.lastBankNotification") private var lastBankNotification: Double = 0
+    @AppStorage("finami.lastNotificationAttempt") private var lastNotificationAttempt: Double = 0
+    @AppStorage("finami.lastNotificationStatus") private var lastNotificationStatus = ""
     @State private var openFailed = false
     @State private var checkTime: Double = 0
     @AppStorage("finami.notificationShortcutLink") private var notificationShortcutLink = ""
@@ -154,14 +156,15 @@ struct AutomationCenter: View {
         Section("Додати в Команди") {
             Label("Витрати зі сповіщень банку", systemImage: "bell.badge")
             Text("ПУМБ, ОТП, Приват24 · обери банк у системній автоматизації. Формат ПУМБ перевірено на текстових прикладах; ОТП і Приват потребують зразків.").font(.caption)
-            Button { importShortcut(notificationShortcutLink) } label: {
-                Label(finamiSharedShortcutURL(notificationShortcutLink) == nil ? "Налаштувати шаблон · сповіщення" : "Додати в Команди · сповіщення", systemImage: "plus.circle.fill")
+            Button { importShortcut(finamiBankShortcutURL(notificationShortcutLink)?.absoluteString ?? "") } label: {
+                Label("Додати в Команди · сповіщення", systemImage: "plus.circle.fill")
             }.buttonStyle(.borderless).accessibilityIdentifier("qa.automation.import.bank")
             Button { importShortcut(walletShortcutLink) } label: {
                 Label(finamiSharedShortcutURL(walletShortcutLink) == nil ? "Налаштувати шаблон · Apple Pay" : "Додати в Команди · Apple Pay", systemImage: "plus.circle.fill")
             }.buttonStyle(.borderless).accessibilityIdentifier("qa.automation.import.wallet")
-            if finamiSharedShortcutURL(notificationShortcutLink) == nil || finamiSharedShortcutURL(walletShortcutLink) == nil {
-                Text("Для імпорту потрібне справжнє iCloud-посилання, експортоване з Команд. Якщо шаблону немає, скористайся готовими діями Finami нижче.").font(.caption).foregroundStyle(.secondary)
+            Text("Готовий шаблон: перевір вибраний банк, змінну Сповіщення та рахунок auto. У додаткових параметрах дії вкажи банк і за потреби окремо заголовок сповіщення. Увімкни тригер у Командах. Не додавай повторно, якщо команда вже встановлена.").font(.caption)
+            if finamiSharedShortcutURL(walletShortcutLink) == nil {
+                Text("Для Apple Pay окремого імпортованого шаблону ще немає. Скористайся готовою дією Finami нижче або додай власне посилання.").font(.caption).foregroundStyle(.secondary)
             }
             ShortcutsLink()
             Button { templateEditor = true } label: { Label("Посилання на власні шаблони", systemImage: "link") }.buttonStyle(.borderless)
@@ -170,7 +173,9 @@ struct AutomationCenter: View {
                 Form {
                     Section("Експортовані команди Finami") {
                         TextField("Сповіщення банку · iCloud URL", text: $notificationShortcutLink).textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
-                        if !notificationShortcutLink.isEmpty && finamiSharedShortcutURL(notificationShortcutLink) == nil { Text("Некоректне посилання iCloud").foregroundStyle(.orange) }
+                        if !notificationShortcutLink.isEmpty && finamiSharedShortcutURL(notificationShortcutLink) == nil { Text("Некоректне власне посилання. Використовується стандартний шаблон Finami.").foregroundStyle(.orange) }
+                        if notificationShortcutLink.isEmpty { Text("Використовується стандартний шаблон Finami.").font(.caption).foregroundStyle(.secondary) }
+                        Button("Відновити стандартний шаблон сповіщень") { notificationShortcutLink = "" }
                         TextField("Apple Pay · iCloud URL", text: $walletShortcutLink).textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
                         if !walletShortcutLink.isEmpty && finamiSharedShortcutURL(walletShortcutLink) == nil { Text("Некоректне посилання iCloud").foregroundStyle(.orange) }
                         Text("Створи команду з дією Finami, потім у Командах → Поділитися → Копіювати посилання iCloud. Не використовуй шаблон іншого застосунку: він викликає чужу дію.").font(.caption)
@@ -181,10 +186,13 @@ struct AutomationCenter: View {
         }
     }
     private var connectionSection: some View {
-        Section("Перевірка зв’язку Apple Pay") {
+        Section("Перевірка зв’язку та сповіщень") {
             LabeledContent("Тест дії Команд", value: stamp(lastShortcutCheck))
             LabeledContent("Останній прийом Apple Pay", value: stamp(lastWalletCapture))
-            LabeledContent("Останнє повідомлення банку", value: stamp(lastBankNotification))
+            LabeledContent("Остання прийнята операція банку", value: stamp(lastBankNotification))
+            LabeledContent("Останній виклик сповіщення", value: stamp(lastNotificationAttempt))
+            Text(FinamiNotificationStatus.display(lastNotificationStatus)).font(.caption).accessibilityIdentifier("qa.automation.notificationStatus")
+            Text("Ручний запуск ▶ без справжнього сповіщення не створює операцію. Неплатіжні повідомлення пропускаються без діалогів; тут видно причину. Якщо немає типу операції, передай заголовок окремо. Для auto вкажи банк і маску картки.").font(.caption)
             Button { launchShortcuts() } label: { Label("Відкрити Команди для тесту", systemImage: "checkmark.shield") }
             Text("У Командах знайди Finami → Перевірка зв’язку і запусти її. Повернись сюди: час тесту має оновитися. Цей тест не додає витрату і не підтверджує роботу Wallet-тригера.").font(.caption)
             Button("Перевірити локальний обробник") {
@@ -234,6 +242,9 @@ struct AutomationCenter: View {
     }
     private var testSection: some View {
         Section("Тест розпізнавання без запису") {
+            Button("Перевірити формат ПУМБ") {
+                testResult = finamiNotificationSelfTest() ? "Тест пройдено: 20,00 ₴, покупка, банк і маска визначені. Баланс не змінено." : "Тест не пройдено. Баланс не змінено."
+            }.accessibilityIdentifier("qa.automation.testPUMB")
             TextField("Знеособлений приклад SMS",text:$sample,axis:.vertical)
             Button("Перевірити текст") {
                 do {let e=try captureMessage(sample,account:account);testResult=currencyMoney(e.minor,e.currency)+" · "+(e.incoming ? "Зарахування":"Списання")+" · "+(e.clearPurchase ? "Покупка":"Потрібна перевірка")}
@@ -269,6 +280,7 @@ struct CaptureReview: View {
                 LabeledContent("Дата",value:event.date.formatted(date:.abbreviated,time:.shortened))
                 if let available = event.reportedAvailable { LabeledContent("Доступно за даними банку", value: s.visibleMoney(available, event.currency)); Text("Це довідкова сума, а не витрата.").font(.caption) }
                 if !event.merchant.isEmpty {LabeledContent("Продавець",value:event.merchant)}
+                if event.incoming && event.incomeHint == true { Text("Явний тип доходу розпізнано. Підтвердьте, що це не переказ власних коштів.").font(.caption).foregroundStyle(.secondary) }
                 Picker("Тип",selection:$kind){ForEach(allowed){k in Text(k.title).tag(k)}}
                 if s.captureMatch(selectedEvent) {
                     Text(s.captureRepeat(event) ? "Такий самий текст повідомлення вже оброблено. Повтор не змінить баланс автоматично." : "Схожа операція вже є. Якщо це та сама покупка, відхиліть подію.").foregroundStyle(.orange)
@@ -286,7 +298,7 @@ struct CaptureReview: View {
                 Button("Відхилити подію",role:.destructive){discard=true}
             }.navigationTitle("Перевірка платежу").navigationBarTitleDisplayMode(.inline)
                 .toolbar{ToolbarItem(placement:.cancellationAction){Button("Закрити"){dismiss()}}}
-                .onAppear{kind=event.incoming ? .unclassifiedCredit : event.clearPurchase ? .expense:.unclassifiedDebit; accountID=event.account}.onChange(of: kind) { _ in category="" }.onChange(of: accountID) { _ in separatePayment=false }
+                .onAppear{kind=event.incoming ? (event.incomeHint == true ? .income : .unclassifiedCredit) : event.clearPurchase ? .expense:.unclassifiedDebit; accountID=event.account}.onChange(of: kind) { _ in category="" }.onChange(of: accountID) { _ in separatePayment=false }
                 .confirmationDialog("Зберегти платіж?",isPresented:$confirm){Button("Зберегти"){if var o=s.capturedOperation(selectedEvent,kind:kind) { if kind.isReportCategory && categories.contains(category) { o.category=category }; if s.finishCapture(selectedEvent,operation:o,allowSeparatePayment:separatePayment,learnMerchantCategory:remember) { dismiss() } }}}
                 .confirmationDialog("Відхилити без запису?",isPresented:$discard){Button("Відхилити",role:.destructive){if s.finishCapture(event,operation:nil){dismiss()}}}
         }

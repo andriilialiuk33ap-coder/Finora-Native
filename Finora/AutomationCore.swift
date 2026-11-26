@@ -17,13 +17,16 @@ struct CapturedPayment: Codable, Identifiable, Equatable {
     var bankHint: String? = nil
     var ambiguousCard: Bool? = nil
     var reportedAvailable: Int64? = nil
+    // Only an explicit income label is retained, never the original message.
+    var incomeHint: Bool? = nil
 }
 enum CaptureError: LocalizedError {
-    case invalid, unsafeMessage, ambiguous, storage
+    case invalid, unsafeMessage, nonPayment, ambiguous, storage
     var errorDescription: String? {
         switch self {
         case .invalid: return "Некоректна сума, валюта або код рахунку / Invalid amount, currency or account code."
         case .unsafeMessage: return "Це не платіж або повідомлення містить код безпеки / Not a payment or contains a security code."
+        case .nonPayment: return "Не знайдено ознак платежу. Перевірте заголовок і текст сповіщення."
         case .ambiguous: return "Не вдалося однозначно визначити суму та валюту. Додайте вручну / Ambiguous amount or currency; add manually."
         case .storage: return "Не вдалося прочитати локальну чергу / Cannot read local inbox."
         }
@@ -39,6 +42,14 @@ func captureBankNotification(title: String?, body: String, account: String) thro
     let header = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     return try captureMessage(header.isEmpty ? body : header + "\n" + body, account: account)
 }
+// Conservative recognition of explicit income headings. Generic deposits, transfers,
+// loan funds and advertising remain unclassified (or rejected). No automatic posting.
+func finamiExplicitIncome(_ text: String) -> Bool {
+    let lower = bankClean(text).lowercased()
+    let label = #"^(?:(?:зарахування|надходження|зараховано|credited|received)\s*[:–—-]?\s*)?(?:зарплата|заробітна плата|salary|кешбек|cashback|пенсія|виплата винагороди|нарахування відсотків|дохід)(?=\s|:|$)"#
+    guard lower.range(of: label, options: .regularExpression) != nil else { return false }
+    return !["повернення", "refund", "поповнення", "поповнено", "переказ", "transfer", "погашення", "видача кредиту", "кредитні кошти", "доступний кешбек", "можливий кешбек", "до ", "бонус за", "отримайте", "нарахуємо", "очікується"].contains { lower.contains($0) }
+}
 func captureMessage(_ text: String, account: String) throws -> CapturedPayment {
     let account = account.trimmingCharacters(in:.whitespacesAndNewlines)
     guard !account.isEmpty, text.count <= 4000 else {throw CaptureError.invalid}
@@ -47,15 +58,17 @@ func captureMessage(_ text: String, account: String) throws -> CapturedPayment {
     let securityText = lower.replacingOccurrences(of: "otp bank", with: "банк").replacingOccurrences(of: "otpbank", with: "банк")
     guard !["otp", "одноразов", "код підтвердж", "код авторизац", "verification code", "password", "пароль", "не повідомляйте", "не передавайте", "one-time", "security code", "код для", "код операції", "declined", "відхилен", "неуспіш", "скасован", "відмов", "недостатньо коштів", "failed"].contains(where:{securityText.contains($0)}) else {throw CaptureError.unsafeMessage}
     let purchase = ["покупка","купівля","оплата","purchase","payment","списання","списано","сплачено","paid","debit"].contains{lower.contains($0)}
-    let incoming = ["зарахування","зараховано","надходження","поповнення","поповнено","credited","received","refund","повернення"].contains{lower.contains($0)}
-    guard purchase != incoming else {throw CaptureError.unsafeMessage}
+    let explicitIncome = finamiExplicitIncome(normalized)
+    let incoming = explicitIncome || ["зарахування","зараховано","надходження","поповнення","поповнено","credited","received","refund","повернення"].contains{lower.contains($0)}
+    guard purchase || incoming else {throw CaptureError.nonPayment}
+    guard purchase != incoming else {throw CaptureError.ambiguous}
     // Ignore the available-balance suffix, not the transaction itself. Multiple amounts before it require manual entry.
     let balancePattern = #"(?i)(?:\b(?:balance|available)\b|баланс|залишок|доступно|доступний ліміт|кредитний ліміт)"#
     let payment = normalized.range(of:balancePattern, options:.regularExpression).map{String(normalized[..<$0.lowerBound])} ?? normalized
     let pattern = #"(?i)(?<![\d.,])([+-]?\d+(?:[ ]\d{3})*(?:[.,]\d{1,2})?)\s*(UAH|USD|грн\.?|₴|\$)(?![\p{L}\d])"#
     let regex = try NSRegularExpression(pattern:pattern)
     let matches = regex.matches(in:payment,range:NSRange(payment.startIndex...,in:payment))
-    guard matches.count == 1, let match = matches.first, let ar = Range(match.range(at:1),in:payment), let cr = Range(match.range(at:2),in:payment), let minor = bankMinor(String(payment[ar])), minor != 0 else {throw CaptureError.ambiguous}
+    guard matches.count == 1, let match = matches.first, let ar = Range(match.range(at:1),in:payment), let cr = Range(match.range(at:2),in:payment), let minor = bankMinor(String(payment[ar])), minor != 0, minor >= -1_000_000_000_000, minor <= 1_000_000_000_000 else {throw CaptureError.ambiguous}
     let code = String(payment[cr]).uppercased(); let currency = code == "USD" || code == "$" ? "USD":"UAH"
     // Extract only an explicitly labelled merchant, never arbitrary private SMS contents.
     let merchantPattern = #"(?i)(?:merchant|магазин|торговець|продавець)\s*[:=]\s*([^;|]+)"#
@@ -87,6 +100,7 @@ func captureMessage(_ text: String, account: String) throws -> CapturedPayment {
     let transfer = ["переказ","transfer","погашення","repayment","готівк","withdrawal","кредит","loan","комісія","fee","авторизація","authorization","hold","заблоковано"].contains{paymentLower.contains($0)}
     let explicitPurchase = ["покупка","купівля","purchase","оплата","сплачено","paid"].contains{paymentLower.contains($0)}
     var event = CapturedPayment(account:account,currency:currency,minor:abs(minor),merchant:merchant,source:"Bank message",incoming:incoming,clearPurchase:purchase && explicitPurchase && !transfer && !merchant.isEmpty)
+    if explicitIncome && incoming { event.incomeHint = true }
     if let transactionDate { event.date = transactionDate }
     event.messageFingerprint = captureMessageFingerprint(account:account, text:normalized)
     let masks = finamiCardSuffixes(normalized)
@@ -95,6 +109,55 @@ func captureMessage(_ text: String, account: String) throws -> CapturedPayment {
     event.reportedAvailable = finamiReportedAvailable(normalized, currency: currency)
     event.bankHint = finamiBankHint(normalized)
     return event
+}
+// The notification action must complete silently on missing or rejected input.
+// Only a bounded diagnostic code and timestamp are retained, never notification text.
+enum FinamiNotificationStatus: String, Codable {
+    case empty, ignored, missingPaymentType, ambiguous, invalid, queued, storageError
+    var label: String {
+        switch self {
+        case .empty: return "Немає тексту. Ручний запуск без сповіщення?"
+        case .ignored: return "Захисне або відхилене повідомлення пропущено"
+        case .missingPaymentType: return "Немає типу операції. Передай заголовок і текст"
+        case .ambiguous: return "Неоднозначна сума, напрям або банк; не записано"
+        case .invalid: return "Некоректний код рахунку або вхідні дані"
+        case .queued: return "Операцію прийнято в чергу"
+        case .storageError: return "Не вдалося записати локальну чергу"
+        }
+    }
+    static func display(_ raw: String) -> String { Self(rawValue: raw)?.label ?? "Ще не було викликів" }
+}
+struct FinamiNotificationResult {
+    let status: FinamiNotificationStatus
+    let event: CapturedPayment?
+}
+func finamiPrepareNotification(title: String?, body: String?, account: String?, bank: String? = nil) -> FinamiNotificationResult {
+    let body = body?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard !body.isEmpty else { return .init(status: .empty, event: nil) }
+    let rawAccount = account?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let code = rawAccount.isEmpty || rawAccount.lowercased() == "auto" ? "auto" : rawAccount
+    do {
+        var event = try captureBankNotification(title: title, body: body, account: code)
+        if let supplied = bank.flatMap(finamiBankHint) {
+            if let inferred = event.bankHint, inferred != supplied { return .init(status: .ambiguous, event: nil) }
+            event.bankHint = supplied
+        }
+        return .init(status: .queued, event: event)
+    } catch CaptureError.unsafeMessage { return .init(status: .ignored, event: nil) }
+    catch CaptureError.nonPayment { return .init(status: .missingPaymentType, event: nil) }
+    catch CaptureError.ambiguous { return .init(status: .ambiguous, event: nil) }
+    catch { return .init(status: .invalid, event: nil) }
+}
+// Inject the queue writer for regression tests. No rejected input can reach disk.
+@discardableResult func finamiHandleNotification(title: String?, body: String?, account: String?, bank: String? = nil, enqueue: (CapturedPayment) throws -> Void) -> FinamiNotificationStatus {
+    let result = finamiPrepareNotification(title: title, body: body, account: account, bank: bank)
+    guard let event = result.event else { return result.status }
+    do { try enqueue(event); return .queued } catch { return .storageError }
+}
+// Entirely synthetic sample, never used for a real financial write.
+func finamiNotificationSelfTest() -> Bool {
+    let result = finamiPrepareNotification(title: "Купівля", body: "20.00UAH\nEASYPAY*LIFECELL KYIV UA\n26-11-2026 09:47\nКредитна картка: *1234", account: "auto", bank: "ПУМБ")
+    return result.event?.minor == 2000 && result.event?.bankHint == "pumb" && result.event?.cardSuffix == "1234" && result.event?.clearPurchase == true && finamiPrepareNotification(title: nil, body: nil, account: "auto").status == .empty && finamiPrepareNotification(title: "Код підтвердження", body: "Оплата 20 грн 123456", account: "auto").status == .ignored
 }
 // SHA-256 for a stable, non-reversible duplicate hint. Never store the message body.
 // A digest is not a bank-issued transaction ID: identical legitimate payments can exist.
@@ -183,13 +246,24 @@ enum CaptureInbox {
     }
 }
 
-// Shared shortcut links must originate from Apple Shortcuts, not a guessed identifier.
+// Shared shortcut exported by the Finami owner: bank notifications, not Wallet.
+let finamiDefaultBankShortcutLink = "https://www.icloud.com/shortcuts/95b7f9e2b947455ab96932f8de514b2e"
+
 func finamiSharedShortcutURL(_ text: String) -> URL? {
-    guard let c = URLComponents(string: text.trimmingCharacters(in: .whitespacesAndNewlines)),
-          c.scheme?.lowercased() == "https", c.host?.lowercased() == "www.icloud.com",
+    guard var c = URLComponents(string: text.trimmingCharacters(in: .whitespacesAndNewlines)),
+          c.scheme?.lowercased() == "https", let host = c.host?.lowercased(),
+          ["icloud.com", "www.icloud.com"].contains(host),
           c.user == nil, c.password == nil, c.port == nil,
-          c.path.range(of: #"^/shortcuts/[0-9a-fA-F]{32}/?$"#, options: .regularExpression) != nil else { return nil }
+          c.query == nil, c.fragment == nil,
+          c.percentEncodedPath.range(of: #"^/shortcuts/[0-9a-fA-F]{32}/?$"#, options: .regularExpression) != nil else { return nil }
+    c.scheme = "https"
+    c.host = "www.icloud.com"
     return c.url
+}
+
+// Existing installations may have saved an empty or invalid override.
+func finamiBankShortcutURL(_ override: String) -> URL? {
+    finamiSharedShortcutURL(override) ?? finamiSharedShortcutURL(finamiDefaultBankShortcutLink)
 }
 
 // Only a labelled, masked suffix is accepted. Never keep full card numbers.

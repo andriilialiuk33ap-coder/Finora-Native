@@ -75,6 +75,8 @@ struct FinamiDiagnostics: View {
     @AppStorage("finami.lastShortcutCheck") private var lastCheck: Double = 0
     @AppStorage("finami.lastWalletCapture") private var lastWallet: Double = 0
     @AppStorage("finami.lastBankNotification") private var lastBank: Double = 0
+    @AppStorage("finami.lastNotificationAttempt") private var lastNotificationAttempt: Double = 0
+    @AppStorage("finami.lastNotificationStatus") private var lastNotificationStatus = ""
     @AppStorage("finami.notificationShortcutLink") private var bankLink = ""
     @AppStorage("finami.walletShortcutLink") private var walletLink = ""
     private func stamp(_ t: Double) -> String { t > 0 ? Date(timeIntervalSince1970: t).formatted(date: .abbreviated, time: .shortened) : "Ще не отримано" }
@@ -95,11 +97,13 @@ struct FinamiDiagnostics: View {
                 Button("Запросити дозвіл на сповіщення") { Task { _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert,.sound,.badge]); await refresh() } }
             }
             Section("Команди") {
-                LabeledContent("Посилання банку", value: finamiSharedShortcutURL(bankLink) == nil ? "Не задано" : "Формат правильний")
+                LabeledContent("Посилання банку", value: finamiBankShortcutURL(bankLink) == nil ? "Не задано" : "Формат правильний")
                 LabeledContent("Посилання Wallet", value: finamiSharedShortcutURL(walletLink) == nil ? "Не задано" : "Формат правильний")
                 LabeledContent("Останній тест", value: stamp(lastCheck))
                 LabeledContent("Останній Wallet", value: stamp(lastWallet))
-                LabeledContent("Останнє повідомлення", value: stamp(lastBank))
+                LabeledContent("Остання прийнята операція банку", value: stamp(lastBank))
+                LabeledContent("Останній виклик сповіщення", value: stamp(lastNotificationAttempt))
+                Text(FinamiNotificationStatus.display(lastNotificationStatus)).font(.caption).accessibilityIdentifier("qa.diagnostics.notificationStatus")
                 Text("Це зафіксовані виклики, а не перевірка стану системної автоматизації. Правильний формат посилання не гарантує існування команди.").font(.caption)
                 NavigationLink("Налаштувати автоматизацію") { AutomationCenter() }
             }
@@ -116,7 +120,7 @@ struct FinamiDiagnostics: View {
         switch settings.authorizationStatus { case .authorized, .provisional, .ephemeral: notifications = "Дозволено"; case .denied: notifications = "Вимкнено"; default: notifications = "Не запитано" }
         scheduled = await center.pendingNotificationRequests().count; checked = true
         s.refreshCaptures(auto: false)
-        do { let e = try captureMessage("Купівля 20.00UAH; Магазин: Test", account: "diagnostic"); parser = e.minor == 2000 ? "Тест пройдено" : "Неправильна сума" } catch { parser = error.localizedDescription }
+        parser = finamiNotificationSelfTest() ? "Тест пройдено" : "Тест не пройдено"
     }
 }
 struct FinamiSecureBackupView: View {

@@ -41,6 +41,8 @@ struct AppearancePreferences: Codable {
     var reportsShowAccounts: Bool? = nil
     var reportsShowReview: Bool? = nil
     var reportsCategoryLimit: Int? = nil
+    // Missing account key preserves the original detailed report. Empty array hides every row.
+    var reportsAccountFields: [String: [String]]? = nil
 }
 struct IzanamiTheme: Identifiable {
     var id: String { name }

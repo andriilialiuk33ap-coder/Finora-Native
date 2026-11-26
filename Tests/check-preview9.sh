@@ -36,6 +36,11 @@ require(otp.minor == 10000, "OTP bank name does not trigger security-code filter
 do { _ = try captureMessage("OTP Bank: Код підтвердження оплати 100 грн", account: "test-otp"); fatalError("security code accepted") } catch { print("PASS: security-code messages still rejected") }
 require(finamiSharedShortcutURL("https://www.icloud.com/shortcuts/0123456789abcdef0123456789abcdef") != nil, "shared shortcut URL syntax")
 require(finamiSharedShortcutURL("shortcuts://") == nil && finamiSharedShortcutURL("https://www.icloud.com.evil.invalid/shortcuts/0123456789abcdef0123456789abcdef") == nil && finamiSharedShortcutURL("https://www.icloud.com/shortcuts/placeholder") == nil, "invalid and spoofed shortcut URLs rejected")
+require(finamiSharedShortcutURL("https://icloud.com/shortcuts/95b7f9e2b947455ab96932f8de514b2e")?.absoluteString == finamiDefaultBankShortcutLink, "owner export: bare iCloud hostname normalized")
+require(finamiBankShortcutURL("")?.absoluteString == finamiDefaultBankShortcutLink, "empty existing preference falls back to bundled template")
+require(finamiBankShortcutURL("invalid")?.absoluteString == finamiDefaultBankShortcutLink, "invalid existing preference falls back to bundled template")
+require(finamiBankShortcutURL("https://icloud.com/shortcuts/0123456789abcdef0123456789abcdef")?.absoluteString == "https://www.icloud.com/shortcuts/0123456789abcdef0123456789abcdef", "valid custom template preserved")
+require(finamiSharedShortcutURL("https://icloud.com/shortcuts/95b7f9e2b947455ab96932f8de514b2e?extra=1") == nil && finamiSharedShortcutURL("https://evil.invalid/shortcuts/95b7f9e2b947455ab96932f8de514b2e") == nil, "reject noncanonical or external sharing links")
 SWIFT
 swiftc -warnings-as-errors Finora/BankCore.swift Finora/AutomationCore.swift Finora/FinamiScanCore.swift "$tmp/main.swift" -o "$tmp/preview9-tests"
 TZ=Europe/Kyiv "$tmp/preview9-tests"

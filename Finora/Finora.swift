@@ -256,6 +256,21 @@ struct DataFile: FileDocument {
       if FileManager.default.fileExists(atPath: url.path) {
         db = try JSONDecoder().decode(Database.self, from: Data(contentsOf: url))
       }
+      #if DEBUG && targetEnvironment(simulator)
+      if ProcessInfo.processInfo.arguments.contains("--finami-qa"),
+         ProcessInfo.processInfo.arguments.contains("--finami-qa-reports-fixture"),
+         !FileManager.default.fileExists(atPath: url.path) {
+        db.accounts.append(Account(id: "qa-pumb", name: "QA Pumb"))
+        db.accounts.append(Account(id: "qa-otp", name: "QA OTP"))
+        db.operations = [Operation(kind: .expense, amount: 30000, account: "qa-pumb"),
+                         Operation(kind: .income, amount: 100000, account: "qa-pumb"),
+                         Operation(kind: .expense, amount: 10000, account: "qa-otp"),
+                         Operation(kind: .income, amount: 20000, account: "qa-otp")]
+        var p = AppearancePreferences()
+        p.reportsShowComparison = false; p.reportsShowCategories = false; p.reportsShowChart = false
+        db.preferences = p
+      }
+      #endif
     } catch {
       ready = false
       self.error =
@@ -1093,7 +1108,7 @@ struct More: View {
         }
       }
       VStack(alignment: .leading) {
-        Text("Finami · 5.0 Preview 10\nБез реклами, серверів та платних API.").font(.footnote)
+        Text("Finami · 5.0 Preview 10.2\nБез реклами, серверів та платних API.").font(.footnote)
           .foregroundStyle(.secondary)
       }
     }.padding() }.background(Color(uiColor: .systemGroupedBackground)).navigationTitle("Ще").toolbar{Button{menuSettings=true} label:{Image(systemName:"slider.horizontal.3")}.accessibilityLabel("Налаштування меню")}.sheet(isPresented:$menuSettings){NavigationStack{Form{Toggle("Компактні ілюстрації",isOn:Binding(get:{s.db.preferences?.menuCompact ?? false},set:{v in s.change{d in var p=d.preferences ?? .init();p.menuCompact=v;d.preferences=p}}));NavigationLink("Студія дизайну"){AppearanceView()};NavigationLink("Блоки головної"){DashboardSettings()};NavigationLink("Рахунки"){FinamiAccountSettings()}}.navigationTitle("Налаштування меню").toolbar{Button("Готово"){menuSettings=false}}}}
