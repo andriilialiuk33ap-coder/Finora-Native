@@ -29,6 +29,28 @@ final class FinamiUITests: XCTestCase {
             app.navigationBars.buttons.firstMatch.tap()
         }
     }
+    func testCompactAccountGridAlignmentAndDetails() {
+        app.terminate()
+        app.launchArguments = ["--finami-qa", "--finami-qa-reset", "--finami-qa-design-fixture"]
+        app.launch()
+        visible(app.tabBars.buttons["Рахунки"]);app.tabBars.buttons["Рахунки"].tap()
+        let credit=app.buttons["qa.account.compact.qa-design-credit"]
+        let debit=app.buttons["qa.account.compact.qa-design-debit"]
+        for _ in 0..<10 { if credit.exists && credit.isHittable && debit.exists && debit.isHittable { break }; app.swipeUp() }
+        visible(credit);visible(debit)
+        XCTAssertEqual(credit.frame.minY,debit.frame.minY,accuracy:2)
+        XCTAssertEqual(credit.frame.height,debit.frame.height,accuracy:2)
+        capture("design-grid-aligned")
+        credit.tap();visible(app.navigationBars["Деталі рахунку"])
+        app.navigationBars.buttons["Готово"].tap()
+        let layout=app.segmentedControls["qa.account.layout"]
+        for _ in 0..<8 { if layout.exists && layout.isHittable { break }; app.swipeDown() }
+        visible(layout);layout.buttons["Список"].tap()
+        visible(credit);visible(debit)
+        XCTAssertEqual(credit.frame.minX,debit.frame.minX,accuracy:2)
+        XCTAssertGreaterThan(debit.frame.minY,credit.frame.minY)
+        capture("design-list")
+    }
     func testAllFiveTabsOpen() {
         for title in ["Головна", "Операції", "Рахунки", "Звіти", "Ще"] {
             let tab = app.tabBars.buttons[title]; visible(tab); tab.tap()

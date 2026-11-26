@@ -10,6 +10,8 @@ extension EnvironmentValues { var finamiMask: Bool { get { self[FinamiMaskKey.se
 enum FinamiDesign: String, CaseIterable, Identifiable {
     case signature = "Signature", pure = "Pure", aurora = "Aurora", canvas = "Canvas", obsidian = "Obsidian", pulse = "Pulse", nord = "Nord", rose = "Rose", graphite = "Graphite", ocean = "Ocean"
     case darkClassic = "Dark Classic", graphiteGlass = "Graphite Glass", premiumNeon = "Premium Neon", cleanLight = "Clean Light"
+    case blackTitanium = "Black Titanium", digitalBank = "Digital Bank", compactPro = "Compact Pro", liquidGlass = "Liquid Glass", emeraldAnalytics = "Emerald Analytics", whiteStudio = "White Studio"
+    static let revolution: [Self] = [.blackTitanium,.digitalBank,.compactPro,.liquidGlass,.emeraldAnalytics,.whiteStudio]
     static let featured: [Self] = [.darkClassic,.graphiteGlass,.premiumNeon,.cleanLight]
     var id: String { rawValue }
     var tint: Color {
@@ -26,15 +28,25 @@ enum FinamiDesign: String, CaseIterable, Identifiable {
         case .graphiteGlass:return Color(red:0.49,green:0.69,blue:0.88)
         case .premiumNeon:return Color(red:0.30,green:0.82,blue:0.69)
         case .cleanLight:return Color(red:0.12,green:0.36,blue:0.70)
+        case .blackTitanium,.compactPro:return Color(red:0.82,green:0.68,blue:0.44)
+        case .digitalBank,.liquidGlass:return Color(red:0.49,green:0.69,blue:0.90)
+        case .emeraldAnalytics:return Color(red:0.36,green:0.76,blue:0.57)
+        case .whiteStudio:return Color(red:0.18,green:0.18,blue:0.20)
         }
     }
     var corner: CGFloat {
-        switch self { case .pure,.cleanLight: return 16; case .canvas,.rose: return 24; case .pulse,.nord,.graphite: return 14; case .obsidian,.darkClassic: return 18; case .graphiteGlass: return 22; case .premiumNeon: return 20; default: return 20 }
+        switch self { case .pure,.cleanLight,.whiteStudio: return 16; case .canvas,.rose: return 24; case .pulse,.nord,.graphite,.compactPro: return 14; case .obsidian,.darkClassic,.blackTitanium: return 18; case .graphiteGlass,.liquidGlass: return 22; case .premiumNeon: return 20; default: return 20 }
     }
     var font: Font.Design { self == .canvas || self == .rose ? .rounded : .default }
-    var scheme: ColorScheme? { switch self { case .signature,.aurora,.obsidian,.graphite,.ocean,.darkClassic,.graphiteGlass,.premiumNeon:return .dark; default:return .light } }
+    var scheme: ColorScheme? { switch self { case .signature,.aurora,.obsidian,.graphite,.ocean,.darkClassic,.graphiteGlass,.premiumNeon,.blackTitanium,.digitalBank,.compactPro,.liquidGlass,.emeraldAnalytics:return .dark; default:return .light } }
     var description: String {
         switch self {
+        case .blackTitanium:return "Матовий чорний · рівна сітка · золото"
+        case .digitalBank:return "Банківські картки · розширені показники"
+        case .compactPro:return "Щільний список · мінімум ефектів"
+        case .liquidGlass:return "М’які контури · опційне скло"
+        case .emeraldAnalytics:return "Аналітика · смарагдові акценти"
+        case .whiteStudio:return "Світлий · монохромні поверхні"
         case .darkClassic:return "Чорний · матове золото · стримані платежі"
         case .graphiteGlass:return "Графіт · скло за бажанням · прохолодний акцент"
         case .premiumNeon:return "Темний · тонкі м’ятні контури · фінансові статуси"
@@ -51,7 +63,7 @@ enum FinamiDesign: String, CaseIterable, Identifiable {
         case .ocean:return "Океан · глибокі градієнти"
         }
     }
-    var monochrome: Bool { self == .darkClassic || self == .obsidian || self == .graphite }
+    var monochrome: Bool { self == .darkClassic || self == .obsidian || self == .graphite || self == .blackTitanium || self == .compactPro || self == .whiteStudio }
 }
 enum FinamiCardTemplate: String, CaseIterable, Identifiable {
     case automatic = "За дизайном", gradient = "Gradient", minimal = "Minimal", glass = "Glass", soft = "Soft", bank = "Bank", neon = "Neon", stripe = "Stripe", compact = "Compact", illustrated = "Illustrated", premium = "Premium"
@@ -66,17 +78,18 @@ struct FinamiCardStyle: ViewModifier {
     func body(content: Content) -> some View {
         let design = FinamiDesign(rawValue:s.db.preferences?.design ?? "Dark Classic") ?? .darkClassic
         let style = FinamiCardTemplate(rawValue:template ?? s.db.preferences?.cardTemplate ?? "За дизайном") ?? .automatic
-        let radius: CGFloat = style == .minimal || style == .compact ? 12 : design.corner
-        let accent = design.monochrome && style == .automatic ? design.tint : tint
-        let base = scheme == .dark && design.monochrome ? Color(red:0.105,green:0.105,blue:0.115) : Color(uiColor:.secondarySystemGroupedBackground)
-        let glass = style == .glass || (style == .automatic && [.aurora,.graphiteGlass].contains(design))
-        let gradient = [.gradient,.premium,.bank,.illustrated].contains(style) || (style == .automatic && [.signature,.pulse,.ocean,.graphiteGlass].contains(design))
+        let radius: CGFloat = s.db.preferences?.designRadius.map { CGFloat(FinamiDesignPolicy.radius($0)) } ?? (style == .minimal || style == .compact ? 12 : design.corner)
+        let economical = s.db.preferences?.designLowEffects == true
+        let accent = finamiDesignAccent(s.db.preferences?.designAccent) ?? (design.monochrome && style == .automatic ? design.tint : tint)
+        let base = finamiDesignSurface(design, scheme: scheme)
+        let glass = style == .glass || (style == .automatic && [.aurora,.graphiteGlass,.liquidGlass].contains(design))
+        let gradient = [.gradient,.premium,.bank,.illustrated].contains(style) || (style == .automatic && [.signature,.pulse,.ocean,.graphiteGlass,.digitalBank,.emeraldAnalytics].contains(design))
         let neon = style == .neon || (style == .automatic && design == .premiumNeon)
         content.background {
             ZStack(alignment:.leading) {
                 RoundedRectangle(cornerRadius:radius).fill(base)
-                if glass && !reduceTransparency && style == .glass { RoundedRectangle(cornerRadius:radius).fill(.regularMaterial) }
-                if gradient || glass { RoundedRectangle(cornerRadius:radius).fill(LinearGradient(colors:[accent.opacity(0.12),accent.opacity(0.015)],startPoint:.topLeading,endPoint:.bottomTrailing)) }
+                if glass && !reduceTransparency && !economical && (style == .glass || design == .liquidGlass) { RoundedRectangle(cornerRadius:radius).fill(.regularMaterial) }
+                if !economical && (gradient || glass) { RoundedRectangle(cornerRadius:radius).fill(LinearGradient(colors:[accent.opacity(0.12),accent.opacity(0.015)],startPoint:.topLeading,endPoint:.bottomTrailing)) }
                 else if style == .soft || (style == .automatic && [.canvas,.rose,.nord].contains(design)) { RoundedRectangle(cornerRadius:radius).fill(accent.opacity(0.07)) }
                 if style == .stripe { Capsule().fill(accent).frame(width:3).padding(.vertical,10) }
             }
@@ -136,9 +149,13 @@ struct FinamiDesignPreview: View {
     var body:some View {
         VStack(alignment:.leading,spacing:10) {
             HStack {Text("finami.").font(.headline);Spacer();Image(systemName:"eye").foregroundStyle(design.tint)}
-            if [.pure,.graphite,.nord,.cleanLight,.darkClassic].contains(design) { metric }
+            if [.pure,.graphite,.nord,.cleanLight,.darkClassic,.blackTitanium,.compactPro,.whiteStudio].contains(design) { metric }
             else { HStack(alignment:.center){metric;Spacer(minLength:4);FinamiArt(icon:design == .canvas || design == .rose ? "leaf.fill" : "wallet.pass.fill",tint:design.tint,size:48)} }
-            if [.pulse,.nord,.graphite,.cleanLight,.darkClassic,.premiumNeon].contains(design) {
+            if design == .compactPro {
+                previewLine("ПУМБ кредит","Доступно");previewLine("ПУМБ дебет","Власні кошти")
+            } else if design == .digitalBank {
+                mini("Дебетова картка", "32 450 ₴", "creditcard.fill");mini("Кредитна картка", "65 000 ₴", "creditcard.fill")
+            } else if [.pulse,.nord,.graphite,.cleanLight,.darkClassic,.premiumNeon,.blackTitanium,.whiteStudio,.emeraldAnalytics,.liquidGlass].contains(design) {
                 HStack(spacing:8){ mini("Власні", "32 450 ₴", "wallet.pass.fill");mini("Кредитні", "65 000 ₴", "creditcard.fill") }
             } else {
                 HStack{Image(systemName:"creditcard.fill").foregroundStyle(design.tint);Text("Мої рахунки");Spacer();Image(systemName:"chevron.right")}.font(.caption).padding(10).background(design.tint.opacity(0.09),in:RoundedRectangle(cornerRadius:design.corner/2))
@@ -146,6 +163,7 @@ struct FinamiDesignPreview: View {
         }.environment(\.font,.system(.body,design:design.font)).padding(14).frame(maxWidth:.infinity,alignment:.leading).foregroundStyle(foreground)
         .background { RoundedRectangle(cornerRadius:design.corner).fill(background);RoundedRectangle(cornerRadius:design.corner).fill(LinearGradient(colors:[design.tint.opacity(design == .pure ? 0.04 : 0.22),design.tint.opacity(0.02)],startPoint:.topLeading,endPoint:.bottomTrailing)) }
     }
+    private func previewLine(_ name:String,_ detail:String)->some View { HStack { Image(systemName:"creditcard.fill").foregroundStyle(design.tint);VStack(alignment:.leading){Text(name).font(.subheadline);Text(detail).font(.caption2)};Spacer();Text("••••").font(.headline) }.padding(8).background(design.tint.opacity(0.08),in:RoundedRectangle(cornerRadius:8)) }
     var metric:some View {VStack(alignment:.leading,spacing:4){Text("Власні кошти").font(.caption);Text("32 450 ₴").font(.title2.bold()).monospacedDigit();Text("Без кредитного ліміту").font(.caption2).foregroundStyle(foreground.opacity(0.75))}.frame(maxWidth:.infinity,alignment:.leading)}
     func mini(_ title:String,_ value:String,_ icon:String)->some View { VStack(alignment:.leading,spacing:4){Image(systemName:icon).foregroundStyle(design.tint);Text(title).font(.caption2);Text(value).font(.caption.weight(.semibold)).minimumScaleFactor(0.7)}.frame(maxWidth:.infinity,alignment:.leading).padding(8).background(design.tint.opacity(0.12),in:RoundedRectangle(cornerRadius:design.corner/2)) }
 }

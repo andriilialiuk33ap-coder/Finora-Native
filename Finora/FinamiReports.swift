@@ -27,7 +27,7 @@ struct Reports: View {
     var body: some View {
         let snapshot = s.reportSnapshot(date: date, annual: annual, account: selectedAccount == "all" ? nil : selectedAccount)
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 16) {
+            LazyVStack(alignment: .leading, spacing: (s.db.preferences ?? .init()).finamiSpacing) {
                 controls
                 flow(snapshot)
                 if prefs.reportsShowComparison != false { comparison(snapshot) }
@@ -39,7 +39,7 @@ struct Reports: View {
                 if prefs.reportsShowMonths != false { timeline(snapshot) }
                 if prefs.reportsShowReview != false { review(snapshot) }
             }.padding()
-        }.background(Color(uiColor: .systemGroupedBackground)).navigationTitle("Звіти")
+        }.background(finamiScreenBackground(s.db.preferences)).navigationTitle("Звіти")
         .toolbar {
             Button { s.changeAppearance { p in p.hideAmounts = !(p.hideAmounts ?? false) } } label: { Image(systemName: s.privateAmounts ? "eye.slash" : "eye") }.accessibilityLabel("Приховати або показати всі суми")
             Button { settings = true } label: { Image(systemName: "slider.horizontal.3") }.accessibilityLabel("Налаштування звітів")

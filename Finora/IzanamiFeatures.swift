@@ -51,6 +51,16 @@ struct AppearancePreferences: Codable {
     var modernPaymentTotal: Bool? = nil
     var modernPaymentMonthly: Bool? = nil
     var modernPaymentRemaining: Bool? = nil
+    var designLayout: String? = nil
+    var designDashboard: String? = nil
+    var designAccent: String? = nil
+    var designRadius: Int? = nil
+    var designLowEffects: Bool? = nil
+    var designPresets: [String: [String: String]]? = nil
+    var collapsedDashboard: [String]? = nil
+    var hideEmptyDashboard: Bool? = nil
+    var collapsedMenu: [String]? = nil
+    var collapsedReports: [String]? = nil
 }
 struct IzanamiTheme: Identifiable {
     var id: String { name }
@@ -70,7 +80,7 @@ struct IzanamiShell: View {
     @EnvironmentObject var s: Store
     var p: AppearancePreferences { s.db.preferences ?? .init() }
     var preset: FinamiDesign { FinamiDesign(rawValue: p.design ?? "Dark Classic") ?? .darkClassic }
-    var accent: Color { (p.design == nil && p.theme == "Crimson") || p.theme == "Preset" ? preset.tint : IzanamiTheme.all.first(where: { $0.name == p.theme })?.color ?? preset.tint }
+    var accent: Color { if let custom = finamiDesignAccent(p.designAccent) { return custom }; return (p.design == nil && p.theme == "Crimson") || p.theme == "Preset" ? preset.tint : IzanamiTheme.all.first(where: { $0.name == p.theme })?.color ?? preset.tint }
     var scheme: ColorScheme? { p.mode == "dark" ? .dark : p.mode == "light" ? .light : p.mode == "preset" ? preset.scheme : nil }
     var design: Font.Design { p.font == "rounded" ? .rounded : p.font == "serif" ? .serif : p.font == "monospaced" ? .monospaced : p.font == "preset" ? preset.font : .default }
     var body: some View {
@@ -126,19 +136,23 @@ struct AppearanceView: View {
     }
     var body: some View {
         Form {
+            Section("6.1 · Design Revolution") {
+                ForEach(FinamiDesign.revolution) { preset in designRow(preset) }
+                NavigationLink("Design Lab · власні стилі") { FinamiDesignLab() }
+            }
             Section("Finami Design · нові стилі") {
                 ForEach(FinamiDesign.featured) { preset in designRow(preset) }
             }
             Section("Щільність та платежі") {
-                Toggle("Компактна сітка рахунків",isOn:Binding(get:{s.db.preferences?.modernAccountGrid ?? false},set:{binding(\.modernAccountGrid).wrappedValue=$0}))
+                Toggle("Компактна сітка рахунків",isOn:Binding(get:{(s.db.preferences ?? .init()).finamiLayout == "grid"},set:{v in s.changeAppearance { $0.designLayout = v ? "grid" : "cards"; $0.modernAccountGrid=v }}))
                 Toggle("Щільніші відступи",isOn:Binding(get:{s.db.preferences?.modernCompactSpacing ?? true},set:{binding(\.modernCompactSpacing).wrappedValue=$0}))
                 Picker("Іконки платежів",selection:Binding(get:{s.db.preferences?.modernPaymentIcons ?? "black"},set:{binding(\.modernPaymentIcons).wrappedValue=$0})) { Text("Чорні · золото").tag("black"); Text("Кольорові").tag("color") }
                 Toggle("Загальна сума кредиту",isOn:Binding(get:{s.db.preferences?.modernPaymentTotal ?? true},set:{binding(\.modernPaymentTotal).wrappedValue=$0}))
                 Toggle("Щомісячний платіж",isOn:Binding(get:{s.db.preferences?.modernPaymentMonthly ?? true},set:{binding(\.modernPaymentMonthly).wrappedValue=$0}))
                 Toggle("Залишок боргу в платежах",isOn:Binding(get:{s.db.preferences?.modernPaymentRemaining ?? false},set:{binding(\.modernPaymentRemaining).wrappedValue=$0}))
             }
-            Section("Попередні 10 стилів · оновлені") {
-                ForEach(FinamiDesign.allCases.filter{!FinamiDesign.featured.contains($0)}) { preset in designRow(preset) }
+            Section("Попередні 10 стилів") {
+                ForEach(FinamiDesign.allCases.filter{!FinamiDesign.featured.contains($0) && !FinamiDesign.revolution.contains($0)}) { preset in designRow(preset) }
             }
             Section("Картки та приватність") {
                 Picker("Шаблон карток",selection:Binding(get:{s.db.preferences?.cardTemplate ?? "За дизайном"},set:{binding(\.cardTemplate).wrappedValue=$0})) {ForEach(FinamiCardTemplate.allCases){Text($0.rawValue).tag($0.rawValue)}}
@@ -159,7 +173,7 @@ struct AppearanceView: View {
             Toggle("Великі іконки", isOn: binding(\.largeIcons))
             Toggle("Яскраве підсвічування", isOn: binding(\.glow))
             Toggle("Кольорові акценти", isOn: Binding(get:{s.db.preferences?.colorfulDashboard ?? true},set:{binding(\.colorfulDashboard).wrappedValue=$0}))
-        }.navigationTitle("Студія дизайну").sheet(item:$preview) { selected in NavigationStack { VStack(spacing:18) { FinamiDesignPreview(design:selected); Text(selected.description).foregroundStyle(.secondary); Button("Застосувати дизайн") { s.changeAppearance { p in p.design=selected.rawValue;p.theme="Preset";p.mode="preset";p.font="preset" };preview=nil }.buttonStyle(.borderedProminent);Spacer() }.padding().navigationTitle(selected.rawValue).toolbar{Button("Скасувати"){preview=nil}} } }
+        }.navigationTitle("Студія дизайну").sheet(item:$preview) { selected in NavigationStack { VStack(spacing:18) { FinamiDesignPreview(design:selected); Text(selected.description).foregroundStyle(.secondary); Button("Застосувати дизайн") { s.changeAppearance { p in p.applyFinamiDesign(selected.rawValue) };preview=nil }.buttonStyle(.borderedProminent);Spacer() }.padding().navigationTitle(selected.rawValue).toolbar{Button("Скасувати"){preview=nil}} } }
     }
 }
 enum OperationSort: String, CaseIterable {
@@ -303,6 +317,7 @@ struct DashboardSettings: View {
         }.navigationTitle("Блоки головної").toolbar { EditButton() }
     }
 }
+private struct FinamiDashboardRow: Identifiable { var items: [DashboardItem]; var id: String { items.first?.id ?? "empty" } }
 struct CustomDashboard: View {
     @EnvironmentObject var s: Store
     @State private var date = Date()
@@ -312,30 +327,46 @@ struct CustomDashboard: View {
     @State private var voice = false
     @State private var scan = false
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    var items: [DashboardItem] { (DashboardItem.merged(s.db.dashboard)).filter(\.enabled) }
+    var items: [DashboardItem] {
+        let enabled = DashboardItem.merged(s.db.dashboard).filter(\.enabled).map { item -> DashboardItem in
+            guard s.db.preferences?.designDashboard == "analytics", [.categories,.cashflow,.forecast,.statistics].contains(item.kind) else { return item }
+            var display=item;display.size = .large;return display
+        }
+        guard s.db.preferences?.hideEmptyDashboard == true else { return enabled }
+        return enabled.filter { item in
+            switch item.kind {
+            case .accounts: return s.db.accounts.contains { $0.hiddenInOverview != true }
+            case .budget: return s.db.budget > 0
+            case .forecast: return s.db.forecast != nil
+            case .goals: return s.db.obligations.contains { $0.kind == .goal && $0.remaining > 0 }
+            case .reminders: return (s.db.reminders ?? []).contains { $0.enabled && $0.date > Date() }
+            default: return true // never hide debts or ambiguous financial data
+            }
+        }
+    }
     var rows: [[DashboardItem]] {
         var result: [[DashboardItem]] = []; var pair: [DashboardItem] = []
         for item in items {
-            if item.size == .small && ![.balance,.ownFunds,.creditLimit,.creditPortfolio,.obligations,.allAvailable,.monthlyPayments,.accounts,.paymentCalendar].contains(item.kind) && !dynamicTypeSize.isAccessibilitySize { pair.append(item); if pair.count == 2 { result.append(pair); pair = [] } }
+            if s.db.preferences?.designDashboard != "premium" && !(s.db.preferences?.collapsedDashboard ?? []).contains(item.id) && item.size == .small && ![.balance,.ownFunds,.creditLimit,.creditPortfolio,.obligations,.allAvailable,.monthlyPayments,.accounts,.paymentCalendar].contains(item.kind) && !dynamicTypeSize.isAccessibilitySize { pair.append(item); if pair.count == 2 { result.append(pair); pair = [] } }
             else { if !pair.isEmpty { result.append(pair); pair = [] }; result.append([item]) }
         }
         if !pair.isEmpty { result.append(pair) }; return result
     }
     var body: some View {
         ScrollView {
-            LazyVStack(spacing: s.db.preferences?.modernCompactSpacing != false ? 10 : 16) {
+            LazyVStack(spacing: (s.db.preferences ?? .init()).finamiSpacing) {
                 MonthControl(date: $date)
                 if items.isEmpty { Panel { Text("Немає видимих блоків"); Button("Налаштувати огляд") { configure = true } } }
-                ForEach(Array(rows.enumerated()), id: \.offset) { entry in
+                ForEach(rows.map { FinamiDashboardRow(items: $0) }) { entry in
                     HStack(alignment: .top, spacing: 12) {
-                        ForEach(entry.element) { item in DashboardTile(item: item, date: date) }
+                        ForEach(entry.items) { item in DashboardTile(item: item, date: date) }
                     }
                 }
             }.padding()
-        }.background(Color(uiColor: .systemGroupedBackground)).navigationTitle(s.db.preferences?.homeTitle ?? "Головна")
+        }.background(finamiScreenBackground(s.db.preferences)).navigationTitle(s.db.preferences?.homeTitle ?? "Головна")
             .toolbar { Button { s.changeAppearance { p in p.hideAmounts = !(p.hideAmounts ?? false) } } label: { Image(systemName:s.privateAmounts ? "eye.slash" : "eye") }.accessibilityLabel("Приховати або показати суми"); Button { reorder = true } label: { Image(systemName: "arrow.up.arrow.down") }.accessibilityLabel("Змінити порядок блоків"); Button { configure = true } label: { Image(systemName: "slider.horizontal.3").font(.title2) }.accessibilityLabel("Налаштувати блоки") }
             .safeAreaInset(edge: .bottom) {
-                HStack { Button { add = true } label: { Label("Додати операцію", systemImage: "plus.circle.fill").font(.headline).frame(maxWidth: .infinity).padding(.vertical, 5) }.buttonStyle(.borderedProminent); Button { voice=true } label:{Image(systemName:"mic.fill").frame(minWidth:44,minHeight:34)}.buttonStyle(.bordered).accessibilityLabel("Голосовий запис"); Button { scan = true } label: { Image(systemName: "doc.viewfinder").frame(minWidth:44,minHeight:34) }.buttonStyle(.bordered).accessibilityLabel("Імпорт зі скриншота") }.padding(.horizontal).padding(.vertical,7).background(Color(uiColor:.systemGroupedBackground))
+                HStack { Button { add = true } label: { Label("Додати операцію", systemImage: "plus.circle.fill").font(.headline).frame(maxWidth: .infinity).padding(.vertical, 5).frame(minHeight:44) }.buttonStyle(.borderedProminent); Button { voice=true } label:{Image(systemName:"mic.fill").frame(minWidth:44,minHeight:44)}.buttonStyle(.bordered).accessibilityLabel("Голосовий запис"); Button { scan = true } label: { Image(systemName: "doc.viewfinder").frame(minWidth:44,minHeight:44) }.buttonStyle(.bordered).accessibilityLabel("Імпорт зі скриншота") }.padding(.horizontal).padding(.vertical,7).background(Color(uiColor:.systemGroupedBackground))
             }.sheet(isPresented: $add) { OpEditor(original: Operation(category: "Без категорії", account: s.db.accounts.first?.id ?? cash)) }
             .sheet(isPresented:$voice) { FinamiVoice() }
             .sheet(isPresented:$scan) { NavigationStack { FinamiScanView().toolbar { ToolbarItem(placement: .cancellationAction) { Button("Закрити") { scan = false } } } } }
@@ -360,8 +391,9 @@ struct DashboardTile: View {
     var showCharts:Bool { s.db.preferences?.noCharts == false && !masked }
     var detailed: Bool { item.size == .large }
     var compact: Bool { item.size == .small }
+    var collapsed: Bool { (s.db.preferences?.collapsedDashboard ?? []).contains(item.id) }
     var tileSpacing: CGFloat { compact ? 6 : detailed ? 16 : 10 }
-    var tilePadding: CGFloat { compact ? 10 : detailed ? 20 : 14 }
+    var tilePadding: CGFloat { compact ? 10 : detailed ? (s.db.preferences?.modernCompactSpacing == true ? 14 : 20) : 12 }
     var tileMinHeight: CGFloat { compact ? 80 : detailed ? 154 : 108 }
     var color: Color {
         let p = s.db.preferences ?? .init()
@@ -370,23 +402,29 @@ struct DashboardTile: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: tileSpacing) {
+            if collapsed {
+                Button { toggleCollapsed() } label: { Label(item.kind.title, systemImage: "chevron.down").font(.headline).frame(maxWidth:.infinity,minHeight:44,alignment:.leading) }.buttonStyle(.plain).accessibilityLabel("Розгорнути " + item.kind.title)
+            } else {
             if small {
                 HStack {FinamiIconTile(icon:item.kind.icon,tint:color,side:32);Spacer(minLength:0);privacyButton}
-                Text(item.kind.title).font(.subheadline.weight(.semibold)).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true)
+                Button { toggleCollapsed() } label: { Text(item.kind.title).font(.subheadline.weight(.semibold)).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true).frame(minHeight:44,alignment:.leading) }.buttonStyle(.plain).accessibilityLabel("Згорнути " + item.kind.title)
             } else {
-                HStack(alignment:.center,spacing:9){FinamiIconTile(icon:item.kind.icon,tint:color,side:compact ? 28 : detailed ? 44 : 36);Text(item.kind == .accounts ? "Мої рахунки" : item.kind.title).font(.headline).foregroundStyle(.primary).fixedSize(horizontal:false,vertical:true);Spacer(minLength:0);if item.kind == .accounts { Button { accountSettings = true } label: { Image(systemName:"slider.horizontal.3").frame(minWidth:44,minHeight:44) }.buttonStyle(.plain).accessibilityLabel("Налаштування карток рахунків") };privacyButton}.padding(.horizontal, item.kind == .accounts ? 4 : 0)
+                HStack(alignment:.center,spacing:9){FinamiIconTile(icon:item.kind.icon,tint:color,side:compact ? 28 : detailed ? 44 : 36);Button { toggleCollapsed() } label: { Text(item.kind == .accounts ? "Мої рахунки" : item.kind.title).font(.headline).foregroundStyle(.primary).fixedSize(horizontal:false,vertical:true).frame(minHeight:44,alignment:.leading) }.buttonStyle(.plain).accessibilityLabel("Згорнути " + item.kind.title);Spacer(minLength:0);if item.kind == .accounts { Button { accountSettings = true } label: { Image(systemName:"slider.horizontal.3").frame(minWidth:44,minHeight:44) }.buttonStyle(.plain).accessibilityLabel("Налаштування карток рахунків") };privacyButton}.padding(.horizontal, item.kind == .accounts ? 4 : 0)
             }
             content
+            }
         }
-        .frame(maxWidth: .infinity, minHeight: item.kind == .accounts ? nil : tileMinHeight, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: item.kind == .accounts || collapsed ? nil : tileMinHeight, alignment: .topLeading)
         .padding(item.kind == .accounts ? 0 : tilePadding)
         .modifier(FinamiDashboardSurface(isAccounts: item.kind == .accounts, tint: color, template: item.template))
         .environment(\.finamiMask, masked)
+        .contextMenu { Button(collapsed ? "Розгорнути блок" : "Згорнути блок") { toggleCollapsed() } }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("qa.dashboard.tile." + item.id)
         .sheet(item:$paymentDetails) { FinamiPaymentDetails(payment:$0) }
         .sheet(isPresented:$accountSettings) { NavigationStack { FinamiHomeAccountsSettings().toolbar { ToolbarItem(placement:.cancellationAction) { Button("Готово") { accountSettings = false } } } } }
     }
+    private func toggleCollapsed() { s.changeAppearance { p in var ids = Set(p.collapsedDashboard ?? []); if ids.contains(item.id) { ids.remove(item.id) } else { ids.insert(item.id) }; p.collapsedDashboard = ids.sorted() } }
     var privacyButton: some View {
         Button { s.change { d in var all=DashboardItem.merged(d.dashboard);if let i=all.firstIndex(where:{$0.id==item.id}){all[i].hideAmounts = !(all[i].hideAmounts ?? false)};d.dashboard=all } } label:{Image(systemName:masked ? "eye.slash" : "eye").frame(minWidth:44,minHeight:44)}.buttonStyle(.plain).accessibilityLabel("Показати або приховати суми блоку").disabled(s.privateAmounts).accessibilityIdentifier("qa.dashboard.hide." + item.id)
     }
@@ -454,7 +492,7 @@ struct DashboardTile: View {
     @ViewBuilder var accounts: some View {
         let shown = finamiOrderedAccounts(s.db.accounts).filter { $0.hiddenInOverview != true }
         if shown.isEmpty { detail("Немає рахунків. Додай рахунок у вкладці «Рахунки» або увімкни його в налаштуваннях блоку.") }
-        if s.db.preferences?.modernAccountGrid == true && !dynamicTypeSize.isAccessibilitySize {
+        if (s.db.preferences ?? .init()).finamiLayout != "cards" {
             FinamiCompactAccountsGrid(accounts:shown,mode:"all",date:date)
         } else {
             ForEach(shown) { a in FinamiHomeAccountCard(accountID:a.id,date:date,fallbackTint:color,dashboardSize:item.size) }

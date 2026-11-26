@@ -15,13 +15,16 @@ struct FinamiIconTile: View {
     }
 }
 struct FinamiAccountSurface: View {
+    @EnvironmentObject private var s: Store
     @Environment(\.colorScheme) private var scheme
     var tint: Color
     var radius: CGFloat
     var body: some View {
-        RoundedRectangle(cornerRadius:radius).fill(Color(uiColor:.secondarySystemGroupedBackground))
-            .overlay { RoundedRectangle(cornerRadius:radius).fill(LinearGradient(colors:[tint.opacity(scheme == .dark ? 0.13 : 0.08),tint.opacity(0.015)],startPoint:.topLeading,endPoint:.bottomTrailing)) }
-            .overlay { RoundedRectangle(cornerRadius:radius).strokeBorder(tint.opacity(0.16),lineWidth:1) }
+        let design=FinamiDesign(rawValue:s.db.preferences?.design ?? "Dark Classic") ?? .darkClassic
+        let r=s.db.preferences?.designRadius.map { CGFloat(FinamiDesignPolicy.radius($0)) } ?? radius
+        RoundedRectangle(cornerRadius:r).fill(finamiDesignSurface(design,scheme:scheme))
+            .overlay { if s.db.preferences?.designLowEffects != true { RoundedRectangle(cornerRadius:r).fill(LinearGradient(colors:[tint.opacity(scheme == .dark ? 0.13 : 0.08),tint.opacity(0.015)],startPoint:.topLeading,endPoint:.bottomTrailing)) } }
+            .overlay { RoundedRectangle(cornerRadius:r).strokeBorder(tint.opacity(0.16),lineWidth:1) }
     }
 }
 struct FinamiDashboardSurface: ViewModifier {
@@ -66,25 +69,34 @@ struct FinamiReportPanel<Content: View>: View {
     var tint: Color
     @Binding var hidden: Bool
     @ViewBuilder var content: () -> Content
+    private var collapsed: Bool { (s.db.preferences?.collapsedReports ?? []).contains(icon) }
+    private func toggleCollapsed() { s.changeAppearance { p in var ids=Set(p.collapsedReports ?? []);if ids.contains(icon) { ids.remove(icon) } else { ids.insert(icon) };p.collapsedReports=ids.sorted() } }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack { FinamiIconTile(icon: icon, tint: tint, side: 36); Text(title).font(.headline); Spacer(minLength: 4)
+            HStack { FinamiIconTile(icon: icon, tint: tint, side: 36); Button { toggleCollapsed() } label: { Text(title).font(.headline).foregroundStyle(.primary).frame(minHeight:44,alignment:.leading) }.buttonStyle(.plain).accessibilityLabel((collapsed ? "Розгорнути " : "Згорнути ") + title); Spacer(minLength: 4)
                 Button { hidden.toggle() } label: { Image(systemName: hidden ? "eye.slash" : "eye").frame(minWidth: 44, minHeight: 44) }.buttonStyle(.plain).disabled(s.privateAmounts).accessibilityLabel(hidden ? "Показати суми" : "Приховати суми")
             }
-            if hidden { Text("••••").font(.title.bold()).accessibilityLabel("Суми приховано") } else { content() }
-        }.padding(16).frame(maxWidth: .infinity, alignment: .leading).modifier(FinamiCardStyle(tint: tint))
+            if collapsed { Button("Розгорнути") { toggleCollapsed() }.font(.caption) }
+            else if hidden { Text("••••").font(.title.bold()).accessibilityLabel("Суми приховано") } else { content() }
+        }.padding(s.db.preferences?.modernCompactSpacing == true ? 12 : 16).frame(maxWidth: .infinity, alignment: .leading).modifier(FinamiCardStyle(tint: tint))
     }
 }
 struct FinamiMenuGroup<Content: View>: View {
+    @EnvironmentObject private var s: Store
     var title: String
     @ViewBuilder var content: () -> Content
     init(_ title: String, @ViewBuilder content: @escaping () -> Content) { self.title = title; self.content = content }
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(title.uppercased()).font(.caption.weight(.semibold)).tracking(0.7).foregroundStyle(.secondary).padding(.leading, 4)
-            VStack(alignment: .leading, spacing: 6) { content() }
-                .padding(12).background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 18))
-                .overlay{RoundedRectangle(cornerRadius:18).strokeBorder(Color.primary.opacity(0.07),lineWidth:1)}
+            Button {
+                s.changeAppearance { p in var groups=Set(p.collapsedMenu ?? []);if groups.contains(title) { groups.remove(title) } else { groups.insert(title) };p.collapsedMenu=groups.sorted() }
+            } label: {
+                HStack { Text(title.uppercased()).font(.caption.weight(.semibold)).tracking(0.7);Spacer();Image(systemName:(s.db.preferences?.collapsedMenu ?? []).contains(title) ? "chevron.down" : "chevron.up") }.foregroundStyle(.secondary).frame(minHeight:44).padding(.horizontal,4).contentShape(Rectangle())
+            }.buttonStyle(.plain).accessibilityLabel("Згорнути або розгорнути " + title)
+            if !(s.db.preferences?.collapsedMenu ?? []).contains(title) {
+                VStack(alignment:.leading,spacing:s.db.preferences?.menuCompact == true ? 2 : 6) { content() }
+                    .padding(10).modifier(FinamiCardStyle(tint:.teal))
+            }
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
 }
