@@ -46,6 +46,14 @@ require(obligation.scanImageID == nil && obligation.remaining == 2000, "legacy i
 obligation.scanImageID = "image"; obligation.scanFingerprint = "image"
 let updated = try JSONDecoder().decode(Obligation.self, from: JSONEncoder().encode(obligation))
 require(updated.scanImageID == "image" && updated.scanFingerprint == "image" && updated.remaining == 2000, "installment metadata roundtrip")
+let alternate = p.installment(["ПУМБ", "Назва товару:", "Ноутбук", "Сума покупки: 24 000,00", "Залишилось погасити: 18 000 грн", "Розмір платежу: 2 000 ₴", "Дата списання: 5 грудня 2026"])
+require(alternate.name == "Ноутбук" && alternate.total == 2400000 && alternate.remaining == 1800000 && alternate.monthly == 200000 && alternate.due == p.date("05.12.2026"), "P8 alternate labels, colon, next-line name and Ukrainian date")
+require(p.installment(["Сума наступного платежу", "2 000", "Дата наступного платежу", "5/12/2026"]).monthly == 200000 && p.installmentDate("5/12/2026") == p.date("05.12.2026"), "P8 separate amounts and slash date")
+require(p.installment(["Наступний платіж 01.12"]).monthly == nil, "P8 short date not interpreted as payment")
+require(p.installment(["Загальна сума 2000 ₴ Залишок боргу 1500 ₴"]).total == nil, "P8 ambiguous combined fields not guessed")
+require(p.installmentCandidateAmount("2 500,00 ₴") == 250000 && p.installmentCandidateAmount("5 грудня 2026") == nil, "P8 source amount selection")
+require(p.installment(["Сума кредиту 10000 ₴", "Погашено основного боргу 2500 ₴"]).remaining == 750000, "P8 derive remaining from explicitly paid principal")
+require(p.installment(["Сума кредиту 10000 ₴", "Вже сплачено 2500 ₴"]).remaining == nil, "P8 no generic paid derivation with unknown fees")
 SWIFT
 swiftc -warnings-as-errors Finora/BankCore.swift Finora/FinamiScanCore.swift "$tmp/Models.swift" "$tmp/main.swift" -o "$tmp/preview4-tests"
 TZ=Europe/Kyiv "$tmp/preview4-tests"
