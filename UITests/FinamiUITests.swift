@@ -10,11 +10,17 @@ final class FinamiUITests: XCTestCase {
                         "testCompactAccountGridAlignmentAndDetails":"--finami-qa-design-fixture",
                         "testBalanceReconciliationPersists":"--finami-qa-design-fixture",
                         "testInstallmentPaidFromSelectedAccount":"--finami-qa-payment-fixture",
+                        "testInstallmentCollapsePersists":"--finami-qa-payment-fixture",
                         "testExistingOperationLinksToInstallment":"--finami-qa-link-fixture",
                         "testRecurringSuggestionCreatesSubscription":"--finami-qa-recurring-fixture"]
         if let fixture = fixtures.first(where: { name.contains($0.key) })?.value { app.launchArguments.append(fixture) }
         app.launch()
-        visible(app.tabBars.buttons["Головна"])
+        visible(tabButton("Головна"))
+    }
+    private func tabButton(_ name: String) -> XCUIElement {
+        let names = ["Головна", "Операції", "Рахунки", "Звіти", "Ще"]
+        guard let index = names.firstIndex(of: name) else { return app.buttons[name] }
+        return app.buttons["qa.tab.\(index)"]
     }
     private func visible(_ element: XCUIElement, file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertTrue(element.waitForExistence(timeout: 15), "Missing: \(element)", file: file, line: line)
@@ -39,7 +45,7 @@ final class FinamiUITests: XCTestCase {
         let attachment = XCTAttachment(screenshot: app.screenshot()); attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
     }
     func testNextScreensOpen() {
-        app.tabBars.buttons["Ще"].tap()
+        tabButton("Ще").tap()
         for (identifier,title) in [("qa.next.review","Перевірка операцій"),("qa.next.insights","Фінансові підсумки"),("qa.next.usdt","Журнал USDT")] {
             let item=app.descendants(matching:.any).matching(identifier:identifier).firstMatch
             for _ in 0..<8 {if item.exists && item.isHittable {break};app.swipeUp()}
@@ -48,7 +54,7 @@ final class FinamiUITests: XCTestCase {
         }
     }
     func testCompactAccountGridAlignmentAndDetails() {
-        visible(app.tabBars.buttons["Рахунки"]);app.tabBars.buttons["Рахунки"].tap()
+        visible(tabButton("Рахунки"));tabButton("Рахунки").tap()
         let credit=app.buttons["qa.account.compact.qa-design-credit"]
         let debit=app.buttons["qa.account.compact.qa-design-debit"]
         for _ in 0..<10 { if credit.exists && credit.isHittable && debit.exists && debit.isHittable { break }; app.swipeUp() }
@@ -70,26 +76,26 @@ final class FinamiUITests: XCTestCase {
         let summary = app.staticTexts["qa.home.simple.summary"]
         XCTAssertFalse(summary.exists)
         func selectLayout(_ title: String) {
-            app.tabBars.buttons["Ще"].tap()
+            tabButton("Ще").tap()
             let design = app.descendants(matching:.any).matching(identifier:"qa.quick.design").firstMatch
             for _ in 0..<8 { if design.exists && design.isHittable { break }; app.swipeDown() }
             visible(design); design.tap()
             let picker = app.segmentedControls["qa.home.layout"]
             visible(picker); visible(picker.buttons[title]); picker.buttons[title].tap()
             app.navigationBars.buttons.firstMatch.tap()
-            app.tabBars.buttons["Головна"].tap()
+            tabButton("Головна").tap()
         }
         selectLayout("Спрощена")
         visible(summary)
         app.terminate(); app.launchArguments = ["--finami-qa"]; app.launch()
-        app.tabBars.buttons["Головна"].tap(); visible(summary)
+        tabButton("Головна").tap(); visible(summary)
         selectLayout("Поточна")
         let gone = XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: summary)], timeout: 30)
         XCTAssertEqual(gone, .completed)
     }
     func testAllFiveTabsOpen() {
         for title in ["Головна", "Операції", "Рахунки", "Звіти", "Ще"] {
-            let tab = app.tabBars.buttons[title]; visible(tab); tab.tap()
+            let tab = tabButton(title); visible(tab); tab.tap()
             visible(app.navigationBars[title]); capture(title)
         }
     }
@@ -128,13 +134,13 @@ final class FinamiUITests: XCTestCase {
         XCTAssertEqual(tile.frame.height, medium, accuracy: 2)
     }
     func testIndependentAccountPrivacyAndLayout() {
-        app.tabBars.buttons["Рахунки"].tap()
+        tabButton("Рахунки").tap()
         let own = app.buttons["Приховати власний баланс"]; visible(own); own.tap()
         visible(app.buttons["Показати власний баланс"])
         visible(app.buttons["Приховати кредитний баланс"])
         app.buttons["Вигляд балансу"].tap(); app.buttons["Один спільний блок"].tap()
         visible(app.buttons["Показати власний баланс"]); capture("accountPrivacy")
-        app.terminate(); app.launchArguments = ["--finami-qa"]; app.launch(); visible(app.tabBars.buttons["Рахунки"]); app.tabBars.buttons["Рахунки"].tap()
+        app.terminate(); app.launchArguments = ["--finami-qa"]; app.launch(); visible(tabButton("Рахунки")); tabButton("Рахунки").tap()
         visible(app.buttons["Показати власний баланс"]); visible(app.buttons["Приховати кредитний баланс"])
     }
     func testRealVisionOCRPopulatesInstallmentFields() {
@@ -152,7 +158,7 @@ final class FinamiUITests: XCTestCase {
         capture("ocr-populated")
     }
     func testImportHubOpensAndShowsReview() {
-        app.tabBars.buttons["Ще"].tap()
+        tabButton("Ще").tap()
         let hub = app.descendants(matching: .any).matching(identifier: "qa.smart.hub").firstMatch
         for _ in 0..<12 { if hub.exists && hub.isHittable { break }; app.swipeUp() }
         visible(hub); hub.tap()
@@ -161,7 +167,7 @@ final class FinamiUITests: XCTestCase {
         capture("import-hub")
     }
     func testExportAndRulesScreensOpen() {
-        app.tabBars.buttons["Ще"].tap()
+        tabButton("Ще").tap()
         let hub = app.descendants(matching:.any).matching(identifier:"qa.smart.hub").firstMatch
         for _ in 0..<12 { if hub.exists && hub.isHittable { break }; app.swipeUp() }
         visible(hub);hub.tap();visible(app.navigationBars["Імпорт та експорт"])
@@ -177,7 +183,7 @@ final class FinamiUITests: XCTestCase {
         visible(install);install.tap();capture("category-rules")
     }
     func testDiagnosticsRunsLocalParser() {
-        app.tabBars.buttons["Ще"].tap()
+        tabButton("Ще").tap()
         let diagnostics = app.descendants(matching: .any).matching(identifier: "qa.smart.diagnostics").firstMatch
         for _ in 0..<12 { if diagnostics.exists && diagnostics.isHittable { break }; app.swipeUp() }
         visible(diagnostics); diagnostics.tap()
@@ -193,7 +199,7 @@ final class FinamiUITests: XCTestCase {
         capture("diagnostics")
     }
     func testAccountReportFieldsIndependentAndPersist() {
-        visible(app.tabBars.buttons["Звіти"]); app.tabBars.buttons["Звіти"].tap()
+        visible(tabButton("Звіти")); tabButton("Звіти").tap()
         func openSettings(_ account: String) {
             let button = app.buttons["qa.report.account.settings." + account]
             for _ in 0..<16 { if button.exists && button.isHittable { break }; app.swipeUp() }
@@ -213,15 +219,30 @@ final class FinamiUITests: XCTestCase {
         XCTAssertFalse(app.descendants(matching: .any).matching(identifier: "qa.report.account.row.qa-pumb.income").firstMatch.exists)
         capture("compact-account-report")
         app.terminate(); app.launchArguments = ["--finami-qa"]; app.launch()
-        visible(app.tabBars.buttons["Звіти"]); app.tabBars.buttons["Звіти"].tap(); openSettings("qa-pumb")
+        visible(tabButton("Звіти")); tabButton("Звіти").tap(); openSettings("qa-pumb")
         visible(income); awaitValue(income, "Вимкнено")
         app.navigationBars.buttons["Готово"].tap()
         openSettings("qa-otp"); visible(income); awaitValue(income, "Увімкнено")
         app.navigationBars.buttons["Готово"].tap()
     }
 
+    func testInstallmentCollapsePersists() {
+        func openInstallments() {
+            tabButton("Ще").tap()
+            let installment = app.staticTexts["Розстрочка"]
+            for _ in 0..<12 { if installment.exists && installment.isHittable { break }; app.swipeUp() }
+            visible(installment); installment.tap()
+        }
+        openInstallments()
+        let toggle = app.buttons["qa.installment.collapse.qa-loan"]
+        visible(toggle); XCTAssertEqual(toggle.label, "Згорнути розстрочку")
+        toggle.tap(); XCTAssertEqual(toggle.label, "Розгорнути розстрочку")
+        app.terminate(); app.launchArguments = ["--finami-qa"]; app.launch()
+        openInstallments(); visible(toggle); XCTAssertEqual(toggle.label, "Розгорнути розстрочку")
+        toggle.tap(); XCTAssertEqual(toggle.label, "Згорнути розстрочку")
+    }
     func testInstallmentPaidFromSelectedAccount() {
-        let more = app.tabBars.buttons["Ще"]; visible(more); more.tap()
+        let more = tabButton("Ще"); visible(more); more.tap()
         let installment = app.staticTexts["Розстрочка"]
         for _ in 0..<12 { if installment.exists && installment.isHittable {break};app.swipeUp() }
         visible(installment); installment.tap()
@@ -238,11 +259,11 @@ final class FinamiUITests: XCTestCase {
         visible(app.navigationBars["Розстрочка"])
         capture("payment-saved")
         app.terminate();app.launchArguments=["--finami-qa"];app.launch()
-        let operations=app.tabBars.buttons["Операції"];visible(operations);operations.tap()
+        let operations=tabButton("Операції");visible(operations);operations.tap()
         visible(app.staticTexts["QA installment"]);capture("payment-operation-persisted")
     }
     func testExistingOperationLinksToInstallment() {
-        let tab = app.tabBars.buttons["Операції"]; visible(tab); tab.tap()
+        let tab = tabButton("Операції"); visible(tab); tab.tap()
         let debit = app.staticTexts["QA existing debit"]; visible(debit); debit.tap()
         let picker = app.descendants(matching: .any).matching(identifier: "qa.operation.payment").firstMatch
         for _ in 0..<8 { if picker.exists && picker.isHittable { break }; app.swipeUp() }
@@ -258,7 +279,7 @@ final class FinamiUITests: XCTestCase {
         visible(linked); capture("operation-linked-persisted")
     }
     func testGlobalSearchOpensReconciliation() {
-        app.tabBars.buttons["Ще"].tap()
+        tabButton("Ще").tap()
         let link = app.descendants(matching:.any).matching(identifier:"qa.search.open").firstMatch
         visible(link); link.tap()
         visible(app.navigationBars["Пошук Finami"])
@@ -270,7 +291,7 @@ final class FinamiUITests: XCTestCase {
         capture("search-reconciliation")
     }
     func testCategoryIconAndNamePersist() {
-        app.tabBars.buttons["Ще"].tap()
+        tabButton("Ще").tap()
         let categories = app.descendants(matching:.any).matching(identifier:"qa.quick.categories").firstMatch
         visible(categories); categories.tap()
         let add = app.buttons["qa.category.add"]; visible(add); add.tap()
@@ -285,12 +306,12 @@ final class FinamiUITests: XCTestCase {
         for _ in 0..<14 { if category.exists && category.isHittable { break }; app.swipeUp() }
         visible(category)
         app.terminate(); app.launchArguments = ["--finami-qa"]; app.launch()
-        visible(app.tabBars.buttons["Ще"]); app.tabBars.buttons["Ще"].tap(); visible(categories); categories.tap()
+        visible(tabButton("Ще")); tabButton("Ще").tap(); visible(categories); categories.tap()
         for _ in 0..<14 { if category.exists && category.isHittable { break }; app.swipeUp() }
         visible(category); capture("category-persisted")
     }
     func testBalanceReconciliationPersists() {
-        app.tabBars.buttons["Ще"].tap()
+        tabButton("Ще").tap()
         let quick = app.descendants(matching:.any).matching(identifier:"qa.quick.reconcile").firstMatch
         visible(quick); quick.tap(); visible(app.navigationBars["Звірити баланс"])
         let picker = app.descendants(matching:.any).matching(identifier:"qa.reconcile.account").firstMatch
@@ -304,7 +325,7 @@ final class FinamiUITests: XCTestCase {
         visible(save); save.tap()
         let confirm = app.buttons["Застосувати"]; visible(confirm); confirm.tap()
         app.terminate(); app.launchArguments = ["--finami-qa"]; app.launch()
-        visible(app.tabBars.buttons["Рахунки"]); app.tabBars.buttons["Рахунки"].tap()
+        visible(tabButton("Рахунки")); tabButton("Рахунки").tap()
         let credit = app.buttons["qa.account.compact.qa-design-credit"]; visible(credit)
         let expected = (750.0).formatted(.currency(code:"UAH").locale(Locale(identifier:"uk_UA")))
         XCTAssertTrue(credit.label.contains(expected) || credit.staticTexts[expected].exists, "Reconciled credit must be 750 UAH: \(credit.label)")
@@ -316,7 +337,7 @@ final class FinamiUITests: XCTestCase {
     }
 
     func testRecurringSuggestionCreatesSubscription() {
-        let more = app.tabBars.buttons["Ще"]; visible(more); more.tap()
+        let more = tabButton("Ще"); visible(more); more.tap()
         let open = app.descendants(matching:.any).matching(identifier:"qa.recurring.open").firstMatch
         visible(open); open.tap()
         visible(app.staticTexts["QA Streaming"])
@@ -325,7 +346,7 @@ final class FinamiUITests: XCTestCase {
         visible(app.staticTexts["qa.recurring.empty"]); capture("recurring-suggestion-accepted")
     }
     func testPaymentCalendarOpensAndChangesMonth() {
-        app.tabBars.buttons["Ще"].tap()
+        tabButton("Ще").tap()
         let open = app.descendants(matching:.any).matching(identifier:"qa.calendar.open").firstMatch
         for _ in 0..<12 { if open.exists && open.isHittable { break }; app.swipeUp() }
         visible(open); open.tap()
