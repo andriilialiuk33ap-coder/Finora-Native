@@ -3,6 +3,7 @@ import SwiftUI
 struct FinamiGlobalSearch: View {
     @EnvironmentObject private var s: Store
     @State private var query = ""
+    @State private var settledQuery = ""
     @State private var operation: Operation?
     @State private var account: Account?
     @State private var payment: FinamiPayment?
@@ -11,8 +12,8 @@ struct FinamiGlobalSearch: View {
     var body: some View {
         List {
             Section("Функції та налаштування") {
-                if matches("категорії категорія витрати доходи іконки categories category") { NavigationLink("Категорії витрат та доходів"){Categories()} }
-                if matches("звірка звірити баланс залишок кредит використано reconcile balance") { NavigationLink("Звірити баланс рахунку"){FinamiBalanceView(initialMode:"anchor")} }
+                if matches("категорії категорія витрати доходи іконки categories category") { NavigationLink("Категорії витрат та доходів"){Categories()}.accessibilityIdentifier("qa.search.categories") }
+                if matches("звірка звірити баланс залишок кредит використано reconcile balance") { NavigationLink("Звірити баланс рахунку"){FinamiBalanceView(initialMode:"anchor")}.accessibilityIdentifier("qa.search.reconcile") }
                 if matches("автоматизація apple pay sms банківські повідомлення") { NavigationLink("Автоматизація"){AutomationCenter()} }
                 if matches("головна огляд блоки dashboard") { NavigationLink("Блоки головної"){DashboardSettings()} }
                 if matches("usdt біржа зарплата комісія") { NavigationLink("Журнал USDT"){FinamiExchangeDiaryView()} }
@@ -40,15 +41,24 @@ struct FinamiGlobalSearch: View {
                     }
                 }
                 Section("Операції") {
+                    if settledQuery != term { ProgressView("Пошук…") } else {
                     let rows=s.queryHistory(.init(kind:"all",account:"all",category:"all",search:term,sort:.newest,hideAmounts:s.privateAmounts))
                     if rows.isEmpty {Text("Немає відповідних операцій").foregroundStyle(.secondary)}
                     ForEach(Array(rows.prefix(60))) { o in
                         Button {operation=o} label: {OperationRow(o:o).environment(\.finamiMask,s.db.accounts.first(where:{$0.id==o.account})?.hideAmounts == true)}.buttonStyle(.plain)
                     }
                     if rows.count>60 {Text("Показано 60 із \(rows.count). Уточни запит або відкрий журнал операцій.").font(.caption)}
+                    }
                 }
             } else { Text("Шукай назви рахунків, продавців, платежів та функцій. Суми можна шукати, якщо вони не приховані.").font(.caption).foregroundStyle(.secondary) }
         }.navigationTitle("Пошук Finami").searchable(text:$query,placement:.navigationBarDrawer(displayMode:.always),prompt:"Рахунок, продавець, функція")
+         .task(id: term) {
+             let value = term
+             if value.isEmpty { settledQuery = ""; return }
+             do { try await Task.sleep(nanoseconds: 200_000_000) } catch { return }
+             guard !Task.isCancelled, value == term else { return }
+             settledQuery = value
+         }
          .sheet(item:$operation){OpEditor(original:$0)}
          .sheet(item:$account){AccountEditor(a:$0)}
          .sheet(item:$payment){FinamiPaymentDetails(payment:$0)}

@@ -435,3 +435,7 @@ Fixed the Xcode 16.4 type-check timeout in FinamiExportView.swift by moving the 
 ## 6.1.1 Next · Balance Repair
 
 Див. [FINAMI-6.1.1-UK.md](FINAMI-6.1.1-UK.md): контрольні баланси, точне перенесення імпортованих записів, джерела операцій та спільний розрахунок кредиту.
+
+### 6.2.1 — Dashboard & Stability
+
+Див. [FINAMI-6.2.1-UK.md](FINAMI-6.2.1-UK.md).

@@ -5,8 +5,8 @@ options:
 settings:
   base:
     SWIFT_VERSION: '5.0'
-    MARKETING_VERSION: '6.2'
-    CURRENT_PROJECT_VERSION: '44'
+    MARKETING_VERSION: '6.2.1'
+    CURRENT_PROJECT_VERSION: '45'
     TARGETED_DEVICE_FAMILY: '1'
 packages:
   ZIPFoundation:
@@ -20,6 +20,8 @@ targets:
     info:
       path: Config/Finora-Info.plist
       properties:
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleURLTypes:
           - CFBundleURLName: ua.finora.personal.widgets
             CFBundleURLSchemes: [finami-widget]
@@ -44,6 +46,8 @@ targets:
     info:
       path: Config/FinamiWidgets-Info.plist
       properties:
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleDisplayName: Finami Widgets
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension

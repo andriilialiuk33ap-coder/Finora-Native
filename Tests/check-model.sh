@@ -48,6 +48,8 @@ func suggestedCategory(_ merchant: String,kind: Kind,database: Database) -> Stri
     var captureWarning:String?=nil
     var currentRate:Decimal?=nil
     var failWrite=false
+    var storageHealthy=true
+    var loading=false
     func change(_ update:(inout Database)->Void)->Bool {
         if failWrite {return false}
         var copy=db;update(&copy);db=copy;return true
@@ -67,6 +69,12 @@ import Foundation
         var repeatEvent=try captureMessage(text,account:cash)
         repeatEvent.date=first.date.addingTimeInterval(60)
         try CaptureInbox.enqueue(first,in:dir);try CaptureInbox.enqueue(repeatEvent,in:dir)
+        s.loading=true;s.refreshCaptures(inbox:dir)
+        precondition(s.db.operations.isEmpty && s.capturePending.isEmpty)
+        s.loading=false;s.storageHealthy=false;s.refreshCaptures(inbox:dir)
+        precondition(s.db.operations.isEmpty && s.capturePending.isEmpty)
+        s.storageHealthy=true
+        print("PASS: capture queue waits for healthy loaded database")
         s.refreshCaptures(inbox:dir)
         precondition(s.db.operations.count==1 && s.capturePending.count==1 && s.captureRepeat(repeatEvent))
         let restarted=Store();restarted.db=try JSONDecoder().decode(Database.self,from:JSONEncoder().encode(s.db))
@@ -105,6 +113,10 @@ import Foundation
         precondition(routeStore.capturePending.count == 1 && routeStore.capturePending[0].account.isEmpty && routeStore.db.operations.count == 1)
         precondition(routeStore.finishCapture(unknown,operation:nil,inbox:dir))
         print("PASS: actual Store wallet alias routing, cross-account duplicate review, unknown card inbox")
+        routeStore.captureWarning="old warning"
+        routeStore.refreshCaptures(inbox:dir)
+        precondition(routeStore.capturePending.isEmpty && routeStore.captureWarning == nil && routeStore.db.operations.count == 1)
+        print("PASS: empty inbox clears stale status without financial mutations")
         // Legacy databases missing new optional fields still decode.
         let old=try JSONDecoder().decode(Database.self,from:JSONEncoder().encode(Database()))
         precondition(old.captureMessageFingerprints==nil)

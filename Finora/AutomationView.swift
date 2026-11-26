@@ -39,9 +39,15 @@ struct CapturePreferences: Codable {
         return o
     }
     func refreshCaptures(auto: Bool = true, inbox: URL? = nil) {
+        guard storageHealthy, !loading else { return }
         do {
             let dir=try (inbox ?? CaptureInbox.folder())
             let all=try CaptureInbox.read(in:dir)
+            if all.isEmpty {
+                if !capturePending.isEmpty { capturePending = [] }
+                if captureWarning != nil { captureWarning = nil }
+                return
+            }
             let handled=Set(db.captureHandled ?? [])
             var pending=[CapturedPayment]()
             for original in all {
@@ -58,7 +64,10 @@ struct CapturePreferences: Codable {
             }
             if capturePending != pending {capturePending=pending}
             if captureWarning != nil {captureWarning=nil}
-        } catch {captureWarning=error.localizedDescription}
+        } catch {
+            let message = error.localizedDescription
+            if captureWarning != message { captureWarning = message }
+        }
     }
     @discardableResult func finishCapture(_ e: CapturedPayment, operation: Operation?, allowSeparatePayment: Bool = false, learnMerchantCategory: Bool = false, inbox: URL? = nil) -> Bool {
         // Recheck at commit, not just when a review screen was opened.

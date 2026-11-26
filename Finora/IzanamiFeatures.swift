@@ -362,7 +362,7 @@ struct CustomDashboard: View {
     var body: some View {
         ScrollView {
             LazyVStack(spacing: (s.db.preferences ?? .init()).finamiSpacing) {
-                MonthControl(date: $date)
+                MonthControl(date: $date, dashboardStyle: true)
                 if items.isEmpty { Panel { Text("Немає видимих блоків"); Button("Налаштувати огляд") { configure = true } } }
                 ForEach(rows.map { FinamiDashboardRow(items: $0) }) { entry in
                     HStack(alignment: .top, spacing: 12) {
@@ -410,7 +410,10 @@ struct DashboardTile: View {
     var body: some View {
         VStack(alignment: .leading, spacing: tileSpacing) {
             if collapsed {
-                Button { toggleCollapsed() } label: { Label(item.kind.title, systemImage: "chevron.down").font(.headline).frame(maxWidth:.infinity,minHeight:44,alignment:.leading) }.buttonStyle(.plain).accessibilityLabel("Розгорнути " + item.kind.title)
+                let summary = collapsedSummary
+                Button { toggleCollapsed() } label: {
+                    FinamiCollapsedDashboardCard(title:item.kind.title,summary:summary,icon:item.kind.icon,tint:color,template:item.template)
+                }.buttonStyle(.plain).accessibilityLabel("Розгорнути " + item.kind.title).accessibilityValue(summary).accessibilityIdentifier("qa.dashboard.collapsed." + item.id)
             } else {
             if small {
                 HStack {FinamiIconTile(icon:item.kind.icon,tint:color,side:32);Spacer(minLength:0);privacyButton}
@@ -422,14 +425,32 @@ struct DashboardTile: View {
             }
         }
         .frame(maxWidth: .infinity, minHeight: item.kind == .accounts || collapsed ? nil : tileMinHeight, alignment: .topLeading)
-        .padding(item.kind == .accounts ? 0 : tilePadding)
-        .modifier(FinamiDashboardSurface(isAccounts: item.kind == .accounts, tint: color, template: item.template))
+        .padding(item.kind == .accounts || collapsed ? 0 : tilePadding)
+        .modifier(FinamiDashboardSurface(isAccounts: item.kind == .accounts || collapsed, tint: color, template: item.template))
         .environment(\.finamiMask, masked)
         .contextMenu { Button(collapsed ? "Розгорнути блок" : "Згорнути блок") { toggleCollapsed() } }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("qa.dashboard.tile." + item.id)
         .sheet(item:$paymentDetails) { FinamiPaymentDetails(payment:$0) }
         .sheet(isPresented:$accountSettings) { NavigationStack { FinamiHomeAccountsSettings().toolbar { ToolbarItem(placement:.cancellationAction) { Button("Готово") { accountSettings = false } } } } }
+    }
+    private var collapsedSummary: String {
+        if masked { return "Суми приховано" }
+        if item.kind == .accounts {
+            return FinamiDashboardPreviewPolicy.accounts(count:s.db.accounts.filter{$0.hiddenInOverview != true}.count,masked:false)
+        }
+        let payments: [FinamiPayment]
+        switch item.kind {
+        case .obligations: payments = s.upcomingPayments
+        case .subscriptions: payments = s.upcomingPayments.filter(\.subscription)
+        case .installments: payments = s.upcomingPayments.filter { $0.kind == ObligationKind.installment.title }
+        case .recurring: payments = s.upcomingPayments.filter { $0.subscription || $0.kind == ObligationKind.recurring.title || $0.kind == ObligationKind.installment.title }
+        default: return "Натисни, щоб розгорнути"
+        }
+        let next = payments.first
+        let dateText = item.showPaymentDate == false ? nil : next.map { $0.date.formatted(.dateTime.day().month(.abbreviated).locale(Locale(identifier:"uk_UA"))) }
+        let amountText = item.showPaymentTotal == false ? nil : next.map { visible($0.amount,$0.currency) }
+        return FinamiDashboardPreviewPolicy.payments(count:payments.count,nextAmount:amountText,nextDate:dateText,overdue:next?.overdue == true,masked:false)
     }
     private func toggleCollapsed() { s.changeAppearance { p in var ids = Set(p.collapsedDashboard ?? []); if ids.contains(item.id) { ids.remove(item.id) } else { ids.insert(item.id) }; p.collapsedDashboard = ids.sorted() } }
     var privacyButton: some View {

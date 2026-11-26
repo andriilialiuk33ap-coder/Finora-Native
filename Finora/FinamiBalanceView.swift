@@ -87,7 +87,7 @@ struct FinamiBalanceView: View {
         Picker("Переказ USD → UAH",selection:$transferID){Text("Обрати").tag("");ForEach(transfers){o in Text(o.date.formatted(date:.abbreviated,time:.shortened)+" · "+s.visibleMoney(o.sourceMinor ?? 0,"USD")).tag(o.id)}}
         if let t=transfer {Text("Призначення: "+s.accountName(t.destination));Text("Вибери лише банківські зарахування, які дійсно є частинами цього обміну, навіть якщо вони помилково на іншому рахунку. Усі ключі залишаться у переказі. Окремі комісії не видаляються автоматично.").font(.caption)}
     }}
-    private var destinationSection:some View {Section("Рахунок") {Picker("Рахунок",selection:$destination){Text("Обрати").tag("");ForEach(banks){a in Text(a.name).tag(a.id)}}}}
+    private var destinationSection:some View {Section("Рахунок") {Picker("Рахунок",selection:$destination){Text("Обрати").tag("");ForEach(banks){a in Text(a.name).tag(a.id)}}.accessibilityIdentifier("qa.reconcile.account")}}
     private var batchSection:some View {Section("Пакет імпорту") {Picker("Виписка",selection:$batch){Text("Обрати").tag("");ForEach(batches,id:\.self){id in Text(batchLabel(id)).tag(id)}};Text("Вибирай тільки рядки, належність яких підтверджена випискою. Пов’язані з платежами операції захищені.").font(.caption)}}
     private func batchLabel(_ id:String)->String {let rows=s.db.operations.filter{$0.importBatch==id};return (rows.map(\.date).min()?.formatted(date:.abbreviated,time:.omitted) ?? "Виписка")+" · \(rows.count) оп. · "+String(id.prefix(4))}
     private var selectionSection:some View {Section("Операції · \(selected.count)") {
@@ -140,7 +140,7 @@ struct FinamiBalanceView: View {
                 if let available=bankMinor(availableText),available>=0 {LabeledContent("Різниця з доступним банку",value:a.hideAmounts == true ? "••••":s.visibleMoney(available-position.available))}
                 LabeledContent("Нова база балансу",value:a.hideAmounts == true ? "••••":s.visibleMoney(n))
                 Text("Підтверди після перевірки виписки. Історія залишається; операції після цієї дати змінюють баланс. Операції до контрольної дати не змінюють поточний баланс. Це не дохід і не витрата.").font(.caption)
-                Button("Зберегти контрольний баланс"){confirmedVersion=s.databaseVersion;confirm=true}
+                Button("Зберегти контрольний баланс"){confirmedVersion=s.databaseVersion;confirm=true}.accessibilityIdentifier("qa.reconcile.save")
             }
         }
     }}

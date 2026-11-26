@@ -35,6 +35,40 @@ struct FinamiDashboardSurface: ViewModifier {
         if isAccounts { content } else { content.modifier(FinamiCardStyle(tint: tint, template: template)) }
     }
 }
+// A full-width, informative header for every collapsed dashboard section.
+struct FinamiCollapsedDashboardCard: View {
+    @EnvironmentObject private var s: Store
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.dynamicTypeSize) private var typeSize
+    var title: String
+    var summary: String
+    var icon: String
+    var tint: Color
+    var template: String?
+    private var accent: Color {
+        finamiDesignAccent(s.db.preferences?.designAccent) ?? tint
+    }
+    var body: some View {
+        HStack(alignment:.center,spacing:12) {
+            FinamiIconTile(icon:icon,tint:accent,side:typeSize.isAccessibilitySize ? 44 : 42)
+            VStack(alignment:.leading,spacing:4) {
+                Text(title).font(.headline).foregroundStyle(.primary).fixedSize(horizontal:false,vertical:true)
+                Text(summary).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true)
+            }.frame(maxWidth:.infinity,alignment:.leading)
+            Image(systemName:"chevron.right").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary).accessibilityHidden(true)
+        }
+        .padding(.horizontal,14).padding(.vertical,12)
+        .frame(maxWidth:.infinity,minHeight:76,alignment:.leading)
+        .background {
+            if s.db.preferences?.designLowEffects != true && !reduceTransparency {
+                LinearGradient(colors:[accent.opacity(scheme == .dark ? 0.03 : 0.01),accent.opacity(scheme == .dark ? 0.14 : 0.06)],startPoint:.bottomLeading,endPoint:.topTrailing)
+            }
+        }
+        .modifier(FinamiCardStyle(tint:accent,template:template))
+        .contentShape(Rectangle())
+    }
+}
 struct FinamiSectionTitle: View {
     var title: String
     var subtitle: String

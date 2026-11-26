@@ -723,12 +723,19 @@ struct DataFile: FileDocument {
 @main @MainActor struct FinoraApp: App {
   @UIApplicationDelegateAdaptor(FinamiNotificationDelegate.self) private var notifications
   @StateObject private var store = Store()
-  init() { FinamiShortcuts.updateAppShortcutParameters() }
+  @State private var shortcutsRegistered = false
   var body: some Scene {
     WindowGroup {
       Group {
         if store.loading { VStack(spacing:16) { Image(systemName:"wallet.pass.fill").font(.system(size:48)).foregroundStyle(finoraAccent); Text("Finami").font(.largeTitle.bold()); ProgressView("Завантаження фінансів…") }.frame(maxWidth:.infinity,maxHeight:.infinity).task { await store.loadDatabase() } }
-        else { IzanamiShell().environmentObject(store) }
+        else { IzanamiShell().environmentObject(store).task {
+          // Do not perform shortcut registration on the first-frame path.
+          guard !shortcutsRegistered else { return }
+          do { try await Task.sleep(nanoseconds: 300_000_000) } catch { return }
+          guard !shortcutsRegistered else { return }
+          shortcutsRegistered = true
+          FinamiShortcuts.updateAppShortcutParameters()
+        } }
       }.onOpenURL { url in
           guard url.scheme == "finami-widget", let host = url.host, ["balance","payments","quick","planning"].contains(host) else { return }
           store.widgetRoute = host
@@ -779,6 +786,7 @@ struct Root: View {
           NavigationStack { More() }.tabItem { Label("Ще", systemImage: "ellipsis.circle") }.tag(4)
         }.task(id: phase) {
           guard phase == .active else {return}
+          do { try await Task.sleep(nanoseconds: 350_000_000) } catch { return }
           while !Task.isCancelled {
             store.refreshCaptures()
             do {try await Task.sleep(nanoseconds: store.capturePending.isEmpty ? 6_000_000_000 : 3_000_000_000)} catch {break}
@@ -833,22 +841,28 @@ struct Panel<Content: View>: View {
 }
 struct MonthControl: View {
   @Binding var date: Date
+  var dashboardStyle = false
   var body: some View {
-    HStack {
-      Button {
-        date = shift(date, -1)
-      } label: {
-        Image(systemName: "chevron.left").frame(width:44,height:44)
-      }.accessibilityLabel("Попередній місяць")
-      Spacer()
-      Text(monthName(date).capitalized).font(.headline)
-      Spacer()
-      Button {
-        date = shift(date, 1)
-      } label: {
-        Image(systemName: "chevron.right").frame(width:44,height:44)
-      }.accessibilityLabel("Наступний місяць")
+    HStack(spacing: 10) {
+      monthButton(-1, icon:"chevron.left", label:"Попередній місяць")
+      if dashboardStyle {
+        Label(monthName(date).capitalized,systemImage:"calendar")
+          .font(.subheadline.weight(.semibold)).multilineTextAlignment(.center)
+          .frame(maxWidth:.infinity,minHeight:44).padding(.horizontal,4)
+          .background(Color.primary.opacity(0.055),in:RoundedRectangle(cornerRadius:14))
+      } else {
+        Spacer()
+        Text(monthName(date).capitalized).font(.headline)
+        Spacer()
+      }
+      monthButton(1, icon:"chevron.right", label:"Наступний місяць")
     }.padding(.vertical, 2)
+  }
+  private func monthButton(_ offset:Int,icon:String,label:String)->some View {
+    Button { date = shift(date,offset) } label: {
+      Image(systemName:icon).frame(width:44,height:44)
+        .background(dashboardStyle ? Color.primary.opacity(0.055) : Color.clear,in:RoundedRectangle(cornerRadius:14))
+    }.accessibilityLabel(label)
   }
 }
 struct Home: View {
@@ -1166,7 +1180,7 @@ struct More: View {
         Text("Finami").font(.title.bold())
         Text("Особисті фінанси.").font(.subheadline).foregroundStyle(.secondary)
       }.frame(maxWidth: .infinity, alignment: .leading).padding(18).modifier(FinamiCardStyle(tint: .teal))
-      NavigationLink { FinamiGlobalSearch() } label: { FinamiMenuLabel(title:"Пошук Finami",icon:"magnifyingglass",color:.teal) }.buttonStyle(.plain)
+      NavigationLink { FinamiGlobalSearch() } label: { FinamiMenuLabel(title:"Пошук Finami",icon:"magnifyingglass",color:.teal) }.buttonStyle(.plain).accessibilityIdentifier("qa.search.open")
       VStack(spacing: 8) {
         HStack(alignment:.top,spacing:8) {
           NavigationLink { Categories() } label: { FinamiQuickMenuTile(title:"Категорії", icon:"tag.fill") }.accessibilityIdentifier("qa.quick.categories")
@@ -1533,8 +1547,8 @@ struct Categories: View {
           }
         }
       }.onMove { from,to in s.change { d in if income { d.incomeCategories.move(fromOffsets:from,toOffset:to) } else { d.expenseCategories.move(fromOffsets:from,toOffset:to) } } }
-    }.navigationTitle("Категорії").toolbar { EditButton(); Button { editing=nil;name="";parent="";adding=true } label:{Image(systemName:"plus.circle.fill")} }
-      .sheet(isPresented:$adding) { NavigationStack { Form { TextField("Іконка та назва",text:$name); NavigationLink { FinamiCategoryIconPicker(name:$name) } label: { Label("Обрати іконку",systemImage:"face.smiling") }; if !income { TextField("Група (необов’язково)",text:$parent) }; Button("Зберегти") { save() }.disabled(name.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty || (cats.contains(name.trimmingCharacters(in:.whitespacesAndNewlines)) && editing != name.trimmingCharacters(in:.whitespacesAndNewlines))) }.navigationTitle(editing == nil ? "Нова категорія" : "Редагування").toolbar { Button("Скасувати") { adding=false } } } }
+    }.navigationTitle("Категорії").toolbar { EditButton(); Button { editing=nil;name="";parent="";adding=true } label:{Image(systemName:"plus.circle.fill")}.accessibilityLabel("Додати категорію").accessibilityIdentifier("qa.category.add") }
+      .sheet(isPresented:$adding) { NavigationStack { Form { TextField("Іконка та назва",text:$name); NavigationLink { FinamiCategoryIconPicker(name:$name) } label: { Label("Обрати іконку",systemImage:"face.smiling") }.accessibilityIdentifier("qa.category.icons"); if !income { TextField("Група (необов’язково)",text:$parent) }; Button("Зберегти") { save() }.disabled(name.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty || (cats.contains(name.trimmingCharacters(in:.whitespacesAndNewlines)) && editing != name.trimmingCharacters(in:.whitespacesAndNewlines))) }.navigationTitle(editing == nil ? "Нова категорія" : "Редагування").toolbar { Button("Скасувати") { adding=false } } } }
       .confirmationDialog("Перенести операції перед видаленням",isPresented:Binding(get:{deleting != nil},set:{if !$0 {deleting=nil}}),titleVisibility:.visible) { ForEach(cats.filter{$0 != deleting},id:\.self) { c in Button("Перенести в «"+c+"»") { if let old=deleting { replace(old,with:c,remove:true) };deleting=nil } }; Button("Скасувати",role:.cancel){deleting=nil} } message:{Text("Операції не видаляються. Бюджет і правила категорії буде перенесено.")}
   }
   func toggle(_ c:String) { s.change { d in var list=income ? d.hiddenIncomeCategories ?? [] : d.hiddenExpenseCategories ?? []; if list.contains(c) { list.removeAll{$0==c} } else { list.append(c) }; if income {d.hiddenIncomeCategories=list} else {d.hiddenExpenseCategories=list} } }
