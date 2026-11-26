@@ -19,6 +19,8 @@ require(p.date("Дата 31.02.2026") == nil && p.date("25.11.2026 14:25") != ni
 let rows = p.transactions(["monobank", "25.11.2026", "Баланс 10 000 ₴", "АТБ −450 ₴", "Кав'ярня", "-95,00 грн", "+ 2000 ₴", "Доступно 50000 грн"])
 require(rows.count == 3 && rows[0].money?.minor == -45000 && rows[1].note == "Кав'ярня" && rows[2].money?.minor == 200000, "multiple transaction drafts, skip balance and credit")
 require(rows.allSatisfy { $0.date == p.date("25.11.2026") }, "inherit date header for draft review")
+let bare = p.transactions(["АТБ", "−450,00", "Доступно", "−5000,00", "Кава", "-95.50", "1234", "25.11.2026"])
+require(bare.count == 2 && bare[0].money == ScanMoney(minor:-45000,currency:nil,signed:true) && bare[0].note == "АТБ" && bare[1].money?.minor == -9550, "signed currency-less rows remain drafts; balance and unsigned numbers ignored")
 let inst = p.installment(["monobank", "Назва: Телефон", "Загальний кредит", "30 000,00 ₴", "Поточний залишок 15 000 ₴", "Щомісячний платіж 2 500 грн", "Наступний платіж 01.12.2026", "Вже сплачено 15 000 ₴"])
 require(inst.total == 3000000 && inst.remaining == 1500000 && inst.monthly == 250000 && inst.due == p.date("01.12.2026") && inst.name == "Телефон", "installment labelled and next-line fields")
 require(p.installment(["Загальна сума 1000 ₴", "Загальна сума 2000 ₴"]).total == nil, "conflicting fields not guessed")
