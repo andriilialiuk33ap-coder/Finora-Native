@@ -257,7 +257,7 @@ struct DashboardSettings: View {
     var body: some View {
         List {
             NavigationLink("Змінити порядок видимих блоків") { FinamiOrderEditor(target: .dashboard, closeButton: false) }
-            Section("Увімкни потрібні блоки. Через «Редагувати» перетягни їх у новий порядок. Великі фінансові блоки завжди на всю ширину.") {
+            Section("Увімкни потрібні блоки. Через «Редагувати» перетягни їх у новий порядок. Компактні блоки займають менше місця; рахунки, баланси та платежі залишаються на всю ширину для читабельності.") {
                 ForEach(items) { item in
                     VStack(alignment: .leading, spacing: 8) {
                         Toggle(isOn: Binding(get: { items.first(where: { $0.id == item.id })?.enabled ?? false }, set: { v in modify(item.id) { $0.enabled = v } })) { Label(item.kind.title, systemImage: item.kind.icon) }
@@ -329,23 +329,27 @@ struct DashboardTile: View {
     func visible(_ n:Int64,_ code:String = "UAH")->String { masked ? "••••" : s.visibleMoney(n,code) }
     var showCharts:Bool { s.db.preferences?.noCharts == false && !masked }
     var detailed: Bool { item.size == .large }
+    var compact: Bool { item.size == .small }
+    var tileSpacing: CGFloat { compact ? 6 : detailed ? 16 : 10 }
+    var tilePadding: CGFloat { compact ? 10 : detailed ? 20 : 14 }
+    var tileMinHeight: CGFloat { compact ? 80 : detailed ? 154 : 108 }
     var color: Color {
         let p = s.db.preferences ?? .init()
         if let name = item.accentName, let custom = IzanamiTheme.all.first(where: {$0.name == name}) { return custom.color }
         return (p.colorfulDashboard ?? true) ? item.kind.tileColor : (IzanamiTheme.all.first(where:{$0.name==p.theme})?.color ?? (FinamiDesign(rawValue:p.design ?? "Signature") ?? .signature).tint)
     }
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: tileSpacing) {
             if small {
                 HStack {FinamiIconTile(icon:item.kind.icon,tint:color,side:32);Spacer(minLength:0);privacyButton}
                 Text(item.kind.title).font(.subheadline.weight(.semibold)).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true)
             } else {
-                HStack(alignment:.center,spacing:9){FinamiIconTile(icon:item.kind.icon,tint:color,side:38);Text(item.kind == .accounts ? "Мої рахунки" : item.kind.title).font(.headline).foregroundStyle(.primary).fixedSize(horizontal:false,vertical:true);Spacer(minLength:0);if item.kind == .accounts { Button { accountSettings = true } label: { Image(systemName:"slider.horizontal.3").frame(minWidth:44,minHeight:44) }.buttonStyle(.plain).accessibilityLabel("Налаштування карток рахунків") };privacyButton}.padding(.horizontal, item.kind == .accounts ? 4 : 0)
+                HStack(alignment:.center,spacing:9){FinamiIconTile(icon:item.kind.icon,tint:color,side:compact ? 28 : detailed ? 44 : 36);Text(item.kind == .accounts ? "Мої рахунки" : item.kind.title).font(.headline).foregroundStyle(.primary).fixedSize(horizontal:false,vertical:true);Spacer(minLength:0);if item.kind == .accounts { Button { accountSettings = true } label: { Image(systemName:"slider.horizontal.3").frame(minWidth:44,minHeight:44) }.buttonStyle(.plain).accessibilityLabel("Налаштування карток рахунків") };privacyButton}.padding(.horizontal, item.kind == .accounts ? 4 : 0)
             }
             content
         }
-        .frame(maxWidth: .infinity, minHeight: small ? 94 : nil, alignment: .topLeading)
-        .padding(item.kind == .accounts ? 0 : (small ? 12 : 16))
+        .frame(maxWidth: .infinity, minHeight: item.kind == .accounts ? nil : tileMinHeight, alignment: .topLeading)
+        .padding(item.kind == .accounts ? 0 : tilePadding)
         .modifier(FinamiDashboardSurface(isAccounts: item.kind == .accounts, tint: color, template: item.template))
         .environment(\.finamiMask, masked)
         .sheet(item:$paymentDetails) { FinamiPaymentDetails(payment:$0) }
@@ -363,7 +367,7 @@ struct DashboardTile: View {
         }
     }
     func value(_ text: String) -> some View {
-        Text(text).font(small ? .title3.weight(.semibold) : .title.weight(.bold))
+        Text(text).font(compact ? .title3.weight(.semibold) : detailed ? .largeTitle.weight(.bold) : .title.weight(.bold))
             .monospacedDigit().lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2).minimumScaleFactor(0.68)
             .foregroundStyle(.primary).accessibilityAddTraits(.isHeader)
     }
@@ -401,7 +405,7 @@ struct DashboardTile: View {
         let total = groups.reduce(Int64(0)) { $0 + $1.value }
         return VStack(alignment: .leading, spacing: 11) {
             if groups.isEmpty { detail("Немає витрат за період") }
-            else if small { value("\(groups.count)"); detail("Категорій з витратами") }
+            else if compact { amount(item.categorySelection == nil ? exp : total); detail("Категорій: \(groups.count)") }
             else {
                 amount(item.categorySelection == nil ? exp : total)
                 ForEach(Array(groups.prefix(max(1,min(30,item.categoryCount ?? (detailed ? 10 : 4)))).enumerated()), id: \.element.key) { entry in
@@ -419,22 +423,22 @@ struct DashboardTile: View {
         let shown = finamiOrderedAccounts(s.db.accounts).filter { $0.hiddenInOverview != true }
         if shown.isEmpty { detail("Немає рахунків. Додай рахунок у вкладці «Рахунки» або увімкни його в налаштуваннях блоку.") }
         ForEach(shown) { a in
-            FinamiHomeAccountCard(accountID: a.id, date: date, fallbackTint: color)
+            FinamiHomeAccountCard(accountID: a.id, date: date, fallbackTint: color, dashboardSize: item.size)
         }
     }
     @ViewBuilder var content: some View {
         switch item.kind {
         case .balance: amount(balance); detail("Чистий баланс рахунків · без невикористаного кредиту")
         case .creditLimit: amount(s.totalCreditLimit);detail("Ліміт усіх включених кредитних рахунків")
-        case .creditPortfolio: FinamiCreditSummary(showLimit:item.showLimit ?? true,showUsed:item.showUsed ?? true,showAvailable:item.showAvailable ?? true)
+        case .creditPortfolio: FinamiCreditSummary(showLimit:item.showLimit ?? true,showUsed:item.showUsed ?? true,showAvailable:item.showAvailable ?? true, dashboardSize: item.size)
         case .allAvailable: amount(s.totalOwnFunds+s.totalAvailableCredit);detail("Власні кошти разом із доступним кредитом")
-        case .monthlyPayments: FinamiMonthPayments()
+        case .monthlyPayments: FinamiMonthPayments(dashboardSize: item.size)
         case .cashflow: cashFlow
         case .categories: categories
         case .recent:
             if ops.isEmpty { detail("Немає операцій") }
             else {
-                let shown = Array(ops.sorted{$0.date > $1.date}.prefix(detailed ? 5 : 2))
+                let shown = Array(ops.sorted{$0.date > $1.date}.prefix(compact ? 1 : detailed ? 5 : 2))
                 ForEach(shown) { o in
                     if small { Text(visible(o.amount)).font(.subheadline.weight(.semibold)).monospacedDigit(); detail(o.note.isEmpty ? o.category : o.note) }
                     else { OperationRow(o: o) }
@@ -448,7 +452,7 @@ struct DashboardTile: View {
                 if showCharts { ProgressView(value: max(0,min(1, Double(exp)/Double(s.db.budget)))).tint(color) }
             } else { detail("Не задано") }
         case .obligations:
-            if let next=s.upcomingPayments.first { Button { paymentDetails=next } label:{FinamiPaymentCard(payment:next,showRemaining:item.showPaymentRemaining ?? true,showDate:item.showPaymentDate ?? true,showImage:item.showPaymentImage ?? true)}.buttonStyle(.plain) }
+            if let next=s.upcomingPayments.first { Button { paymentDetails=next } label:{FinamiPaymentCard(payment:next,showRemaining:item.showPaymentRemaining ?? true,showDate:item.showPaymentDate ?? true,showImage:item.showPaymentImage ?? true, dashboardSize: item.size)}.buttonStyle(.plain) }
             else {detail("Немає запланованих платежів")}
         case .subscriptions:
             value(String((s.db.subscriptions ?? []).filter{$0.active}.count)); detail("Активних підписок")

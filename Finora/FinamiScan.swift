@@ -13,6 +13,7 @@ private struct ScanPhoto: Identifiable {
     let id: String
     let lines: [String]
     let image: Data?
+    var warning: String? = nil
     var bank: String? { FinamiScanParser.bank(lines.joined(separator: "\n")) }
 }
 private enum ScanFailure: LocalizedError {
@@ -26,12 +27,19 @@ private func recognizeScan(_ data: Data) throws -> ScanPhoto {
     let request = VNRecognizeTextRequest()
     request.recognitionLevel = .accurate
     request.usesLanguageCorrection = true
-    let available = try request.supportedRecognitionLanguages()
+    let available = (try? request.supportedRecognitionLanguages()) ?? []
     let preferred = ["uk-UA", "en-US", "ru-RU"].filter { available.contains($0) }
     if !preferred.isEmpty { request.recognitionLanguages = preferred }
-    try VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
+    var warning: String? = nil
+    var recognized = request
+    do { try VNImageRequestHandler(cgImage: image, options: [:]).perform([request]) } catch {
+        let retry = VNRecognizeTextRequest()
+        retry.recognitionLevel = .accurate
+        do { try VNImageRequestHandler(cgImage: image, options: [:]).perform([retry]); recognized = retry }
+        catch { warning = "Vision не зміг розпізнати текст: " + error.localizedDescription }
+    }
     // Vision returns bounding boxes. Join items on the same horizontal row (merchant + amount).
-    let observations = (request.results ?? []).compactMap { o -> (CGRect, String)? in
+    let observations = (recognized.results ?? []).compactMap { o -> (CGRect, String)? in
         guard let text = o.topCandidates(1).first?.string else { return nil }
         return (o.boundingBox, text)
     }.sorted { $0.0.midY > $1.0.midY }
@@ -42,11 +50,11 @@ private func recognizeScan(_ data: Data) throws -> ScanPhoto {
         } else { groups.append([observation]) }
     }
     let lines = groups.map { $0.sorted { $0.0.minX < $1.0.minX }.map { $0.1 }.joined(separator: " ") }
-    guard !lines.isEmpty else { throw ScanFailure.empty }
+    if lines.isEmpty && warning == nil { warning = "Текст не знайдено. Можна заповнити чернетку вручну." }
     let previewOptions: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceThumbnailMaxPixelSize: 1600]
     let jpeg = CGImageSourceCreateThumbnailAtIndex(source, 0, previewOptions as CFDictionary).flatMap { UIImage(cgImage: $0).jpegData(compressionQuality: 0.7) }
     let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-    return ScanPhoto(id: digest, lines: lines, image: jpeg)
+    return ScanPhoto(id: digest, lines: lines, image: jpeg, warning: warning)
 }
 struct FinamiScanView: View {
     @EnvironmentObject private var s: Store
@@ -55,6 +63,7 @@ struct FinamiScanView: View {
     @State private var photos: [ScanPhoto] = []
     @State private var busy = false
     @State private var errors: [String] = []
+    @State private var manualText = ""
     init(initialMode: FinamiScanMode = .transactions) { _mode = State(initialValue: initialMode) }
     var body: some View {
         List {
@@ -67,6 +76,17 @@ struct FinamiScanView: View {
                 Picker("Тип імпорту", selection: $mode) { ForEach(FinamiScanMode.allCases) { Text($0.rawValue).tag($0) } }.pickerStyle(.menu)
                 PhotosPicker(selection: $selections, maxSelectionCount: 10, matching: .images) { Label("Обрати скриншоти", systemImage: "photo.on.rectangle.angled") }.disabled(busy)
                 if busy { ProgressView("Розпізнавання на пристрої…") }
+                DisclosureGroup("Резервний імпорт тексту") {
+                    Text("Якщо фото не читається, скопіюй текст з фото через Live Text і встав сюди. Перевір дані перед збереженням.").font(.caption)
+                    TextEditor(text: $manualText).frame(minHeight: 110).accessibilityLabel("Текст зі скриншота")
+                    Button("Розпізнати вставлений текст") {
+                        let text = manualText.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !text.isEmpty, text.count <= 40_000 else { return }
+                        let lines = text.components(separatedBy: .newlines).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                        let digest = SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
+                        if !photos.contains(where: { $0.id == digest }) { photos.append(ScanPhoto(id: digest, lines: lines, image: nil)) }; manualText = ""
+                    }.disabled(busy || manualText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || manualText.count > 40_000)
+                }
                 if !photos.isEmpty { Button("Очистити список") { photos = []; errors = [] }.disabled(busy) }
             }
             if !photos.isEmpty {
@@ -80,6 +100,8 @@ struct FinamiScanView: View {
                             VStack(alignment: .leading, spacing: 5) {
                                 Label(photo.bank ?? "Банк не визначено", systemImage: "doc.text.viewfinder")
                                 Text("\(photo.lines.count) рядків · \(mode.rawValue)").font(.caption).foregroundStyle(.secondary)
+                                if let warning = photo.warning { Text(warning).font(.caption).foregroundStyle(.orange) }
+                                Label("Відкрити та перевірити", systemImage: "chevron.right").font(.caption)
                                 if s.db.operations.contains(where: { $0.scanFingerprint?.hasPrefix(photo.id + ":") == true }) || s.db.obligations.contains(where: { $0.scanFingerprint == photo.id }) { Text("Раніше імпортовано повністю або частково").font(.caption).foregroundStyle(.orange) }
                             }
                         }.disabled(busy)
@@ -113,6 +135,7 @@ private struct ScanSourceSection: View {
     var body: some View {
         Section("Джерело") {
             LabeledContent("Банк", value: photo.bank ?? "Не визначено")
+            if let warning = photo.warning { Text(warning).font(.caption).foregroundStyle(.orange) }
             DisclosureGroup("Показати текст та скриншот", isExpanded: $show) {
                 if let data = photo.image, let image = UIImage(data: data) { Image(uiImage: image).resizable().scaledToFit() }
                 Text(photo.lines.joined(separator: "\n")).font(.caption).textSelection(.enabled)
@@ -176,9 +199,20 @@ private struct ScanTransactionsReview: View {
             other.id != row.id && other.chosen && other.account == row.account && other.minor == m && other.kind?.incoming == k.incoming && Calendar.current.isDate(other.date, inSameDayAs: row.date)
         }
     }
-    private func valid(_ row: ScanTransactionEdit) -> Bool {
-        row.chosen && row.dateChecked && row.kind != nil && (row.uah ?? 0) > 0 && s.db.accounts.contains { $0.id == row.account && $0.code == row.currency } && !exact(row) && (!similar(row) || row.duplicateOverride)
+    private func blockers(_ row: ScanTransactionEdit) -> [String] {
+        var result: [String] = []
+        if !row.dateChecked { result.append("підтвердити дату") }
+        if row.kind == nil { result.append("вибрати тип операції") }
+        if row.minor == nil { result.append("ввести суму") }
+        if row.currency.isEmpty { result.append("вибрати валюту") }
+        if row.currency == "USD" && fxRate(row.rate) == nil { result.append("ввести курс USD") }
+        if !s.db.accounts.contains(where: { $0.id == row.account && $0.code == row.currency }) { result.append("вибрати рахунок відповідної валюти") }
+        if exact(row) { result.append("рядок уже імпортовано") }
+        else if similar(row) && !row.duplicateOverride { result.append("перевірити можливий дубль") }
+        if result.isEmpty && (row.uah ?? 0) <= 0 { result.append("перевірити суму та валюту") }
+        return result
     }
+    private func valid(_ row: ScanTransactionEdit) -> Bool { row.chosen && blockers(row).isEmpty }
     private func categories(_ row: ScanTransactionEdit) -> [String] {
         let incoming = row.kind == .income
         let list = incoming ? s.db.incomeCategories : s.db.expenseCategories
@@ -216,6 +250,7 @@ private struct ScanTransactionsReview: View {
                     }
                     DatePicker("Дата і час", selection: $row.date)
                     Toggle("Дата перевірена", isOn: $row.dateChecked)
+                    if row.chosen { let pending = blockers(row); if pending.isEmpty { Label("Готово до імпорту", systemImage: "checkmark.circle").foregroundStyle(.green) } else { Text("Потрібно: " + pending.joined(separator: "; ")).font(.caption).foregroundStyle(.orange) } }
                     if exact(row) { Label("Цей рядок уже імпортовано", systemImage: "checkmark.shield").foregroundStyle(.orange) }
                     else if similar(row) {
                         Label("Можливий дубль: така сума й напрям на рахунку в той самий день.", systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
@@ -232,7 +267,10 @@ private struct ScanTransactionsReview: View {
             Section("Підтвердження") {
                 if photo.image != nil { Toggle("Прикріпити скриншот до записів", isOn: $attach) }
                 if !message.isEmpty { Text(message).foregroundStyle(.secondary) }
-                Button("Імпортувати обрані (\(rows.filter(\.chosen).count))", action: save).disabled(!rows.contains(where: \.chosen) || rows.filter(\.chosen).contains { !valid($0) })
+                let chosen = rows.filter(\.chosen)
+                if chosen.isEmpty { Text("Увімкни «Імпортувати цю операцію» для потрібних записів.").font(.caption).foregroundStyle(.secondary) }
+                else { Text("Готово: \(chosen.filter(valid).count) із \(chosen.count). Виправ позначені поля.").font(.caption).foregroundStyle(.secondary) }
+                Button("Імпортувати обрані (\(chosen.count))", action: save).disabled(chosen.isEmpty || chosen.contains { !valid($0) })
                 Text("Однакові рядки того самого скриншота повторно не зберігаються. Інший знімок або виписка можуть вимагати ручної звірки.").font(.caption)
             }
         }.navigationTitle("Перевірка операцій").onAppear {
@@ -328,6 +366,12 @@ private struct ScanInstallmentReview: View {
                 Toggle("Створити нагадування", isOn: $remind)
                 if remind { Picker("Нагадати за", selection: $lead) { Text("У день платежу").tag(0); Text("1 день").tag(1); Text("3 дні").tag(3); Text("7 днів").tag(7) }; Text("Час: 09:00").font(.caption); if (reminderDate ?? .distantPast) <= Date() { Text("Час нагадування минув. Обери інший термін або вимкни нагадування.").foregroundStyle(.orange) } }
                 if !targetID.isEmpty { Text("Якщо дата змінилася, одноразові пов’язані нагадування будуть перенесені або вимкнені, якщо вже минули. Повторювані перевір у меню нагадувань.").font(.caption) }
+                if !valid {
+                    if !checked || !dateChecked { Text("Підтвердь дату та перевірку всіх даних.").font(.caption).foregroundStyle(.orange) }
+                    if name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { Text("Вкажи назву договору.").font(.caption).foregroundStyle(.orange) }
+                    if !FinamiScanParser.validInstallment(total: bankMinor(total) ?? -1, remaining: bankMinor(remaining) ?? -1, monthly: bankMinor(monthly) ?? -1) { Text("Перевір загальний кредит, залишок і щомісячний платіж.").font(.caption).foregroundStyle(.orange) }
+                    if similar && !duplicateOverride { Text("Перевір, чи це новий договір, або обери існуючий.").font(.caption).foregroundStyle(.orange) }
+                }
                 Button(targetID.isEmpty ? "Додати розстрочку" : "Оновити договір") { save() }.disabled(!valid || busy)
             }
         }.navigationTitle("Перевірка розстрочки").onChange(of: targetID) { id in

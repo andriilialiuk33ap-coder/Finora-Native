@@ -83,11 +83,13 @@ enum FinamiScanParser {
             if pureAmount && ["баланс", "залишок", "ліміт", "доступно", "всього", "усього", "підсумок", "комісія", "total", "balance"].contains(where: { prevLow.contains($0) }) { continue }
             let labels = ["сума операції", "сума платежу", "списано", "зараховано", "оплата", "покупка"]
             let labelled = labels.contains { low.contains($0) }
-            guard let m = money(line, allowBare: labelled), m.minor != 0 else { continue }
+            // A standalone signed amount may omit its currency. Keep it as an unconfirmed draft.
+            let signedBare = pureAmount && line.trimmingCharacters(in: .whitespacesAndNewlines).range(of: #"^[+−-]\s*\d"#, options: .regularExpression) != nil
+            guard let m = money(line, allowBare: labelled || signedBare), m.minor != 0 else { continue }
             // Unsigned currency values are candidates only; the user selects direction.
             var note = line.replacingOccurrences(of: datePattern, with: "", options: .regularExpression)
             note = note.replacingOccurrences(of: "(?i)" + number + "\\s*" + currency, with: "", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)
-            if note.isEmpty || money(note) != nil { note = previous }
+            if note.isEmpty || pureAmount || money(note) != nil { note = previous }
             if date(note) != nil || money(note) != nil { note = "" }
             result.append(ScanLineDraft(id: String(i), note: bankRedact(note), money: m, date: date(line) ?? lastDate))
             if result.count >= 100 { break }

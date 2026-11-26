@@ -105,6 +105,7 @@ struct FinamiHomeAccountCard: View {
     var fallbackTint: Color
     var mode: String = "all"
     var onAccountsScreen = false
+    var dashboardSize: DashboardSize? = nil
     @State private var route: Route?
     private enum Route: Identifiable {
         case settings, history, edit(Account), operation(Operation)
@@ -112,11 +113,13 @@ struct FinamiHomeAccountCard: View {
     }
     var body: some View {
         if let a = s.db.accounts.first(where: { $0.id == accountID }) {
-            let style = accountStyle(a.cardOptions?.style ?? s.db.preferences?.homeAccountLayout)
-            let selectedRight = accountRight(a.cardOptions?.right ?? s.db.preferences?.homeAccountRight, style: style)
+            let preferredStyle = accountStyle(a.cardOptions?.style ?? s.db.preferences?.homeAccountLayout)
+            let style: HomeAccountStyle = dashboardSize == .small ? .compact : preferredStyle
+            let selectedRight: HomeAccountRight = dashboardSize == .small ? .none : accountRight(a.cardOptions?.right ?? s.db.preferences?.homeAccountRight, style: style)
             let right: HomeAccountRight = mode == "own" && selectedRight == .credit ? .art : selectedRight
             let excludedFields: Set<String> = mode == "own" ? ["limit", "used", "available"] : mode == "credit" ? ["own"] : []
-            let fields = Set(a.cardOptions?.fields ?? s.db.preferences?.homeAccountFields ?? HomeAccountField.defaults).subtracting(excludedFields)
+            let preferredFields = Set(a.cardOptions?.fields ?? s.db.preferences?.homeAccountFields ?? HomeAccountField.defaults).subtracting(excludedFields)
+            let fields = dashboardSize == .small ? preferredFields.intersection(["own", "limit", "used", "available", "currency", "type"]) : preferredFields
             let activity = AccountActivity(account: a, operations: s.db.operations, month: date)
             let tint = accountTint(a, fallback: fallbackTint)
             card(a, style: style, right: right, fields: fields, activity: activity, tint: tint)
@@ -159,7 +162,7 @@ struct FinamiHomeAccountCard: View {
         }
     }
     private func card(_ a: Account, style: HomeAccountStyle, right: HomeAccountRight, fields: Set<String>, activity: AccountActivity, tint: Color) -> some View {
-        VStack(alignment: .leading, spacing: style == .compact ? 8 : 12) {
+        VStack(alignment: .leading, spacing: dashboardSize == .small ? 6 : dashboardSize == .large ? 15 : style == .compact ? 8 : 12) {
             header(a, fields: fields, tint: tint)
             if fields.contains("own") || right != .none {
                 if dynamicTypeSize.isAccessibilitySize || right == .none || !fields.contains("own") {
@@ -178,7 +181,7 @@ struct FinamiHomeAccountCard: View {
             activityFields(a, fields: fields, right: right, activity: activity, style: style)
             if fields.contains("actions") && right != .actions { quickActions(a, vertical: dynamicTypeSize.isAccessibilitySize) }
         }
-        .padding(style == .compact ? 12 : 16)
+        .padding(dashboardSize == .small ? 9 : dashboardSize == .large ? 20 : style == .compact ? 12 : 16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background {
             if style == .physical || style == .premium {
@@ -195,7 +198,7 @@ struct FinamiHomeAccountCard: View {
     private func own(_ a: Account) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Власні кошти").font(.caption).foregroundStyle(.secondary)
-            Text(amount(s.ownFunds(a), a)).font(.system(.title, design: .rounded).weight(.semibold)).monospacedDigit().lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2).minimumScaleFactor(0.72)
+            Text(amount(s.ownFunds(a), a)).font(.system(dashboardSize == .small ? .title3 : dashboardSize == .large ? .largeTitle : .title, design: .rounded).weight(.semibold)).monospacedDigit().lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2).minimumScaleFactor(0.72)
             if a.isCredit { Text("Без кредиту").font(.caption2).foregroundStyle(.secondary) }
         }
     }

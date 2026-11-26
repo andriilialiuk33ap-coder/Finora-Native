@@ -64,15 +64,16 @@ struct FinamiCreditSummary: View {
     @EnvironmentObject var s:Store
     @Environment(\.finamiMask) private var masked
     var showLimit:Bool; var showUsed:Bool; var showAvailable:Bool
-    var body:some View { VStack(alignment:.leading,spacing:14) {
-        HStack { Text("Кредитні кошти").font(.headline); Spacer(); FinamiArt(icon:"creditcard.fill",tint:.blue,size:56) }
+    var dashboardSize: DashboardSize? = nil
+    var body:some View { VStack(alignment:.leading,spacing:dashboardSize == .small ? 5 : dashboardSize == .large ? 16 : 10) {
+        if dashboardSize == nil || dashboardSize == .large { HStack { Text("Кредитні кошти").font(.headline); Spacer(); FinamiArt(icon:"creditcard.fill",tint:.blue,size:56) } }
         if showLimit { metric("Загальний кредитний ліміт",s.totalCreditLimit,.primary) }
         if showUsed { metric("Використано кредиту",s.totalCreditUsed,.orange) }
         if showAvailable { metric("Доступний кредит",s.totalAvailableCredit,.teal) }
         if !showLimit && !showUsed && !showAvailable { Text("Усі показники приховано").font(.caption) }
-        Text("Кредит не входить до власних коштів.").font(.caption).foregroundStyle(.secondary)
-    }.padding(18).frame(maxWidth:.infinity,alignment:.leading).modifier(FinamiCardStyle(tint:.blue)) }
-    func metric(_ name:String,_ amount:Int64,_ color:Color)->some View { FinamiMetric(title:name,value:masked ? "••••" : s.displayed(amount),tint:color).padding(12).background(color.opacity(0.07),in:RoundedRectangle(cornerRadius:14)) }
+        if dashboardSize != .small { Text("Кредит не входить до власних коштів.").font(.caption).foregroundStyle(.secondary) }
+    }.padding(dashboardSize == .small ? 5 : dashboardSize == .large ? 20 : 14).frame(maxWidth:.infinity,alignment:.leading).modifier(FinamiCardStyle(tint:.blue)) }
+    func metric(_ name:String,_ amount:Int64,_ color:Color)->some View { FinamiMetric(title:name,value:masked ? "••••" : s.displayed(amount),tint:color).padding(dashboardSize == .small ? 5 : dashboardSize == .large ? 14 : 9).background(color.opacity(0.07),in:RoundedRectangle(cornerRadius:14)) }
 }
 struct FinamiField: View {
     var title:String; @Binding var text:String; var keyboard:UIKeyboardType
@@ -153,19 +154,21 @@ struct FinamiPaymentCard:View {
     var showRemaining = true
     var showDate = true
     var showImage = true
-    var body:some View { VStack(alignment:.leading,spacing:12) {
-        HStack(alignment:.top) { VStack(alignment:.leading,spacing:5) { Text(payment.kind).font(.caption).foregroundStyle(.secondary);Text(payment.name).font(.headline).fixedSize(horizontal:false,vertical:true) };Spacer(minLength:8);if showImage { if let data=s.db.paymentPhotos?[payment.id],let image=UIImage(data:data) {Image(uiImage:image).resizable().scaledToFill().frame(width:62,height:62).clipShape(RoundedRectangle(cornerRadius:14)).accessibilityHidden(true)}else{FinamiArt(icon:payment.subscription ? "repeat" : "calendar.badge.clock",tint:.indigo,size:62)} } }
-        Text(masked ? "••••" : s.visibleMoney(payment.amount,payment.currency)).font(.largeTitle.bold()).monospacedDigit().fixedSize(horizontal:false,vertical:true)
+    var dashboardSize: DashboardSize? = nil
+    var body:some View { VStack(alignment:.leading,spacing:dashboardSize == .small ? 5 : dashboardSize == .large ? 16 : 10) {
+        HStack(alignment:.top) { VStack(alignment:.leading,spacing:5) { Text(payment.kind).font(.caption).foregroundStyle(.secondary);Text(payment.name).font(.headline).fixedSize(horizontal:false,vertical:true) };Spacer(minLength:8);if showImage && dashboardSize != .small { if let data=s.db.paymentPhotos?[payment.id],let image=UIImage(data:data) {Image(uiImage:image).resizable().scaledToFill().frame(width:62,height:62).clipShape(RoundedRectangle(cornerRadius:14)).accessibilityHidden(true)}else{FinamiArt(icon:payment.subscription ? "repeat" : "calendar.badge.clock",tint:.indigo,size:62)} } }
+        Text(masked ? "••••" : s.visibleMoney(payment.amount,payment.currency)).font(dashboardSize == .small ? .title3.bold() : dashboardSize == .medium ? .title.bold() : .largeTitle.bold()).monospacedDigit().fixedSize(horizontal:false,vertical:true)
         if showDate { Label(payment.date.formatted(date:.abbreviated,time:.omitted),systemImage:"calendar").foregroundStyle(payment.overdue ? Color.orange : Color.secondary) }
         if payment.overdue {Label("Прострочено",systemImage:"exclamationmark.circle").font(.caption).foregroundStyle(.orange)}
         if showRemaining, let remaining=payment.remaining {FinamiMetric(title:"Залишок",value:masked ? "••••" : s.visibleMoney(remaining))}
         HStack {Text("Деталі платежу").font(.subheadline.weight(.medium));Spacer();Image(systemName:"chevron.right")}.foregroundStyle(.tint)
-    }.padding(16).frame(maxWidth:.infinity,alignment:.leading).modifier(FinamiCardStyle(tint:.indigo)) }
+    }.padding(dashboardSize == .small ? 6 : dashboardSize == .large ? 20 : 14).frame(maxWidth:.infinity,alignment:.leading).modifier(FinamiCardStyle(tint:.indigo)) }
 }
 struct FinamiMonthPayments:View {
     @EnvironmentObject var s:Store
     @Environment(\.finamiMask) private var masked
-    var body:some View { VStack(alignment:.leading,spacing:8) {Text("Заплановано до кінця місяця").font(.headline);ForEach(["UAH","USD"],id:\.self) { currency in let total=s.scheduledThisMonth(currency:currency); if total>0 || currency=="UAH" {Text(masked ? "••••" : s.visibleMoney(total,currency)).font(.title.bold()).monospacedDigit()} };Text("Прогноз за графіком; прострочені платежі показано окремо.").font(.caption).foregroundStyle(.secondary) }.padding(16).frame(maxWidth:.infinity,alignment:.leading).modifier(FinamiCardStyle(tint:.indigo)) }
+    var dashboardSize: DashboardSize? = nil
+    var body:some View { VStack(alignment:.leading,spacing:dashboardSize == .small ? 4 : dashboardSize == .large ? 12 : 8) {if dashboardSize != .small { Text("Заплановано до кінця місяця").font(.headline) };ForEach(["UAH","USD"],id:\.self) { currency in let total=s.scheduledThisMonth(currency:currency); if total>0 || currency=="UAH" {Text(masked ? "••••" : s.visibleMoney(total,currency)).font(dashboardSize == .small ? .title3.bold() : dashboardSize == .large ? .largeTitle.bold() : .title.bold()).monospacedDigit()} };if dashboardSize != .small { Text("Прогноз за графіком; прострочені платежі показано окремо.").font(.caption).foregroundStyle(.secondary) } }.padding(dashboardSize == .small ? 6 : dashboardSize == .large ? 20 : 14).frame(maxWidth:.infinity,alignment:.leading).modifier(FinamiCardStyle(tint:.indigo)) }
 }
 struct FinamiPaymentDetails:View {
     @EnvironmentObject var s:Store; @Environment(\.dismiss) var dismiss
@@ -241,6 +244,7 @@ struct FinamiBlockSettings:View {
     func edit(_ update:(inout DashboardItem)->Void){s.change{d in var all=DashboardItem.merged(d.dashboard);if let i=all.firstIndex(where:{$0.id==id}){update(&all[i])};d.dashboard=all}}
     var body:some View { Form {
         if let item=item {
+            Picker("Розмір блоку", selection: Binding(get: { self.item?.size ?? .medium }, set: { v in edit { $0.size = v } })) { ForEach(DashboardSize.allCases, id: \.self) { Text($0.rawValue).tag($0) } }.pickerStyle(.segmented)
             Toggle("Приховувати суми",isOn:Binding(get:{self.item?.hideAmounts ?? false},set:{v in edit{$0.hideAmounts=v}}))
             Picker("Шаблон",selection:Binding(get:{self.item?.template ?? ""},set:{v in edit{$0.template=v.isEmpty ? nil : v}})){Text("Загальний стиль").tag("");ForEach(FinamiCardTemplate.allCases){Text($0.rawValue).tag($0.rawValue)}}
             Picker("Колір блоку",selection:Binding(get:{self.item?.accentName ?? ""},set:{v in edit{$0.accentName=v.isEmpty ? nil : v}})) { Text("За дизайном").tag(""); ForEach(IzanamiTheme.all) { theme in Text(theme.name).tag(theme.name) } }

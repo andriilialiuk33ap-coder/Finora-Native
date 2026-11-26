@@ -77,6 +77,7 @@ struct AutomationCenter: View {
     @State private var testResult=""
     @AppStorage("finami.lastShortcutCheck") private var lastShortcutCheck: Double = 0
     @AppStorage("finami.lastWalletCapture") private var lastWalletCapture: Double = 0
+    @AppStorage("finami.lastBankNotification") private var lastBankNotification: Double = 0
     @State private var openFailed = false
     @State private var checkTime: Double = 0
     private func launchShortcuts() {
@@ -123,6 +124,7 @@ struct AutomationCenter: View {
         Section("Перевірка зв’язку Apple Pay") {
             LabeledContent("Тест дії Команд", value: stamp(lastShortcutCheck))
             LabeledContent("Останній прийом Apple Pay", value: stamp(lastWalletCapture))
+            LabeledContent("Останнє повідомлення банку", value: stamp(lastBankNotification))
             Button { launchShortcuts() } label: { Label("Відкрити Команди для тесту", systemImage: "checkmark.shield") }
             Text("У Командах знайди Finami → Перевірка зв’язку і запусти її. Повернись сюди: час тесту має оновитися. Цей тест не додає витрату і не підтверджує роботу Wallet-тригера.").font(.caption)
             Button("Перевірити локальний обробник") {
@@ -136,7 +138,7 @@ struct AutomationCenter: View {
     private var autoSection: some View {
         Section("2. Автоматичне збереження") {
             Toggle("Apple Pay без підтвердження",isOn:setting(\.walletAuto))
-            Toggle("Однозначні покупки з SMS",isOn:setting(\.messageAuto))
+            Toggle("Однозначні покупки з SMS / сповіщень",isOn:setting(\.messageAuto))
             Text("Спочатку обидва вимкнені. Перевірте одну реальну покупку, потім увімкніть потрібний режим. Події обробляються при відкритті Finami (після розблокування), а не в момент оплати. Невідомий магазин отримує категорію «Без категорії». Повторні повідомлення ніколи не додаються автоматично, навіть після перезапуску. Схожі платежі, доларові суми та неоднозначні рухи залишаються на перевірку. Не вмикайте одночасно кілька джерел для однієї картки без звірки.").font(.caption)
         }
     }
@@ -225,7 +227,7 @@ struct AutomationGuide: View {
     let steps: [String]
     var body: some View {
         ScrollView {VStack(alignment:.leading,spacing:20){
-            if title.contains("Apple Pay") { Picker("Рахунок Finami",selection:$accountID){Text("Вибрати рахунок").tag("");ForEach(s.db.accounts){a in Text(a.name+" · "+a.code).tag(a.id)}};Button { UIPasteboard.general.string=accountID;if let url=URL(string:"shortcuts://") {openURL(url)} } label:{Label("Копіювати код і відкрити Команди",systemImage:"bolt.fill")}.buttonStyle(.borderedProminent).disabled(accountID.isEmpty);Text("Код рахунку скопіюється автоматично. iOS потребує ручного вибору картки й створення системного тригера. Finami не може створити його замість тебе.").font(.caption).foregroundStyle(.secondary) }
+            if title.contains("Apple Pay") || title.contains("Сповіщення банку") { Picker("Рахунок Finami",selection:$accountID){Text("Вибрати рахунок").tag("");ForEach(s.db.accounts){a in Text(a.name+" · "+a.code).tag(a.id)}};Button { UIPasteboard.general.string=accountID;if let url=URL(string:"shortcuts://") {openURL(url)} } label:{Label("Копіювати код і відкрити Команди",systemImage:"bolt.fill")}.buttonStyle(.borderedProminent).disabled(accountID.isEmpty);Text("Код рахунку скопіюється. У Командах додай потрібний системний тригер. Ця кнопка відкриває Команди, а не імпортує готовий шаблон.").font(.caption).foregroundStyle(.secondary) }
             ForEach(Array(steps.enumerated()),id:\.offset){entry in
                 HStack(alignment:.top,spacing:14){
                     Text(String(entry.offset+1)).font(.headline).foregroundStyle(.white).frame(width:36,height:36).background(finoraAccent,in:Circle())
@@ -252,10 +254,10 @@ struct AutomationGuide: View {
         "Приклад: Оплата 125,50 UAH; Магазин: ATБ; Баланс 1000 UAH. Розпізнається сума оплати, а не баланс. Якщо є кілька сум, незрозуміла валюта, OTP або відмова — дія не запише транзакцію. Внесіть підтверджений платіж вручну або імпортуйте виписку.",
         "Для різних карток використовуйте різні фільтри. SMS можуть бути платними або недоступними у вашому банку. Перекази, поповнення й погашення підтверджуйте окремо."]
     static let notifications=[
-        "Відкрийте Команди → Автоматизація → +. Якщо є тригер Notification / Сповіщення, можна використовувати його з банківським застосунком. Якщо немає, оберіть SMS, Wallet або виписки.",
+        "На iOS 27 відкрийте Команди, створіть нову команду та в редакторі виберіть розділ Автоматизація → Сповіщення (Notification). На старіших iOS використовуйте SMS, Wallet або виписки.",
         "Виберіть тільки застосунок потрібного банку. За можливості встановіть фільтр на проведені покупки й конкретну картку, а не всі сповіщення.",
-        "Додайте дію Finami: Bank message. У Message text передайте текст повідомлення (Message / Body). Якщо сума у заголовку чи підзаголовку, об’єднайте відповідні поля через дію Text; не додавайте приватні коди. У Account code вставте код картки.",
-        "Перевірте наступну оплату вручну у вхідних. Розпізнавання залежить від формату повідомлення. Додаток не має самостійного доступу до чужих сповіщень і не може увімкнути системну автоматизацію за вас."]
+        "Додайте дію Finami: сповіщення банку. У Текст сповіщення виберіть змінну Сповіщення та її текст/тіло (Body). Якщо сума у заголовку чи підзаголовку, об’єднайте лише потрібні поля через дію Текст. У Код рахунку Finami вставте скопійований код. Не передавайте OTP чи повідомлення безпеки.",
+        "Увімкніть автоматизацію в редакторі команди. За можливості вимкніть підтвердження перед запуском. Перевірте наступну реальну оплату у вхідних Finami та час останнього повідомлення. Не вмикайте одночасно два джерела для тієї ж картки без звірки. Готове посилання на імпорт команди ще не опубліковано."]
     static let banks=[
         "ПУМБ: Wallet або SMS/сповіщення, якщо доступні; для звірки використовуйте PDF-виписку. Кредитний ліміт задайте в картці, не як дохід.",
         "А-БАНК: Wallet або SMS/сповіщення, якщо доступні; PDF із MCC для точнішої категоризації.",

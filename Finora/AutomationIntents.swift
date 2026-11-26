@@ -31,7 +31,27 @@ struct CaptureMessageIntent: AppIntent {
     func perform() async throws -> some IntentResult & ProvidesDialog {
         let event = try captureMessage(message,account:account)
         try CaptureInbox.enqueue(event,in:CaptureInbox.folder())
+        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "finami.lastBankNotification")
         return .result(dialog:"Message captured. Open Finami to review. / Повідомлення отримано. Відкрийте Finami для перевірки.")
+    }
+}
+
+// On iOS 27 the user selects a bank notification trigger in Shortcuts and passes its text.
+// The existing safe message parser and deduplication are reused, without persisting raw notifications.
+struct CaptureBankNotificationIntent: AppIntent {
+    static var title: LocalizedStringResource = "Finami: сповіщення банку"
+    static var description: IntentDescription? = IntentDescription("Записати операцію з тексту банківського сповіщення, переданого Командами")
+    static var openAppWhenRun: Bool = false
+    @Parameter(title: "Текст сповіщення") var message: String
+    @Parameter(title: "Код рахунку Finami") var account: String
+    static var parameterSummary: some ParameterSummary {
+        Summary("Записати сповіщення \(\.$message) на рахунок \(\.$account)")
+    }
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        let event = try captureMessage(message, account: account)
+        try CaptureInbox.enqueue(event, in: CaptureInbox.folder())
+        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "finami.lastBankNotification")
+        return .result(dialog: "Сповіщення прийнято. Відкрий Finami для обробки.")
     }
 }
 
