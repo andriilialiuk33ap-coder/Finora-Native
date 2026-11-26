@@ -10,6 +10,7 @@ for test in check-model check-finami check-preview2 check-preview3 check-preview
   echo "=== $test ==="
   bash "Tests/$test.sh"
 done
+bash Tests/check-load-database.sh
 bash Tests/check-encryption-macos.sh
 for file in Finora/*.swift UITests/*.swift; do swiftc -frontend -parse "$file"; done
 echo 'PASS: Swift syntax (not iOS compilation)'

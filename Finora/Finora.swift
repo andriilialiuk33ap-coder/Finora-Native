@@ -358,7 +358,7 @@ struct DataFile: FileDocument {
         return (loaded,warning)
       }.value
       db = result.0; error = result.1; ready = true
-    } catch { error = "База не читається. Запис заблоковано, щоб не втратити дані. " + error.localizedDescription }
+    } catch let loadError { self.error = "База не читається. Запис заблоковано, щоб не втратити дані. " + loadError.localizedDescription }
     loading = false
   }
   @discardableResult func change(_ update: (inout Database) -> Void) -> Bool {
@@ -1005,7 +1005,7 @@ struct More: View {
         }
       }
       VStack(alignment: .leading) {
-        Text("Finami · 5.1.1 Performance & Quality\nБез реклами, серверів та платних API.").font(.footnote)
+        Text("Finami · 5.1.2 Performance & Quality\nБез реклами, серверів та платних API.").font(.footnote)
           .foregroundStyle(.secondary)
       }
     }.padding() }.background(Color(uiColor: .systemGroupedBackground)).navigationTitle("Ще").toolbar{Button{menuSettings=true} label:{Image(systemName:"slider.horizontal.3")}.accessibilityLabel("Налаштування меню")}.sheet(isPresented:$menuSettings){NavigationStack{Form{Toggle("Компактні ілюстрації",isOn:Binding(get:{s.db.preferences?.menuCompact ?? false},set:{v in s.changeAppearance { p in p.menuCompact=v }}));NavigationLink("Студія дизайну"){AppearanceView()};NavigationLink("Блоки головної"){DashboardSettings()};NavigationLink("Рахунки"){FinamiAccountSettings()}}.navigationTitle("Налаштування меню").toolbar{Button("Готово"){menuSettings=false}}}}
