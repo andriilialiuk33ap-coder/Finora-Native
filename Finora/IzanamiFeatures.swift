@@ -102,7 +102,7 @@ struct AppearanceView: View {
     @EnvironmentObject var s: Store
     func binding<T>(_ key: WritableKeyPath<AppearancePreferences,T>) -> Binding<T> {
         Binding(get: { (s.db.preferences ?? .init())[keyPath: key] }, set: { value in
-            s.change { d in var p = d.preferences ?? .init(); p[keyPath: key] = value; d.preferences = p }
+            s.changeAppearance { p in p[keyPath: key] = value }
         })
     }
     @State private var preview: FinamiDesign?
@@ -130,7 +130,7 @@ struct AppearanceView: View {
             Toggle("Великі іконки", isOn: binding(\.largeIcons))
             Toggle("Яскраве підсвічування", isOn: binding(\.glow))
             Toggle("Кольорові акценти", isOn: Binding(get:{s.db.preferences?.colorfulDashboard ?? true},set:{binding(\.colorfulDashboard).wrappedValue=$0}))
-        }.navigationTitle("Студія дизайну").sheet(item:$preview) { selected in NavigationStack { VStack(spacing:18) { FinamiDesignPreview(design:selected); Text(selected.description).foregroundStyle(.secondary); Button("Застосувати дизайн") { s.change { d in var p=d.preferences ?? .init();p.design=selected.rawValue;p.theme="Preset";p.mode="preset";p.font="preset";d.preferences=p };preview=nil }.buttonStyle(.borderedProminent);Spacer() }.padding().navigationTitle(selected.rawValue).toolbar{Button("Скасувати"){preview=nil}} } }
+        }.navigationTitle("Студія дизайну").sheet(item:$preview) { selected in NavigationStack { VStack(spacing:18) { FinamiDesignPreview(design:selected); Text(selected.description).foregroundStyle(.secondary); Button("Застосувати дизайн") { s.changeAppearance { p in p.design=selected.rawValue;p.theme="Preset";p.mode="preset";p.font="preset" };preview=nil }.buttonStyle(.borderedProminent);Spacer() }.padding().navigationTitle(selected.rawValue).toolbar{Button("Скасувати"){preview=nil}} } }
     }
 }
 enum OperationSort: String, CaseIterable {
@@ -270,7 +270,7 @@ struct DashboardSettings: View {
                     }
                 }.onMove { from, to in s.change { d in var all = DashboardItem.merged(d.dashboard); all.move(fromOffsets: from, toOffset: to); d.dashboard = all } }
             }
-            Section("Назва вкладки") { Picker("Назва", selection: Binding(get: { s.db.preferences?.homeTitle ?? "Головна" }, set: { v in s.change { d in var p=d.preferences ?? .init();p.homeTitle=v;d.preferences=p } })) { ForEach(["Головна","Огляд","Мої фінанси","Гаманець"],id:\.self){Text($0).tag($0)} } }
+            Section("Назва вкладки") { Picker("Назва", selection: Binding(get: { s.db.preferences?.homeTitle ?? "Головна" }, set: { v in s.changeAppearance { p in p.homeTitle=v } })) { ForEach(["Головна","Огляд","Мої фінанси","Гаманець"],id:\.self){Text($0).tag($0)} } }
             Button("Повернути стандартні блоки") { s.change { $0.dashboard = DashboardItem.defaults } }
         }.navigationTitle("Блоки головної").toolbar { EditButton() }
     }
@@ -305,7 +305,7 @@ struct CustomDashboard: View {
                 }
             }.padding()
         }.background(Color(uiColor: .systemGroupedBackground)).navigationTitle(s.db.preferences?.homeTitle ?? "Головна")
-            .toolbar { Button { s.change { d in var p=d.preferences ?? .init();p.hideAmounts = !(p.hideAmounts ?? false);d.preferences=p } } label: { Image(systemName:s.privateAmounts ? "eye.slash" : "eye") }.accessibilityLabel("Приховати або показати суми"); Button { reorder = true } label: { Image(systemName: "arrow.up.arrow.down") }.accessibilityLabel("Змінити порядок блоків"); Button { configure = true } label: { Image(systemName: "slider.horizontal.3").font(.title2) }.accessibilityLabel("Налаштувати блоки") }
+            .toolbar { Button { s.changeAppearance { p in p.hideAmounts = !(p.hideAmounts ?? false) } } label: { Image(systemName:s.privateAmounts ? "eye.slash" : "eye") }.accessibilityLabel("Приховати або показати суми"); Button { reorder = true } label: { Image(systemName: "arrow.up.arrow.down") }.accessibilityLabel("Змінити порядок блоків"); Button { configure = true } label: { Image(systemName: "slider.horizontal.3").font(.title2) }.accessibilityLabel("Налаштувати блоки") }
             .safeAreaInset(edge: .bottom) {
                 HStack { Button { add = true } label: { Label("Додати операцію", systemImage: "plus.circle.fill").font(.headline).frame(maxWidth: .infinity).padding(.vertical, 5) }.buttonStyle(.borderedProminent); Button { voice=true } label:{Image(systemName:"mic.fill").frame(minWidth:44,minHeight:34)}.buttonStyle(.bordered).accessibilityLabel("Голосовий запис"); Button { scan = true } label: { Image(systemName: "doc.viewfinder").frame(minWidth:44,minHeight:34) }.buttonStyle(.bordered).accessibilityLabel("Імпорт зі скриншота") }.padding(.horizontal).padding(.vertical,7).background(Color(uiColor:.systemGroupedBackground))
             }.sheet(isPresented: $add) { OpEditor(original: Operation(category: "Без категорії", account: s.db.accounts.first?.id ?? cash)) }
@@ -649,7 +649,7 @@ struct SnapshotView: View {
     @State private var selected: URL?; @State private var confirm = false
     var body: some View {
         List {
-            Text("До 12 попередніх версій бази зберігаються на телефоні перед змінами. Вони не захищають від видалення застосунку. Для цього експортуй JSON у «Файли».").font(.caption)
+            Text("До 12 попередніх версій фінансової бази зберігаються перед фінансовими змінами. Оформлення зберігається окремо до наступного запису бази. Вони не захищають від видалення застосунку. Для цього експортуй JSON у «Файли».").font(.caption)
             ForEach(s.snapshotURLs(), id: \.self) { u in
                 Button { selected = u; confirm = true } label: { Text((u.resourceValuesDate ?? Date.distantPast).formatted(date:.abbreviated,time:.standard)) }
             }

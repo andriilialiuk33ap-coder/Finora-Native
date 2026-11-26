@@ -86,7 +86,7 @@ struct Account: Codable, Identifiable {
   var limit: Int64 { isCredit ? max(0,creditLimit ?? 0) : 0 }
   var typeName: String { isCredit ? "Кредитна картка" : accountType == "debit" ? "Дебетова картка" : id == cash || accountType == "cash" ? "Готівка" : "Інший рахунок" }
 }
-struct Operation: Codable, Identifiable {
+struct Operation: Codable, Identifiable, Equatable {
   var id = UUID().uuidString
   var kind: Kind = .expense
   var amount: Int64 = 0
@@ -96,6 +96,7 @@ struct Operation: Codable, Identifiable {
   var account = cash
   var destination = ""
   var bankKey: String? = nil
+  var destinationBankKey: String? = nil
   var sourceBank: String? = nil
   var originalAmount: Int64? = nil
   var originalCurrency: String? = nil
@@ -119,6 +120,23 @@ struct Operation: Codable, Identifiable {
   }
   var expenseValue: Int64 { kind == .expense ? amount : kind == .refund ? -amount : neutralFee }
   var expenseGroup: String { kind == .expense || kind == .refund ? category : "🏦 Комісії" }
+}
+// Derived, in-memory ledger index. Never persisted or used as a source of truth.
+struct FinamiLedgerIndex {
+  private var deltas: [String: Int64] = [:]
+  private var histories: [String: [Operation]] = [:]
+  init(operations: [Operation]) {
+    for o in operations {
+      if o.kind == .transfer {
+        deltas[o.account, default: 0] -= o.sourceMinor ?? o.amount
+        deltas[o.destination, default: 0] += o.destinationMinor ?? o.amount
+        if o.destination != o.account { histories[o.destination, default: []].append(o) }
+      } else { deltas[o.account, default: 0] += o.signedNative }
+      histories[o.account, default: []].append(o)
+    }
+  }
+  func balance(_ a: Account) -> Int64 { a.opening + (deltas[a.id] ?? 0) }
+  func history(_ id: String) -> [Operation] { histories[id] ?? [] }
 }
 // Native currency amounts, matching the existing ledger convention. Transfers
 // appear in activity but never inflate income or spending.
@@ -182,6 +200,17 @@ struct Obligation: Codable, Identifiable {
   var importedSchedule: [FinamiScheduleRow]? = nil
   var remaining: Int64 { max(0, target - paid) }
 }
+// Optional history keeps older Finora.json files compatible.
+struct FinamiPaidRecord: Codable, Identifiable {
+  var id = UUID().uuidString
+  var paymentID: String
+  var scheduledDate: Date
+  var paidDate: Date
+  var amount: Int64
+  var currency: String
+  var accountID: String?
+  var operationID: String?
+}
 struct Database: Codable {
   var accounts = [Account(id: cash, name: "Готівка")]
   var operations: [Operation] = []
@@ -192,6 +221,7 @@ struct Database: Codable {
   var limits: [String: Int64] = [:]
   var dashboard: [DashboardItem]? = nil
   var preferences: AppearancePreferences? = nil
+  var appearanceRevision: String? = nil
   var subscriptions: [SubscriptionRecord]? = nil
   var reminders: [PersonalReminder]? = nil
   var forecast: ForecastPreferences? = nil
@@ -205,6 +235,7 @@ struct Database: Codable {
   var hiddenIncomeCategories: [String]? = nil
   var categoryParents: [String: String]? = nil
   var paymentPhotos: [String: Data]? = nil
+  var paidRecords: [FinamiPaidRecord]? = nil
   var scanImages: [String: Data]? = nil
 }
 struct Legacy: Decodable {
@@ -230,7 +261,46 @@ struct DataFile: FileDocument {
   }
 }
 @MainActor final class Store: ObservableObject {
-  @Published private(set) var db = Database()
+  @Published private(set) var db = Database() {
+    didSet {
+      mutationVersion &+= 1
+      if oldValue.operations != db.operations { ledgerIndex = nil; reportCache.removeAll(); activityCache.removeAll(); historyCache.removeAll() }
+      if oldValue.accounts.map(\.id) != db.accounts.map(\.id) || oldValue.accounts.map(\.name) != db.accounts.map(\.name) { historyCache.removeAll() }
+    }
+  }
+  private var mutationVersion: UInt64 = 0
+  private var ledgerIndex: FinamiLedgerIndex?
+  private struct ActivityKey: Hashable { let account: String; let currency: String; let month: Date }
+  private var activityCache: [ActivityKey: AccountActivity] = [:]
+  private var historyCache: [FinamiHistoryQuery: [Operation]] = [:]
+  func queryHistory(_ query: FinamiHistoryQuery) -> [Operation] {
+    if let cached = historyCache[query] { return cached }
+    let source = query.account == "all" ? db.operations : historyForAccount(query.account)
+    let names = Dictionary(db.accounts.map{($0.id,$0.name)},uniquingKeysWith:{first,_ in first})
+    let results = query.apply(to:source, names:names)
+    if historyCache.count >= 4 { historyCache.removeAll(keepingCapacity:true) }
+    historyCache[query] = results
+    return results
+  }
+  private var reportCache = FinamiReportCache()
+  private var indexedLedger: FinamiLedgerIndex {
+    if let ledgerIndex { return ledgerIndex }
+    let index = FinamiLedgerIndex(operations: db.operations)
+    ledgerIndex = index
+    return index
+  }
+  func historyForAccount(_ id: String) -> [Operation] { indexedLedger.history(id) }
+  func accountActivity(_ account: Account, month: Date) -> AccountActivity {
+    let key = ActivityKey(account:account.id,currency:account.code,month:Calendar.current.dateInterval(of:.month,for:month)?.start ?? month)
+    if let cached = activityCache[key] { return cached }
+    let result = AccountActivity(account: account, operations: indexedLedger.history(account.id), month: month)
+    if activityCache.count >= 64 { activityCache.removeAll(keepingCapacity:true) }
+    activityCache[key] = result
+    return result
+  }
+  func reportSnapshot(date: Date, annual: Bool, account: String?) -> FinamiReportSnapshot {
+    reportCache.snapshot(operations: db.operations, date: date, annual: annual, account: account)
+  }
   @Published var error: String? = nil
   @Published var capturePending: [CapturedPayment] = []
   @Published var captureWarning: String? = nil
@@ -244,38 +314,52 @@ struct DataFile: FileDocument {
     #endif
     return folder.appendingPathComponent("Finora.json")
   }()
-  init() {
+  private var appearanceURL: URL { url.deletingLastPathComponent().appendingPathComponent("FinamiAppearance.json") }
+  @Published private(set) var loading = true
+  private var loadingStarted = false
+  // Keep the first frame responsive and never show or mutate an empty ledger while the real database is loading.
+  func loadDatabase() async {
+    guard loading, !loadingStarted else { return }
+    loadingStarted = true; ready = false
+    let file = url, settingsFile = appearanceURL
     do {
-      #if DEBUG && targetEnvironment(simulator)
-      if ProcessInfo.processInfo.arguments.contains("--finami-qa"), ProcessInfo.processInfo.arguments.contains("--finami-qa-reset"), FileManager.default.fileExists(atPath: url.path) {
-        try FileManager.default.removeItem(at: url)
-      }
-      #endif
-      try FileManager.default.createDirectory(
-        at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-      if FileManager.default.fileExists(atPath: url.path) {
-        db = try JSONDecoder().decode(Database.self, from: Data(contentsOf: url))
-      }
-      #if DEBUG && targetEnvironment(simulator)
-      if ProcessInfo.processInfo.arguments.contains("--finami-qa"),
-         ProcessInfo.processInfo.arguments.contains("--finami-qa-reports-fixture"),
-         !FileManager.default.fileExists(atPath: url.path) {
-        db.accounts.append(Account(id: "qa-pumb", name: "QA Pumb"))
-        db.accounts.append(Account(id: "qa-otp", name: "QA OTP"))
-        db.operations = [Operation(kind: .expense, amount: 30000, account: "qa-pumb"),
-                         Operation(kind: .income, amount: 100000, account: "qa-pumb"),
-                         Operation(kind: .expense, amount: 10000, account: "qa-otp"),
-                         Operation(kind: .income, amount: 20000, account: "qa-otp")]
-        var p = AppearancePreferences()
-        p.reportsShowComparison = false; p.reportsShowCategories = false; p.reportsShowChart = false
-        db.preferences = p
-      }
-      #endif
-    } catch {
-      ready = false
-      self.error =
-        "База не читається. Запис заблоковано, щоб не втратити дані. \(error.localizedDescription)"
-    }
+      let result = try await Task.detached(priority:.userInitiated) { () throws -> (Database, String?) in
+        let manager = FileManager.default
+        #if DEBUG && targetEnvironment(simulator)
+        if ProcessInfo.processInfo.arguments.contains("--finami-qa"), ProcessInfo.processInfo.arguments.contains("--finami-qa-reset") {
+          if manager.fileExists(atPath:file.path) { try manager.removeItem(at:file) }
+          try? manager.removeItem(at:settingsFile)
+        }
+        #endif
+        try manager.createDirectory(at:file.deletingLastPathComponent(),withIntermediateDirectories:true)
+        var loaded = Database()
+        var warning: String?
+        if manager.fileExists(atPath:file.path) {
+          loaded = try JSONDecoder().decode(Database.self,from:Data(contentsOf:file,options:.mappedIfSafe))
+          if loaded.appearanceRevision != nil, manager.fileExists(atPath:settingsFile.path) {
+            do { loaded.preferences = try FinamiAppearanceSidecar<AppearancePreferences>.resolve(base:loaded.preferences,revision:loaded.appearanceRevision,data:Data(contentsOf:settingsFile)) }
+            catch { warning = "Налаштування оформлення не читаються. Фінансові дані збережено." }
+          }
+        }
+        #if DEBUG && targetEnvironment(simulator)
+        if ProcessInfo.processInfo.arguments.contains("--finami-qa"), !manager.fileExists(atPath:file.path) {
+          if ProcessInfo.processInfo.arguments.contains("--finami-qa-reports-fixture") {
+            loaded.accounts.append(Account(id:"qa-pumb",name:"QA Pumb"))
+            loaded.accounts.append(Account(id:"qa-otp",name:"QA OTP"))
+            loaded.operations = [Operation(kind:.expense,amount:30000,account:"qa-pumb"),Operation(kind:.income,amount:100000,account:"qa-pumb"),Operation(kind:.expense,amount:10000,account:"qa-otp"),Operation(kind:.income,amount:20000,account:"qa-otp")]
+            var p = AppearancePreferences(); p.reportsShowComparison=false; p.reportsShowCategories=false; p.reportsShowChart=false; loaded.preferences=p
+          }
+          if ProcessInfo.processInfo.arguments.contains("--finami-qa-payment-fixture") {
+            loaded.accounts.append(Account(id:"qa-card",name:"QA Card",opening:100000))
+            loaded.obligations.append(Obligation(id:"qa-loan",kind:.installment,name:"QA installment",target:30000,paid:10000,monthly:10000,due:Date().addingTimeInterval(-86400)))
+          }
+        }
+        #endif
+        return (loaded,warning)
+      }.value
+      db = result.0; error = result.1; ready = true
+    } catch { error = "База не читається. Запис заблоковано, щоб не втратити дані. " + error.localizedDescription }
+    loading = false
   }
   @discardableResult func change(_ update: (inout Database) -> Void) -> Bool {
     guard ready else {
@@ -299,42 +383,68 @@ struct DataFile: FileDocument {
     }
     return saved
   }
+  @discardableResult func changeAppearance(_ update: (inout AppearancePreferences) -> Void) -> Bool {
+    guard ready else { error = "Запис заблоковано. Віднови базу з копії."; return false }
+    var prefs = db.preferences ?? .init(); update(&prefs)
+    guard let revision = db.appearanceRevision, FileManager.default.fileExists(atPath:url.path) else {
+      var copy = db; copy.preferences = prefs; return write(copy)
+    }
+    do {
+      let data = try JSONEncoder().encode(FinamiAppearanceSidecar(revision:revision,preferences:prefs))
+      try data.write(to:appearanceURL,options:[.atomic,.completeFileProtectionUntilFirstUserAuthentication])
+      db.preferences = prefs
+      return true
+    } catch { self.error = "Не вдалося зберегти налаштування: " + error.localizedDescription; return false }
+  }
+  // Heavy statement imports encode a snapshot off the UI thread. The live
+  // version must be unchanged before committing, so no edit can be overwritten.
+  var databaseVersion: UInt64 { mutationVersion }
+  func replaceOperationsForImport(_ operations: [Operation], expectedVersion: UInt64) async -> Bool {
+    guard expectedVersion == mutationVersion else { error = "Дані змінилися. Повтори перевірку виписки."; return false }
+    guard ready else { error = "Запис заблоковано."; return false }
+    let version = mutationVersion
+    var copy = db; copy.operations = operations; copy.appearanceRevision = UUID().uuidString
+    let candidate = copy
+    do {
+      let data = try await Task.detached(priority:.userInitiated) { try JSONEncoder().encode(candidate) }.value
+      guard version == mutationVersion, ready else { error = "Дані змінилися під час імпорту. Повтори перевірку виписки."; return false }
+      return commit(candidate, data:data)
+    } catch { self.error = "Не вдалося підготувати імпорт: " + error.localizedDescription; return false }
+  }
   private func write(_ copy: Database) -> Bool {
     do {
-      let data = try JSONEncoder().encode(copy)
+      var candidate = copy; candidate.appearanceRevision = UUID().uuidString
+      return commit(candidate,data:try JSONEncoder().encode(candidate))
+    } catch { self.error = "Не вдалося зберегти: " + error.localizedDescription; return false }
+  }
+  private func commit(_ copy: Database, data: Data) -> Bool {
+    do {
       // Keep previous local snapshots before replacing the live database.
       if FileManager.default.fileExists(atPath: url.path) && ready {
         let folder = url.deletingLastPathComponent().appendingPathComponent("IzanamiSnapshots", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let snapshot = folder.appendingPathComponent(UUID().uuidString + ".json")
-        let previous = try Data(contentsOf: url)
-        try previous.write(to: snapshot, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        try FileManager.default.copyItem(at: url, to: snapshot)
+        try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication, .creationDate: Date()], ofItemAtPath: snapshot.path)
         let files = snapshotURLs()
         for old in files.dropFirst(12) { try? FileManager.default.removeItem(at: old) }
       }
-      try data.write(
-        to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+      try data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
       db = copy
       ready = true
+      // The new revision is in the main database; older sidecar is harmless even if removal fails.
+      try? FileManager.default.removeItem(at:appearanceURL)
       return true
-    } catch {
-      self.error = "Не вдалося зберегти: \(error.localizedDescription)"
-      return false
-    }
+    } catch { self.error = "Не вдалося зберегти: \(error.localizedDescription)"; return false }
   }
   func totals(_ operations: [Operation], _ kind: Kind) -> Int64 {
     if kind == .expense {return operations.reduce(0) { $0 + $1.expenseValue }}
-    return operations.filter { $0.kind == kind }.reduce(0) { $0 + $1.amount }
+    return operations.reduce(0) { $0 + ($1.kind == kind ? $1.amount : 0) }
   }
   func month(_ date: Date) -> [Operation] { db.operations.filter { sameMonth($0.date, date) } }
   var currentRate: Decimal? { fxRate(db.currencyPreferences?.usdRate ?? "") }
   func nativeBalance(_ a: Account) -> Int64 {
-    db.operations.reduce(a.opening) { n, o in
-      if o.kind == .transfer {
-        return n - (o.account == a.id ? (o.sourceMinor ?? o.amount) : 0) + (o.destination == a.id ? (o.destinationMinor ?? o.amount) : 0)
-      }
-      return n + (o.account == a.id ? o.signedNative : 0)
-    }
+    indexedLedger.balance(a)
   }
   func ownFunds(_ a: Account) -> Int64 { CardPosition(net:nativeBalance(a),limit:a.limit).own }
   func debt(_ a: Account) -> Int64 { CardPosition(net:nativeBalance(a),limit:a.limit).used }
@@ -459,7 +569,14 @@ struct DataFile: FileDocument {
   @UIApplicationDelegateAdaptor(FinamiNotificationDelegate.self) private var notifications
   @StateObject private var store = Store()
   init() { FinamiShortcuts.updateAppShortcutParameters() }
-  var body: some Scene { WindowGroup { IzanamiShell().environmentObject(store) } }
+  var body: some Scene {
+    WindowGroup {
+      Group {
+        if store.loading { VStack(spacing:16) { Image(systemName:"wallet.pass.fill").font(.system(size:48)).foregroundStyle(finoraAccent); Text("Finami").font(.largeTitle.bold()); ProgressView("Завантаження фінансів…") }.frame(maxWidth:.infinity,maxHeight:.infinity).task { await store.loadDatabase() } }
+        else { IzanamiShell().environmentObject(store) }
+      }
+    }
+  }
 }
 struct Root: View {
   @EnvironmentObject var store: Store
@@ -491,7 +608,7 @@ struct Root: View {
           guard phase == .active else {return}
           while !Task.isCancelled {
             store.refreshCaptures()
-            do {try await Task.sleep(nanoseconds: 3_000_000_000)} catch {break}
+            do {try await Task.sleep(nanoseconds: store.capturePending.isEmpty ? 6_000_000_000 : 3_000_000_000)} catch {break}
           }
         }
       }
@@ -633,226 +750,6 @@ struct Breakdown: View {
     }
   }
 }
-struct OperationRow: View {
-  @EnvironmentObject var s: Store
-  @Environment(\.finamiMask) private var masked
-  var o: Operation
-  var body: some View {
-    HStack {
-      FinamiIconTile(icon: finamiOperationIcon(o), tint: o.kind == .income ? .green : o.kind == .expense ? .orange : .blue, side: 42)
-      VStack(alignment: .leading) {
-        Text(o.note.isEmpty ? (o.kind == .transfer ? "Переказ" : o.category) : o.note).font(
-          .subheadline.bold())
-        Text("\(o.kind.title) · \(s.accountName(o.account)) · \(o.date.formatted(.dateTime.day().month(.abbreviated).year().locale(Locale(identifier: "uk_UA"))))")
-          .font(.caption).foregroundStyle(.secondary)
-      }
-      Spacer()
-      VStack(alignment:.trailing) {
-        Text((s.privateAmounts || masked) ? "••••" : (o.kind == .transfer ? "" : o.kind.incoming ? "+" : "−") + money(o.amount)).font(.subheadline.bold()).foregroundStyle(o.kind == .income ? Color.green : Color.primary)
-        if let n=o.originalAmount, let code=o.originalCurrency, code != "UAH" { Text(masked ? "••••" : s.visibleMoney(n,code)).font(.caption).foregroundStyle(.secondary) }
-      }
-    }
-  }
-}
-struct Operations: View {
-  @EnvironmentObject var s: Store
-  @State private var search = ""
-  @State private var edit: Operation?
-  @State private var operationSettings = false
-  var filter: String { s.db.preferences?.operationsFilter ?? "all" }
-  var sort: OperationSort { OperationSort(rawValue:s.db.preferences?.operationsSort ?? "") ?? .newest }
-  var filterBinding:Binding<String>{Binding(get:{filter},set:{v in s.change{d in var p=d.preferences ?? .init();p.operationsFilter=v;d.preferences=p}})}
-  var sortBinding:Binding<OperationSort>{Binding(get:{sort},set:{v in s.change{d in var p=d.preferences ?? .init();p.operationsSort=v.rawValue;d.preferences=p}})}
-  @State private var voice = false
-  @State private var scan = false
-  @State private var accountFilter = "all"
-  @State private var categoryFilter = "all"
-  var filtered: [Operation] {
-    s.db.operations.filter { o in
-      (filter == "all" || o.kind.rawValue == filter) &&
-      (accountFilter == "all" || o.account == accountFilter || (o.kind == .transfer && o.destination == accountFilter)) &&
-      (categoryFilter == "all" || o.category == categoryFilter) &&
-      (search.isEmpty || (o.note + " " + o.category + " " + (s.privateAmounts ? "" : amountText(o.amount)) + " " + s.accountName(o.account)).localizedCaseInsensitiveContains(search))
-    }.sorted { sort.orders($0, $1) }
-  }
-  var chronological: Bool { sort == .newest || sort == .oldest }
-
-  func action(_ kind: Kind, _ title: String, _ icon: String, _ tint: Color) -> some View {
-    Button { edit = Operation(kind: kind, account: s.db.accounts.first?.id ?? cash) } label: {
-      VStack(spacing: 6) { FinamiIconTile(icon: icon, tint: tint, side: 40); Text(title).font(.caption.weight(.medium)) }.frame(maxWidth: .infinity).padding(.vertical, 6)
-    }.buttonStyle(.plain)
-  }
-  func operationList(_ values: [Operation]) -> some View {
-    VStack(spacing: 0) {
-      ForEach(values) { o in
-        Button { edit = o } label: { OperationRow(o: o).padding(.vertical, 12).padding(.horizontal, 12).contentShape(Rectangle()) }.buttonStyle(.plain)
-        if o.id != values.last?.id { Divider().padding(.leading, 62) }
-      }
-    }.background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 18))
-  }
-  var body: some View {
-    let values = filtered
-    let grouped = Dictionary(grouping: values) { Calendar.current.startOfDay(for: $0.date) }
-    let days = grouped.keys.sorted { sort == .oldest ? $0 < $1 : $0 > $1 }
-    ScrollView {
-      LazyVStack(alignment: .leading, spacing: 16) {
-        VStack(alignment: .leading, spacing: 12) {
-          FinamiSectionTitle(title: "Журнал операцій", subtitle: "\(values.count) записів за вибраними фільтрами", icon: "list.bullet.rectangle.portrait", tint: .teal)
-          HStack { action(.expense,"Витрата","minus",.orange); action(.income,"Дохід","plus",.green); action(.transfer,"Переказ","arrow.left.arrow.right",.blue) }
-          HStack {
-            Button { voice = true } label: { Label("Голос", systemImage: "mic.fill").frame(maxWidth: .infinity).padding(.vertical, 5) }.buttonStyle(.bordered)
-            Button { scan = true } label: { Label("Скриншот", systemImage: "doc.viewfinder").frame(maxWidth: .infinity).padding(.vertical, 5) }.buttonStyle(.bordered)
-          }
-        }.padding(16).modifier(FinamiCardStyle(tint: .teal))
-        HStack {
-          Picker("Тип", selection: filterBinding) { Text("Усі типи").tag("all"); ForEach(Kind.allCases) { Text($0.title).tag($0.rawValue) } }.pickerStyle(.menu)
-          Spacer(minLength: 0)
-          Button { operationSettings = true } label: { Label("Фільтри", systemImage: "line.3.horizontal.decrease.circle") }.buttonStyle(.bordered)
-        }
-        if values.isEmpty { FinamiEmptyCard(title: "Немає операцій", detail: "Додай запис або зміни фільтри пошуку.", icon: "tray") }
-        else if chronological {
-          ForEach(days, id: \.self) { day in
-            VStack(alignment: .leading, spacing: 8) {
-              Text(day.formatted(.dateTime.day().month(.wide).year().locale(Locale(identifier: "uk_UA")))).font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
-              operationList(grouped[day] ?? [])
-            }
-          }
-        } else { operationList(values) }
-      }.padding()
-    }.background(Color(uiColor: .systemGroupedBackground)).searchable(text: $search, prompt: "Магазин, категорія, сума").navigationTitle("Операції")
-      .toolbar {
-        Button { operationSettings = true } label: { Image(systemName: "slider.horizontal.3") }.accessibilityLabel("Налаштування операцій")
-        Button { edit = Operation(account: s.db.accounts.first?.id ?? cash) } label: { Image(systemName: "plus.circle.fill") }.accessibilityLabel("Додати операцію")
-      }.sheet(item: $edit) { OpEditor(original: $0) }
-      .sheet(isPresented: $voice) { FinamiVoice() }
-      .sheet(isPresented: $scan) { NavigationStack { FinamiScanView().toolbar { ToolbarItem(placement: .cancellationAction) { Button("Закрити") { scan = false } } } } }
-      .sheet(isPresented: $operationSettings) {
-        NavigationStack { Form {
-          Picker("Тип", selection: filterBinding) { Text("Усі").tag("all"); ForEach(Kind.allCases) { Text($0.title).tag($0.rawValue) } }
-          Picker("Рахунок", selection: $accountFilter) { Text("Усі").tag("all"); ForEach(s.db.accounts) { Text($0.name).tag($0.id) } }
-          Picker("Категорія", selection: $categoryFilter) { Text("Усі").tag("all"); ForEach(Array(Set(s.db.operations.map(\.category))).sorted(), id: \.self) { Text($0).tag($0) } }
-          Picker("Сортування", selection: sortBinding) { ForEach(OperationSort.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
-          Button("Скинути фільтри") { filterBinding.wrappedValue = "all"; sortBinding.wrappedValue = .newest; accountFilter = "all"; categoryFilter = "all"; search = "" }
-        }.navigationTitle("Фільтри операцій").toolbar { Button("Готово") { operationSettings = false } } }
-      }
-  }
-}
-struct OpEditor: View {
-  @EnvironmentObject var s: Store
-  @Environment(\.dismiss) var dismiss
-  @State var o: Operation
-  @State var amount: String
-  @State private var confirm = false
-  @State private var learnRule = false
-  @State private var entryCurrency = "UAH"
-  @State private var rate = ""
-  init(original: Operation) {
-    _o = State(initialValue: original)
-    let input = original.entryCurrency == "USD" ? (original.originalAmount ?? original.sourceMinor ?? original.amount) : original.amount
-    _amount = State(initialValue: input == 0 ? "" : amountText(input))
-    _entryCurrency = State(initialValue: original.entryCurrency ?? "UAH")
-    _rate = State(initialValue: original.exchangeRate ?? "")
-  }
-  var categories: [String] { let list = o.kind == .income ? s.db.incomeCategories : s.db.expenseCategories; let hidden = o.kind == .income ? (s.db.hiddenIncomeCategories ?? []) : (s.db.hiddenExpenseCategories ?? []); let available = list.filter { !hidden.contains($0) || $0 == o.category }; return Array(Set(available + ["Без категорії",o.category])).sorted() }
-  var allowedKinds: [Kind] {
-    if o.sourceBank != nil && o.kind != .transfer {return Kind.allCases.filter{$0 != .transfer && $0.incoming == o.kind.incoming}}
-    return Kind.allCases
-  }
-  var sourceCode:String { s.db.accounts.first(where:{$0.id==o.account})?.code ?? "UAH" }
-  var destinationCode:String { s.db.accounts.first(where:{$0.id==o.destination})?.code ?? "UAH" }
-  var requiresRate:Bool { entryCurrency == "USD" || (o.kind == .transfer && destinationCode == "USD") }
-  var usedRate:Decimal? {fxRate(rate)}
-  var converted:Int64? {
-    guard let n=bankMinor(amount), n>0 else{return nil}
-    if entryCurrency == "USD" {guard let r=usedRate else{return nil};return fxMinor(n,rate:r)}
-    return n
-  }
-  var received:Int64? {
-    guard let uah=converted else{return nil}
-    if destinationCode == "USD" {if sourceCode == "USD" {return bankMinor(amount)};guard let r=usedRate else{return nil};return fxMinor(uah,rate:r,divide:true)}
-    return uah
-  }
-  var valid: Bool {
-    (converted ?? 0)>0 && s.db.accounts.contains { $0.id == o.account } && (!requiresRate || usedRate != nil)
-      && (sourceCode != "USD" || entryCurrency == "USD")
-      && (o.kind != .transfer || (o.account != o.destination && s.db.accounts.contains { $0.id == o.destination } && (received ?? 0)>0 && entryCurrency == sourceCode))
-  }
-  var body: some View {
-    NavigationStack {
-      Form {
-        Picker("Тип", selection: $o.kind) { ForEach(allowedKinds) { Text($0.title).tag($0) } }
-          .pickerStyle(.menu)
-        if o.kind.needsReview { Text("Не входить у доходи чи витрати до уточнення. Баланс враховує рух коштів.").font(.caption) }
-        FinamiField("Сума, \(entryCurrency)", text: $amount, keyboard: .decimalPad)
-        if o.kind != .transfer && sourceCode == "UAH" && o.sourceBank == nil {
-          Picker("Валюта введення",selection:$entryCurrency){Text("Гривня").tag("UAH");Text("Долар").tag("USD")}
-        }
-        if requiresRate { FinamiField("Курс UAH за 1 USD", text: $rate, keyboard: .decimalPad); if let n=converted { LabeledContent("Сума у гривнях",value:money(n)) } }
-        DatePicker("Дата і час", selection: $o.date, displayedComponents: [.date,.hourAndMinute])
-        Picker("Рахунок", selection: $o.account) {
-          ForEach(s.db.accounts.filter{o.sourceBank == nil || $0.code == "UAH"}) { Text($0.name).tag($0.id) }
-        }
-        if o.kind == .transfer {
-          Picker("Куди", selection: $o.destination) {
-            Text("Вибрати").tag("")
-            ForEach(s.db.accounts) { Text($0.name).tag($0.id) }
-          }
-          if let n=received, !o.destination.isEmpty { LabeledContent("Зарахувати",value:currencyMoney(n,destinationCode)) }
-        } else if o.kind.isReportCategory {
-          Picker("Категорія", selection: $o.category) {
-            ForEach(categories, id: \.self) { Text($0).tag($0) }
-          }
-        }
-        TextField("Магазин / примітка / теги", text: $o.note)
-        if let bank = o.sourceBank { LabeledContent("Джерело", value: bank) }
-        if let capture = o.captureSource { LabeledContent("Джерело запису", value: capture) }
-        if let imageID = o.scanImageID { NavigationLink("Вкладений скриншот") { FinamiScanAttachment(imageID: imageID) } }
-        if let n = o.originalAmount, let c = o.originalCurrency { LabeledContent("Оригінальна сума", value: currencyMoney(n,c)) }
-        if let fee = o.bankFee, fee > 0 { LabeledContent("Комісія у виписці", value: money(fee)) }
-        if o.kind == .expense || o.kind == .income {
-          Button("Визначити категорію") { o.category = suggestedCategory(o.note, kind: o.kind, database: s.db) }
-          Toggle("Запам’ятати категорію для цього продавця", isOn: $learnRule)
-        }
-        if s.db.operations.contains(where: { $0.id == o.id }) {
-          Button("Видалити операцію", role: .destructive) { confirm = true }
-        }
-      }.navigationTitle("Операція").navigationBarTitleDisplayMode(.inline).toolbar {
-        ToolbarItem(placement: .cancellationAction) { Button("Скасувати") { dismiss() } }
-        ToolbarItem(placement: .confirmationAction) {
-          Button("Зберегти") {
-            guard let n=converted, let entered=bankMinor(amount), valid else {return}
-            o.amount=n
-            if o.sourceBank != nil {o.classificationReviewed=true}
-            if !o.kind.isReportCategory {o.category="Без категорії"}
-            o.sourceMinor=sourceCode == "USD" ? entered : n
-            o.destinationMinor=o.kind == .transfer ? received : nil
-            o.entryCurrency=entryCurrency
-            o.exchangeRate=requiresRate ? rate : nil
-            if o.sourceBank == nil {o.originalAmount=entered;o.originalCurrency=entryCurrency}
-            if s.change({ d in
-              d.operations.removeAll { $0.id == o.id }
-              d.operations.append(o)
-              if learnRule && (o.kind == .expense || o.kind == .income) && !o.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                var rules = d.merchantRules ?? [:]; rules[ruleKey(o.note, kind: o.kind)] = o.category; d.merchantRules = rules
-              }
-            }) {
-              dismiss()
-            }
-          }.disabled(!valid)
-        }
-      }.onAppear {if sourceCode == "USD" {entryCurrency="USD"};if rate.isEmpty {rate=s.db.currencyPreferences?.usdRate ?? ""}}
-      .onChange(of:o.account) { _ in entryCurrency=sourceCode }
-      .onChange(of: o.kind) { _ in
-        if o.kind == .transfer {entryCurrency=sourceCode}
-        if !categories.contains(o.category) { o.category = categories.first ?? "Інше" }
-      }.confirmationDialog("Видалити запис?", isPresented: $confirm, titleVisibility: .visible) {
-        Button("Видалити", role: .destructive) {
-          if s.change({ $0.operations.removeAll { $0.id == o.id } }) { dismiss() }
-        }
-      }
-    }
-  }
-}
 struct Accounts: View {
   @EnvironmentObject var s: Store
   @State private var edit: Account?
@@ -861,7 +758,7 @@ struct Accounts: View {
   @Environment(\.dynamicTypeSize) private var dynamicTypeSize
   var prefs: AppearancePreferences { s.db.preferences ?? .init() }
   var mode: String { prefs.accountsMode ?? "own" }
-  func update(_ action:(inout AppearancePreferences)->Void) { s.change { d in var p=d.preferences ?? .init();action(&p);d.preferences=p } }
+  func update(_ action:(inout AppearancePreferences)->Void) { s.changeAppearance { p in action(&p) } }
   var shown:[Account] { s.db.accounts.filter { (prefs.accountsShowHidden == true || $0.hiddenInAccounts != true) && (mode == "all" || (mode == "credit" ? $0.isCredit : (!$0.isCredit || s.ownFunds($0)>0))) } }
   var body: some View {
     ScrollView { VStack(spacing: 14) {
@@ -892,7 +789,7 @@ struct Accounts: View {
 struct FinamiAccountSettings:View {
   @EnvironmentObject var s:Store
   @Environment(\.dismiss) var dismiss
-  func binding<T>(_ key:WritableKeyPath<AppearancePreferences,T?>,_ fallback:T)->Binding<T>{Binding(get:{(s.db.preferences ?? .init())[keyPath:key] ?? fallback},set:{v in s.change{d in var p=d.preferences ?? .init();p[keyPath:key]=v;d.preferences=p}})}
+  func binding<T>(_ key:WritableKeyPath<AppearancePreferences,T?>,_ fallback:T)->Binding<T>{Binding(get:{(s.db.preferences ?? .init())[keyPath:key] ?? fallback},set:{v in s.changeAppearance { p in p[keyPath:key]=v }})}
   var body:some View {Form {
     Section("Відображення") {Picker("Картки",selection:binding(\.accountsLayout,"split")){Text("Дві половини").tag("split");Text("Один спільний блок").tag("full")};Toggle("Показати приховані рахунки",isOn:binding(\.accountsShowHidden,false));Toggle("Приховати власний баланс",isOn:binding(\.accountsHideOwn,false));Toggle("Приховати кредитний баланс",isOn:binding(\.accountsHideCredit,false));Toggle("Приховати всі суми",isOn:binding(\.hideAmounts,false))}
     Section("Кредитні показники") {Toggle("Загальний ліміт",isOn:binding(\.accountsShowLimit,true));Toggle("Використано",isOn:binding(\.accountsShowUsed,true));Toggle("Доступно",isOn:binding(\.accountsShowAvailable,true))}
@@ -1108,10 +1005,10 @@ struct More: View {
         }
       }
       VStack(alignment: .leading) {
-        Text("Finami · 5.0 Preview 10.2\nБез реклами, серверів та платних API.").font(.footnote)
+        Text("Finami · 5.1.1 Performance & Quality\nБез реклами, серверів та платних API.").font(.footnote)
           .foregroundStyle(.secondary)
       }
-    }.padding() }.background(Color(uiColor: .systemGroupedBackground)).navigationTitle("Ще").toolbar{Button{menuSettings=true} label:{Image(systemName:"slider.horizontal.3")}.accessibilityLabel("Налаштування меню")}.sheet(isPresented:$menuSettings){NavigationStack{Form{Toggle("Компактні ілюстрації",isOn:Binding(get:{s.db.preferences?.menuCompact ?? false},set:{v in s.change{d in var p=d.preferences ?? .init();p.menuCompact=v;d.preferences=p}}));NavigationLink("Студія дизайну"){AppearanceView()};NavigationLink("Блоки головної"){DashboardSettings()};NavigationLink("Рахунки"){FinamiAccountSettings()}}.navigationTitle("Налаштування меню").toolbar{Button("Готово"){menuSettings=false}}}}
+    }.padding() }.background(Color(uiColor: .systemGroupedBackground)).navigationTitle("Ще").toolbar{Button{menuSettings=true} label:{Image(systemName:"slider.horizontal.3")}.accessibilityLabel("Налаштування меню")}.sheet(isPresented:$menuSettings){NavigationStack{Form{Toggle("Компактні ілюстрації",isOn:Binding(get:{s.db.preferences?.menuCompact ?? false},set:{v in s.changeAppearance { p in p.menuCompact=v }}));NavigationLink("Студія дизайну"){AppearanceView()};NavigationLink("Блоки головної"){DashboardSettings()};NavigationLink("Рахунки"){FinamiAccountSettings()}}.navigationTitle("Налаштування меню").toolbar{Button("Готово"){menuSettings=false}}}}
   }
 }
 struct Budgets: View {
@@ -1187,6 +1084,7 @@ struct BudgetRow: View {
 struct Obligations: View {
   @EnvironmentObject var s: Store
   var kind: ObligationKind
+  @State private var paymentDetails: FinamiPayment?
   @State private var edit: Obligation?
   var body: some View {
     List {
@@ -1197,7 +1095,8 @@ struct Obligations: View {
       }
       ForEach(s.db.obligations.filter { $0.kind == kind }) { o in
         Button {
-          edit = o
+          if let payment = s.upcomingPayments.first(where: { $0.id == o.id && !$0.subscription }) { paymentDetails = payment }
+          else { edit = o }
         } label: {
           VStack(alignment: .leading, spacing: 8) {
             HStack {
@@ -1219,6 +1118,7 @@ struct Obligations: View {
         Image(systemName: "plus")
       }
     }.sheet(item: $edit) { ObligationEditor(original: $0) }
+      .sheet(item: $paymentDetails) { FinamiPaymentDetails(payment: $0) }
   }
 }
 struct ObligationEditor: View {
@@ -1278,6 +1178,9 @@ struct ObligationEditor: View {
           if s.db.obligations.contains(where: { $0.id == o.id }) {
             NavigationLink("Нагадування") { ReminderEditor(original: PersonalReminder(title: o.name, date: o.due, linkedID: o.id)) }
           }
+        }
+        if !(s.db.paidRecords ?? []).filter({$0.paymentID == o.id}).isEmpty {
+          Section("Історія оплат") { ForEach((s.db.paidRecords ?? []).filter{$0.paymentID==o.id}.sorted{$0.paidDate>$1.paidDate}) { record in LabeledContent(record.paidDate.formatted(date:.abbreviated,time:.omitted) + " · " + (record.accountID.map{s.accountName($0)} ?? "Без списання"),value:s.visibleMoney(record.amount,record.currency)) } }
         }
         Section("Додати платіж або накопичення") {
           FinamiField("Сума", text: $payment, keyboard: .decimalPad)

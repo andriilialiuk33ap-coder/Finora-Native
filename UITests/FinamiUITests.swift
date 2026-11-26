@@ -7,9 +7,15 @@ final class FinamiUITests: XCTestCase {
         app = XCUIApplication()
         app.launchArguments = ["--finami-qa", "--finami-qa-reset"]
         app.launch()
+        visible(app.tabBars.buttons["Головна"])
     }
     private func visible(_ element: XCUIElement, file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertTrue(element.waitForExistence(timeout: 15), "Missing: \(element)", file: file, line: line)
+    }
+    private func awaitValue(_ element: XCUIElement, _ value: String, file: StaticString = #filePath, line: UInt = #line) {
+        let expected = NSPredicate(format: "exists == true AND value == %@", value)
+        let result = XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: expected, object: element)], timeout: 15)
+        XCTAssertEqual(result, .completed, "Expected \(value), got \(String(describing: element.value))", file: file, line: line)
     }
     private func capture(_ name: String) {
         let attachment = XCTAttachment(screenshot: app.screenshot()); attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
@@ -45,7 +51,7 @@ final class FinamiUITests: XCTestCase {
         visible(app.buttons["Приховати кредитний баланс"])
         app.buttons["Вигляд балансу"].tap(); app.buttons["Один спільний блок"].tap()
         visible(app.buttons["Показати власний баланс"]); capture("accountPrivacy")
-        app.terminate(); app.launchArguments = ["--finami-qa"]; app.launch(); app.tabBars.buttons["Рахунки"].tap()
+        app.terminate(); app.launchArguments = ["--finami-qa"]; app.launch(); visible(app.tabBars.buttons["Рахунки"]); app.tabBars.buttons["Рахунки"].tap()
         visible(app.buttons["Показати власний баланс"]); visible(app.buttons["Приховати кредитний баланс"])
     }
     func testRealVisionOCRPopulatesInstallmentFields() {
@@ -77,16 +83,21 @@ final class FinamiUITests: XCTestCase {
         for _ in 0..<12 { if diagnostics.exists && diagnostics.isHittable { break }; app.swipeUp() }
         visible(diagnostics); diagnostics.tap()
         visible(app.navigationBars["Діагностика"])
-        let test = app.buttons["Перевірити зараз"]
+        let test = app.buttons["qa.diagnostics.run"]
         for _ in 0..<12 { if test.exists && test.isHittable { break }; app.swipeUp() }
-        visible(test); test.tap(); visible(app.staticTexts["Тест пройдено"])
+        visible(test)
+        let status = app.staticTexts["qa.diagnostics.parser"]
+        visible(status); XCTAssertEqual(status.label, "Парсер: Не перевірено")
+        test.tap()
+        let result = XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == true AND label == %@", "Парсер: Тест пройдено"), object: status)], timeout: 15)
+        XCTAssertEqual(result, .completed, "Parser result: \(status.label)")
         capture("diagnostics")
     }
     func testAccountReportFieldsIndependentAndPersist() {
         app.terminate()
         app.launchArguments = ["--finami-qa", "--finami-qa-reset", "--finami-qa-reports-fixture"]
         app.launch()
-        app.tabBars.buttons["Звіти"].tap()
+        visible(app.tabBars.buttons["Звіти"]); app.tabBars.buttons["Звіти"].tap()
         func openSettings(_ account: String) {
             let button = app.buttons["qa.report.account.settings." + account]
             for _ in 0..<16 { if button.exists && button.isHittable { break }; app.swipeUp() }
@@ -95,20 +106,51 @@ final class FinamiUITests: XCTestCase {
         openSettings("qa-pumb")
         let compact = app.buttons["qa.report.fields.compact"]
         visible(compact); compact.tap()
-        let income = app.switches["qa.report.fields.toggle.income"]
-        visible(income); XCTAssertEqual(income.value as? String, "1")
-        income.tap(); XCTAssertEqual(income.value as? String, "0")
+        let income = app.buttons["qa.report.fields.toggle.income"]
+        visible(income); awaitValue(income, "Увімкнено")
+        income.tap(); awaitValue(income, "Вимкнено")
+        income.tap(); awaitValue(income, "Увімкнено")
+        income.tap(); awaitValue(income, "Вимкнено")
         app.navigationBars.buttons["Готово"].tap()
         let expense = app.descendants(matching: .any).matching(identifier: "qa.report.account.row.qa-pumb.expense").firstMatch
         visible(expense)
         XCTAssertFalse(app.descendants(matching: .any).matching(identifier: "qa.report.account.row.qa-pumb.income").firstMatch.exists)
         capture("compact-account-report")
         app.terminate(); app.launchArguments = ["--finami-qa"]; app.launch()
-        app.tabBars.buttons["Звіти"].tap(); openSettings("qa-pumb")
-        visible(income); XCTAssertEqual(income.value as? String, "0")
+        visible(app.tabBars.buttons["Звіти"]); app.tabBars.buttons["Звіти"].tap(); openSettings("qa-pumb")
+        visible(income); awaitValue(income, "Вимкнено")
         app.navigationBars.buttons["Готово"].tap()
-        openSettings("qa-otp"); visible(income); XCTAssertEqual(income.value as? String, "1")
+        openSettings("qa-otp"); visible(income); awaitValue(income, "Увімкнено")
         app.navigationBars.buttons["Готово"].tap()
+    }
+
+    func testInstallmentPaidFromSelectedAccount() {
+        app.terminate()
+        app.launchArguments = ["--finami-qa", "--finami-qa-reset", "--finami-qa-payment-fixture"]
+        app.launch()
+        let more = app.tabBars.buttons["Ще"]; visible(more); more.tap()
+        let installment = app.staticTexts["Розстрочка"]
+        for _ in 0..<12 { if installment.exists && installment.isHittable {break};app.swipeUp() }
+        visible(installment); installment.tap()
+        let loan = app.staticTexts["QA installment"]; visible(loan);loan.tap()
+        let pay = app.buttons["qa.payment.pay"];visible(pay);pay.tap()
+        visible(app.navigationBars["Записати оплату"])
+        let account = app.descendants(matching:.any).matching(identifier:"qa.payment.account").firstMatch
+        visible(account);account.tap();let card=app.buttons["QA Card"];visible(card);card.tap()
+        let mode = app.descendants(matching:.any).matching(identifier:"qa.payment.mode").firstMatch
+        visible(mode);mode.tap();let new=app.buttons["Створити списання"];visible(new);new.tap()
+        let confirm=app.buttons["qa.payment.confirm"]
+        for _ in 0..<8 { if confirm.exists && confirm.isHittable {break};app.swipeUp() }
+        visible(confirm);XCTAssertTrue(confirm.isEnabled);confirm.tap()
+        visible(app.navigationBars["Розстрочка"])
+        capture("payment-saved")
+        app.terminate();app.launchArguments=["--finami-qa"];app.launch()
+        let operations=app.tabBars.buttons["Операції"];visible(operations);operations.tap()
+        visible(app.staticTexts["QA installment"]);capture("payment-operation-persisted")
+    }
+    func testLaunchPerformance() {
+        app.terminate();app.launchArguments=["--finami-qa"]
+        measure(metrics:[XCTApplicationLaunchMetric()]) { app.launch() }
     }
 
 }

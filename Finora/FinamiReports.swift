@@ -10,12 +10,12 @@ struct Reports: View {
     private var selectedAccount: String { s.db.accounts.contains(where: { $0.id == prefs.reportsAccount }) ? (prefs.reportsAccount ?? "all") : "all" }
     private var showIncome: Bool { prefs.reportsShowIncome != false }
     private func binding<T>(_ key: WritableKeyPath<AppearancePreferences, T?>, _ fallback: T) -> Binding<T> {
-        Binding(get: { (s.db.preferences ?? .init())[keyPath: key] ?? fallback }, set: { value in s.change { d in var p = d.preferences ?? .init(); p[keyPath: key] = value; d.preferences = p } })
+        Binding(get: { (s.db.preferences ?? .init())[keyPath: key] ?? fallback }, set: { value in s.changeAppearance { p in p[keyPath: key] = value } })
     }
     private func hidden(_ id: String) -> Binding<Bool> {
         Binding(get: { s.privateAmounts || s.db.preferences?.reportsHiddenSections?.contains(id) == true }, set: { hide in
             guard !s.privateAmounts else { return }
-            s.change { d in var p = d.preferences ?? .init(); var values = Set(p.reportsHiddenSections ?? []); if hide { values.insert(id) } else { values.remove(id) }; p.reportsHiddenSections = values.sorted(); d.preferences = p }
+            s.changeAppearance { p in var values = Set(p.reportsHiddenSections ?? []); if hide { values.insert(id) } else { values.remove(id) }; p.reportsHiddenSections = values.sorted() }
         })
     }
     private func panelTitle(_ date: Date) -> String {
@@ -25,7 +25,7 @@ struct Reports: View {
         if let next = Calendar.current.date(byAdding: annual ? .year : .month, value: value, to: date) { date = next }
     }
     var body: some View {
-        let snapshot = FinamiReportSnapshot(operations: s.db.operations, date: date, annual: annual, account: selectedAccount == "all" ? nil : selectedAccount)
+        let snapshot = s.reportSnapshot(date: date, annual: annual, account: selectedAccount == "all" ? nil : selectedAccount)
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 16) {
                 controls
@@ -41,7 +41,7 @@ struct Reports: View {
             }.padding()
         }.background(Color(uiColor: .systemGroupedBackground)).navigationTitle("Звіти")
         .toolbar {
-            Button { s.change { d in var p = d.preferences ?? .init(); p.hideAmounts = !(p.hideAmounts ?? false); d.preferences = p } } label: { Image(systemName: s.privateAmounts ? "eye.slash" : "eye") }.accessibilityLabel("Приховати або показати всі суми")
+            Button { s.changeAppearance { p in p.hideAmounts = !(p.hideAmounts ?? false) } } label: { Image(systemName: s.privateAmounts ? "eye.slash" : "eye") }.accessibilityLabel("Приховати або показати всі суми")
             Button { settings = true } label: { Image(systemName: "slider.horizontal.3") }.accessibilityLabel("Налаштування звітів")
         }.sheet(isPresented: $settings) { NavigationStack { reportSettings } }
         .sheet(item: $accountSettings) { selection in
@@ -242,7 +242,7 @@ struct Reports: View {
             Section("Категорії") { Picker("Показати", selection: binding(\.reportsCategoryLimit, 10)) { Text("Топ 5").tag(5); Text("Топ 10").tag(10); Text("Топ 20").tag(20); Text("До 100").tag(100) } }
             Section("Приватність") {
                 Toggle("Приховати всі суми", isOn: binding(\.hideAmounts, false))
-                Button("Скинути приховування окремих блоків") { s.change { d in var p = d.preferences ?? .init(); p.reportsHiddenSections = []; d.preferences = p } }
+                Button("Скинути приховування окремих блоків") { s.changeAppearance { p in p.reportsHiddenSections = [] } }
             }
         }.navigationTitle("Налаштування звітів").toolbar { Button("Готово") { settings = false } }
     }
@@ -254,22 +254,18 @@ private struct FinamiAccountReportSettings: View {
     @EnvironmentObject private var s: Store
     @Environment(\.dismiss) private var dismiss
     let account: String
+    @State private var saveFailed = false
     private var chosen: [FinamiAccountReportField] {
         FinamiAccountReportField.selected(account: account, preferences: s.db.preferences?.reportsAccountFields)
     }
     private func save(_ fields: [FinamiAccountReportField]) {
-        s.change { d in
-            var p = d.preferences ?? .init()
-            p.reportsAccountFields = FinamiAccountReportField.updating(p.reportsAccountFields, account: account, fields: fields)
-            d.preferences = p
-        }
+        saveFailed = !s.changeAppearance { p in p.reportsAccountFields = FinamiAccountReportField.updating(p.reportsAccountFields, account: account, fields: fields) }
     }
-    private func selection(_ field: FinamiAccountReportField) -> Binding<Bool> {
-        Binding(get: { chosen.contains(field) }, set: { enabled in
-            var values = chosen.filter { $0 != field }
-            if enabled { values.append(field) }
-            save(values)
-        })
+    private func toggle(_ field: FinamiAccountReportField) {
+        var values = chosen
+        if values.contains(field) { values.removeAll { $0 == field } }
+        else { values.append(field) }
+        save(values)
     }
     var body: some View {
         Form {
@@ -281,9 +277,23 @@ private struct FinamiAccountReportSettings: View {
             } header: { Text("Швидке налаштування") }
             Section {
                 ForEach(FinamiAccountReportField.allCases) { field in
-                    Toggle(field.title, isOn: selection(field))
+                    let enabled = chosen.contains(field)
+                    Button { toggle(field) } label: {
+                        HStack {
+                            Text(field.title).foregroundStyle(Color.primary)
+                            Spacer(minLength: 8)
+                            Image(systemName: enabled ? "checkmark.circle.fill" : "circle")
+                                .foregroundStyle(enabled ? Color.accentColor : Color.secondary)
+                                .font(.title3)
+                                .accessibilityHidden(true)
+                        }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }.buttonStyle(.plain)
+                        .accessibilityLabel(field.title)
+                        .accessibilityValue(enabled ? "Увімкнено" : "Вимкнено")
                         .accessibilityIdentifier("qa.report.fields.toggle.\(field.rawValue)")
                 }
+                if saveFailed { Text("Не вдалося зберегти зміни. Попередній вибір залишено.").foregroundStyle(.orange) }
             } header: { Text("Показувати в картці") } footer: {
                 Text("Зміни діють лише для цього рахунку й зберігаються автоматично. Нульові додаткові рухи не відображаються. Глобальне приховування доходів має пріоритет. Підсумки, баланс та операції не змінюються.")
             }

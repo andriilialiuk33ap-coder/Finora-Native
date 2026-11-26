@@ -205,23 +205,23 @@ struct BankCenter: View {
         }
     }
     private func importFile(_ result: Result<URL, Error>) {
-        do {
-            let url = try result.get()
-            let access = url.startAccessingSecurityScopedResource()
-            defer { if access { url.stopAccessingSecurityScopedResource() } }
-            let bytes = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
-            guard bytes <= 30_000_000 else { throw BankFailure.unsupported }
-            let batch: BankBatch
-            if url.pathExtension.lowercased() == "pdf" {
-                batch = try StatementPDF.read(url)
-            } else {
-                batch = try readOTP(url)
-            }
-            guard !batch.rows.isEmpty else { throw BankFailure.empty }
-            pending = batch
-            account = ""
-        } catch {
-            s.error = error.localizedDescription
+        guard !busy else { return }
+        busy = true
+        Task { @MainActor in
+            defer { busy = false }
+            do {
+                let url = try result.get()
+                let batch = try await Task.detached(priority: .userInitiated) { () throws -> BankBatch in
+                    let access = url.startAccessingSecurityScopedResource()
+                    defer { if access { url.stopAccessingSecurityScopedResource() } }
+                    let bytes = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+                    guard bytes <= 30_000_000 else { throw BankFailure.unsupported }
+                    let parsed = try url.pathExtension.lowercased() == "pdf" ? StatementPDF.read(url) : readOTP(url)
+                    guard !parsed.rows.isEmpty else { throw BankFailure.empty }
+                    return parsed
+                }.value
+                pending = batch; account = ""
+            } catch { s.error = error.localizedDescription }
         }
     }
     func loadAccounts() {
@@ -237,63 +237,107 @@ struct BankCenter: View {
 struct BankReview: View {
     @EnvironmentObject var s: Store; @Environment(\.dismiss) var dismiss
     let batch: BankBatch; let account: String
-    @State private var excluded: Set<String> = []; @State private var includedMatches: Set<String> = []; @State private var confirm = false
-    var rows: [BankRow] { bankNewRows(batch.rows,existing:s.db.operations.filter{$0.account == account}.compactMap(\.bankKey)) }
-    var selected: [BankRow] {rows.filter{isSelected($0)}}
-    func possibleMatch(_ r: BankRow) -> Bool {
-        s.db.operations.contains {o in
-            o.captureSource != nil && (o.entryCurrency ?? "UAH") == "UAH" && captureSimilar(account:account,amount:abs(r.signed),incoming:r.signed>0,date:r.date,otherAccount:o.account,otherAmount:o.sourceMinor ?? o.amount,otherIncoming:o.kind.incoming,otherDate:o.date,window:36*3600)
-        }
+    @State private var excluded: Set<String> = []
+    @State private var includedMatches: Set<String> = []
+    @State private var linked: [String: String] = [:]
+    @State private var confirm = false
+    @State private var saving = false
+    private func isSelected(_ row: BankRow, matches: [Operation]) -> Bool {
+        linked[row.id] == nil && !excluded.contains(row.id) && (matches.isEmpty || includedMatches.contains(row.id))
     }
-    func isSelected(_ r: BankRow) -> Bool { !excluded.contains(r.id) && (!possibleMatch(r) || includedMatches.contains(r.id)) }
-    func setSelected(_ r: BankRow,_ value:Bool) {
-        if value {excluded.remove(r.id);includedMatches.insert(r.id)} else {excluded.insert(r.id);includedMatches.remove(r.id)}
+    private func setSelected(_ row: BankRow, _ value: Bool) {
+        if value { excluded.remove(row.id); includedMatches.insert(row.id); linked.removeValue(forKey:row.id) }
+        else { excluded.insert(row.id); includedMatches.remove(row.id) }
     }
-    private func rowToggle(_ r:BankRow) -> some View {
-        Toggle(isOn:Binding(get:{isSelected(r)},set:{setSelected(r,$0)})) {
-            VStack(alignment:.leading){
-                Text(r.note.isEmpty ? "Без опису":r.note)
-                Text(money(r.signed)).bold()
-                Text(r.date.formatted(date:.abbreviated,time:.shortened)).font(.caption)
-                Text(kind(r).title).font(.caption).foregroundStyle(kind(r).needsReview ? Color.orange : Color.secondary)
-                Text(category(r)).font(.caption)
-                if possibleMatch(r) {Text("Можливий дублікат Apple Pay / SMS. Перевірте, перш ніж включити.").font(.caption).foregroundStyle(.orange)}
-                if let w=r.warning {Text(w).font(.caption).foregroundStyle(.orange)}
-                if r.fee>0 {Text("Комісія: "+money(r.fee)).font(.caption)}
+    private func rowView(_ row: BankRow, matches: [Operation]) -> some View {
+        VStack(alignment:.leading,spacing:8) {
+            Toggle(isOn:Binding(get:{isSelected(row,matches:matches)},set:{setSelected(row,$0)})) {
+                VStack(alignment:.leading,spacing:4) {
+                    Text(row.note.isEmpty ? "Без опису":row.note)
+                    Text(s.visibleMoney(row.signed)).bold()
+                    Text(row.date.formatted(date:.abbreviated,time:.shortened)).font(.caption)
+                    Text(kind(row).title).font(.caption).foregroundStyle(kind(row).needsReview ? Color.orange : Color.secondary)
+                    Text(category(row)).font(.caption)
+                    if let warning=row.warning {Text(warning).font(.caption).foregroundStyle(.orange)}
+                    if row.fee>0 {Text("Комісія: "+s.visibleMoney(row.fee)).font(.caption)}
+                }
+            }.accessibilityIdentifier("qa.statement.new." + row.id)
+            if !matches.isEmpty {
+                Text("Можливий дубль: запис із такою сумою вже є. Обери його або увімкни імпорт, якщо це інша операція.").font(.caption).foregroundStyle(.orange)
+                Picker("Пов’язати з операцією",selection:Binding(get:{linked[row.id] ?? ""},set:{ value in
+                    if value.isEmpty {linked.removeValue(forKey:row.id)}
+                    else { linked[row.id]=value; includedMatches.remove(row.id); excluded.insert(row.id) }
+                })) {
+                    Text("Не пов’язувати").tag("")
+                    ForEach(matches.filter { candidate in !linked.contains(where: { $0.key != row.id && $0.value == candidate.id }) }) { candidate in
+                        Text(candidate.note + " · " + candidate.date.formatted(date:.abbreviated,time:.shortened)).tag(candidate.id)
+                    }
+                }
+                if linked[row.id] != nil { Label("Буде звірено без зміни балансу",systemImage:"link").font(.caption).foregroundStyle(.green) }
             }
         }
     }
     var body: some View {
-        List {
-            Section { LabeledContent("Нові",value:String(rows.count));LabeledContent("Повторний імпорт",value:String(batch.rows.count-rows.count));LabeledContent("Не розпізнано / не проведено",value:String(batch.rejected)); LabeledContent("Вибрано",value:String(selected.count)); if let message=batch.reconciliation {Text(message).font(.caption).foregroundStyle(message.hasPrefix("Суми") ? Color.green : Color.orange)}; Text("Перекази та комісії перевір вручну. Підозрілі операції можна зняти з вибору. Можливі дублікати Apple Pay / SMS не вибрані за замовчуванням. Інші схожі джерела перевірте вручну.").font(.caption) }
-            ForEach(rows) { r in
-                rowToggle(r)
+        let index = FinamiStatementMatchIndex(operations:s.historyForAccount(account),account:account)
+        let rows = index.newRows(batch.rows)
+        let matches = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, index.candidates($0)) })
+        let selected = rows.filter { isSelected($0,matches:matches[$0.id] ?? []) }
+        let linkedCount = rows.filter { linked[$0.id] != nil }.count
+        let needsReview = rows.filter { !(matches[$0.id] ?? []).isEmpty && linked[$0.id] == nil && !isSelected($0,matches:matches[$0.id] ?? []) }.count
+        return List {
+            Section {
+                LabeledContent("Нові рядки",value:String(rows.count))
+                LabeledContent("Уже імпортовано / повтори",value:String(batch.rows.count-rows.count))
+                LabeledContent("Потребують звірки",value:String(needsReview))
+                LabeledContent("Нових операцій до запису",value:String(selected.count))
+                LabeledContent("Звірити без списання",value:String(linkedCount))
+                LabeledContent("Не розпізнано / не проведено",value:String(batch.rejected))
+                if let message=batch.reconciliation {Text(message).font(.caption).foregroundStyle(message.hasPrefix("Суми") ? Color.green : Color.orange)}
+                if rows.isEmpty {Label("У цій виписці немає нових операцій",systemImage:"checkmark.shield").foregroundStyle(.green)}
+                else {Text("Повторно імпортуються лише ще не записані рядки. Схожі ручні, скановані та автоматичні операції пропущено до підтвердження.").font(.caption)}
             }
-        }.navigationTitle("Перевірити імпорт").toolbar{Button("Імпортувати \(selected.count)"){confirm=true}.disabled(selected.isEmpty)}.confirmationDialog("Зберегти вибрані операції?",isPresented:$confirm){Button("Зберегти") { save() }}
+            ForEach(rows) { row in rowView(row,matches:matches[row.id] ?? []) }
+        }.disabled(saving).overlay { if saving { ProgressView("Збереження…").padding().background(.regularMaterial,in:RoundedRectangle(cornerRadius:12)) } }.navigationTitle("Перевірити імпорт").toolbar{Button("Зберегти (\(selected.count + linkedCount))"){confirm=true}.disabled(saving || (selected.isEmpty && linkedCount==0))}.confirmationDialog("Зберегти вибрані операції?",isPresented:$confirm){Button("Зберегти") { save() }}
     }
-    func kind(_ r: BankRow) -> Kind {
+    func kind(_ row: BankRow) -> Kind {
         let credit = s.db.accounts.first(where: {$0.id == account})?.isCredit ?? false
-        return Kind(rawValue: bankKind(signed:r.signed,note:r.note,mcc:r.mcc,operationType:r.operationType,creditAccount:credit)) ?? (r.signed > 0 ? .unclassifiedCredit : .unclassifiedDebit)
+        return Kind(rawValue: bankKind(signed:row.signed,note:row.note,mcc:row.mcc,operationType:row.operationType,creditAccount:credit)) ?? (row.signed > 0 ? .unclassifiedCredit : .unclassifiedDebit)
     }
-    func category(_ r: BankRow) -> String {
-        let k = kind(r)
-        guard k.isReportCategory else {return "Без категорії"}
-        let byName = suggestedCategory(r.note,kind:k,database:s.db)
+    func category(_ row: BankRow) -> String {
+        let k = kind(row); guard k.isReportCategory else {return "Без категорії"}
+        let byName = suggestedCategory(row.note,kind:k,database:s.db)
         if byName != "Без категорії" {return byName}
-        if let c = mccCategory(r.mcc,incoming:r.signed>0),s.db.expenseCategories.contains(c) {return c}
+        if let c = mccCategory(row.mcc,incoming:row.signed>0),s.db.expenseCategories.contains(c) {return c}
         return "Без категорії"
     }
     func save() {
-        guard s.db.accounts.contains(where:{$0.id == account && $0.code == "UAH"}) else {return}
-        let batchID=UUID().uuidString
-        let incoming=selected.map { r -> Operation in
-            var o=Operation(kind:kind(r),amount:abs(r.signed),date:r.date,category:category(r),note:r.note,account:account)
-            o.importBatch=batchID; o.bankKey=r.key; o.sourceBank=r.source; o.originalAmount=r.original; o.originalCurrency=r.currency; o.bankFee=r.fee; o.bankMCC=r.mcc; o.bankType=r.operationType
-            return o
+        guard !saving, s.db.accounts.contains(where:{$0.id == account && $0.code == "UAH"}) else {return}
+        let version = s.databaseVersion
+        // Recompute against the live ledger immediately before committing.
+        let index = FinamiStatementMatchIndex(operations:s.historyForAccount(account),account:account)
+        let rows = index.newRows(batch.rows)
+        var operations = s.db.operations
+        let positions = Dictionary(operations.enumerated().map { ($0.element.id,$0.offset) },uniquingKeysWith:{first,_ in first})
+        let batchID = UUID().uuidString
+        var added = 0, matched = 0
+        for row in rows {
+            if let id = linked[row.id] {
+                guard let i = positions[id], finamiAttachStatement(row,to:&operations[i],account:account) else { s.error="Операція змінилася. Перевір звірку ще раз.";return }
+                matched += 1
+            } else if isSelected(row,matches:index.candidates(row)) {
+                var o=Operation(kind:kind(row),amount:abs(row.signed),date:row.date,category:category(row),note:row.note,account:account)
+                o.importBatch=batchID; o.bankKey=row.key; o.sourceBank=row.source; o.originalAmount=row.original; o.originalCurrency=row.currency; o.bankFee=row.fee; o.bankMCC=row.mcc; o.bankType=row.operationType
+                operations.append(o);added += 1
+            }
         }
-        if s.change({$0.operations.append(contentsOf:incoming)}) {s.error="Імпортовано: \(incoming.count)"; dismiss()}
+        guard added+matched>0 else {s.error="Немає нових або вибраних рядків.";return}
+        saving = true
+        let prepared = operations, newCount = added, linkedCount = matched
+        Task { @MainActor in
+            defer { saving = false }
+            if await s.replaceOperationsForImport(prepared,expectedVersion:version) {s.error="Додано: \(newCount). Звірено без зміни балансу: \(linkedCount)."; dismiss()}
+        }
     }
-
 }
 struct ReceiptScanView: View {
     @EnvironmentObject var s:Store

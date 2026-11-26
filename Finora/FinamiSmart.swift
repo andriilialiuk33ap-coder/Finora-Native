@@ -108,8 +108,13 @@ struct FinamiDiagnostics: View {
                 NavigationLink("Налаштувати автоматизацію") { AutomationCenter() }
             }
             Section("Безпечні локальні перевірки") {
-                LabeledContent("Парсер", value: parser).accessibilityIdentifier("qa.diagnostics.parser")
-                Button("Перевірити зараз") { Task { await refresh() } }
+                Text("Парсер: " + parser)
+                    .foregroundStyle(parser == "Тест не пройдено" ? Color.orange : Color.primary)
+                    .accessibilityIdentifier("qa.diagnostics.parser")
+                Button("Перевірити зараз") {
+                    parser = finamiNotificationSelfTest() ? "Тест пройдено" : "Тест не пройдено"
+                    Task { await refresh() }
+                }.accessibilityIdentifier("qa.diagnostics.run")
                 Text("Тест не додає операцій і не змінює баланс.").font(.caption)
             }
         }.navigationTitle("Діагностика").task { await refresh() }
@@ -120,7 +125,6 @@ struct FinamiDiagnostics: View {
         switch settings.authorizationStatus { case .authorized, .provisional, .ephemeral: notifications = "Дозволено"; case .denied: notifications = "Вимкнено"; default: notifications = "Не запитано" }
         scheduled = await center.pendingNotificationRequests().count; checked = true
         s.refreshCaptures(auto: false)
-        parser = finamiNotificationSelfTest() ? "Тест пройдено" : "Тест не пройдено"
     }
 }
 struct FinamiSecureBackupView: View {

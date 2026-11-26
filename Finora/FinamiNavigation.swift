@@ -5,7 +5,7 @@ struct FinamiAccountsBalance: View {
     @Environment(\.dynamicTypeSize) private var typeSize
     private var prefs: AppearancePreferences { s.db.preferences ?? .init() }
     private func change(_ action: (inout AppearancePreferences) -> Void) {
-        s.change { d in var p = d.preferences ?? .init(); action(&p); d.preferences = p }
+        s.changeAppearance { p in action(&p) }
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {

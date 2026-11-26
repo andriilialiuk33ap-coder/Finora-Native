@@ -21,8 +21,9 @@ struct CapturePreferences: Codable {
     }
     func captureMatch(_ e: CapturedPayment) -> Bool {
         if captureRepeat(e) {return true}
+        let paid = Set((db.paidRecords ?? []).compactMap(\.operationID))
         return db.operations.contains { o in
-            capturePossibleDuplicate(e,otherAccount:o.account,otherCurrency:o.entryCurrency ?? "UAH",otherAmount:o.sourceMinor ?? o.amount,otherIncoming:o.kind.incoming,otherDate:o.date,otherSource:o.captureSource,isBank:o.sourceBank != nil)
+            capturePossibleDuplicate(e,otherAccount:o.account,otherCurrency:o.entryCurrency ?? "UAH",otherAmount:o.sourceMinor ?? o.amount,otherIncoming:o.kind.incoming,otherDate:o.date,otherSource:o.captureSource,isBank:o.sourceBank != nil || o.bankKey != nil || paid.contains(o.id))
         }
     }
     func capturedOperation(_ e: CapturedPayment, kind: Kind) -> Operation? {

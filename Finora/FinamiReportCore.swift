@@ -142,3 +142,22 @@ func finamiReorderSubset(_ all: [String], orderedSubset: [String]) -> [String] {
     var iterator = orderedSubset.makeIterator()
     return all.map { selected.contains($0) ? (iterator.next() ?? $0) : $0 }
 }
+
+// Bounded to one snapshot. The owning Store invalidates after every database replacement.
+struct FinamiReportCache {
+    private struct Key: Equatable {
+        let interval: DateInterval
+        let annual: Bool
+        let account: String?
+        let calendar: Calendar
+    }
+    private var entry: (key: Key, value: FinamiReportSnapshot)?
+    mutating func removeAll() { entry = nil }
+    mutating func snapshot(operations: [Operation], date: Date, annual: Bool, account: String?, calendar: Calendar = .current) -> FinamiReportSnapshot {
+        let key = Key(interval: calendar.dateInterval(of: annual ? .year : .month, for: date)!, annual: annual, account: account, calendar: calendar)
+        if let entry, entry.key == key { return entry.value }
+        let value = FinamiReportSnapshot(operations: operations, date: date, annual: annual, account: account, calendar: calendar)
+        entry = (key, value)
+        return value
+    }
+}

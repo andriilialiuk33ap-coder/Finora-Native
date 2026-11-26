@@ -22,7 +22,7 @@ private enum ScanFailure: LocalizedError {
     case image, empty
     var errorDescription: String? { self == .image ? "Не вдалося відкрити фото або воно перевищує 25 МБ." : "Текст не знайдено. Спробуй чіткіший скриншот." }
 }
-private func recognizeScan(_ data: Data) throws -> ScanPhoto {
+private func recognizeScan(_ data: Data, knownDigest: String? = nil) throws -> ScanPhoto {
     guard data.count <= 25_000_000, let source = CGImageSourceCreateWithData(data as CFData, nil) else { throw ScanFailure.image }
     let options: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceThumbnailMaxPixelSize: 3000]
     guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { throw ScanFailure.image }
@@ -59,7 +59,7 @@ private func recognizeScan(_ data: Data) throws -> ScanPhoto {
     if lines.isEmpty && warning == nil { warning = "Текст не знайдено. Можна заповнити чернетку вручну." }
     let previewOptions: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceThumbnailMaxPixelSize: 1600]
     let jpeg = CGImageSourceCreateThumbnailAtIndex(source, 0, previewOptions as CFDictionary).flatMap { UIImage(cgImage: $0).jpegData(compressionQuality: 0.7) }
-    let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    let digest = knownDigest ?? SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     return ScanPhoto(id: digest, lines: lines, image: jpeg, warning: warning)
 }
 struct FinamiScanView: View {
@@ -139,8 +139,14 @@ struct FinamiScanView: View {
                 for (index, item) in items.enumerated() {
                     do {
                         guard let data = try await item.loadTransferable(type: Data.self) else { throw ScanFailure.image }
-                        let photo = try await Task.detached(priority: .userInitiated) { try recognizeScan(data) }.value
-                        if !photos.contains(where: { $0.id == photo.id }) { photos.append(photo) }
+                        guard data.count <= 25_000_000 else { throw ScanFailure.image }
+                        let known = Set(photos.map(\.id))
+                        let photo = try await Task.detached(priority: .userInitiated) { () throws -> ScanPhoto? in
+                            let digest = SHA256.hash(data:data).map { String(format:"%02x",$0) }.joined()
+                            guard !known.contains(digest) else { return nil }
+                            return try recognizeScan(data, knownDigest:digest)
+                        }.value
+                        if let photo, !photos.contains(where: { $0.id == photo.id }) { photos.append(photo) }
                     } catch { errors.append("Фото \(index + 1): \(error.localizedDescription)") }
                 }
             }

@@ -82,7 +82,7 @@ struct FinamiField: View {
 }
 struct FinamiPrivacyNotice: View {
     @EnvironmentObject var s:Store
-    var body:some View { VStack(spacing:16) { FinamiArt(icon:"eye.slash",tint:.teal,size:90); Text("Суми приховано").font(.title2.bold()); Text("Вимкни режим приватності, щоб переглянути звіти.").foregroundStyle(.secondary).multilineTextAlignment(.center); Button("Показати суми") { s.change { d in var p=d.preferences ?? .init();p.hideAmounts=false;d.preferences=p } }.buttonStyle(.borderedProminent) }.padding().navigationTitle("Звіти") }
+    var body:some View { VStack(spacing:16) { FinamiArt(icon:"eye.slash",tint:.teal,size:90); Text("Суми приховано").font(.title2.bold()); Text("Вимкни режим приватності, щоб переглянути звіти.").foregroundStyle(.secondary).multilineTextAlignment(.center); Button("Показати суми") { s.changeAppearance { p in p.hideAmounts=false } }.buttonStyle(.borderedProminent) }.padding().navigationTitle("Звіти") }
 }
 struct FinamiDesignPreview: View {
     var design:FinamiDesign
@@ -105,95 +105,6 @@ struct FinamiDesignPreview: View {
     func mini(_ title:String,_ value:String,_ icon:String)->some View { VStack(alignment:.leading,spacing:4){Image(systemName:icon).foregroundStyle(design.tint);Text(title).font(.caption2);Text(value).font(.caption.weight(.semibold)).minimumScaleFactor(0.7)}.frame(maxWidth:.infinity,alignment:.leading).padding(8).background(design.tint.opacity(0.12),in:RoundedRectangle(cornerRadius:design.corner/2)) }
 }
 
-struct FinamiPayment: Identifiable {
-    var id:String; var name:String; var kind:String; var date:Date; var amount:Int64; var currency:String; var remaining:Int64?; var subscription:Bool
-    var overdue:Bool { Calendar.current.startOfDay(for:date) < Calendar.current.startOfDay(for:Date()) }
-}
-extension Store {
-    var upcomingPayments:[FinamiPayment] {
-        let debts = db.obligations.filter { $0.remaining > 0 && [.installment,.owe,.recurring].contains($0.kind) }.map { o in FinamiPayment(id:o.id,name:o.name,kind:o.kind.title,date:o.due,amount:o.monthly > 0 ? min(o.monthly,o.remaining) : o.remaining,currency:"UAH",remaining:o.remaining,subscription:false) }
-        let subs = (db.subscriptions ?? []).filter(\.active).map { r in FinamiPayment(id:r.id,name:r.name,kind:"Підписка",date:r.next,amount:r.amount,currency:r.currency,remaining:nil,subscription:true) }
-        return (debts+subs).sorted { $0.date < $1.date }
-    }
-    func scheduledThisMonth(currency: String, now: Date = Date()) -> Int64 {
-        let cal = Calendar.current
-        guard let end = cal.dateInterval(of: .month, for: now)?.end else { return 0 }
-        let start = cal.startOfDay(for: now)
-        var total: Int64 = 0
-        for p in upcomingPayments where p.currency == currency {
-            let period = p.subscription ? db.subscriptions?.first(where: {$0.id == p.id})?.period : nil
-            total += finamiScheduledAmounts(start:p.date, amount:p.amount, remaining:p.remaining, component:period?.component ?? .month, step:period?.step ?? 1, from:start, until:end, calendar:cal).reduce(0,+)
-        }
-        return total
-    }
-    // A confirmation records the obligation/subscription only; bank imports remain the source of actual expenses.
-    func confirmPayment(_ payment:FinamiPayment) -> Bool {
-        guard let live=upcomingPayments.first(where:{$0.id==payment.id}),live.date==payment.date,live.amount==payment.amount,live.amount>0 else {error="Платіж уже змінено. Відкрий його знову.";return false}
-        let previous=(db.reminders ?? []).filter{$0.linkedID==payment.id}
-        var renewed:[PersonalReminder]=[]
-        let ok=change { d in
-            var next:Date?=nil
-            if payment.subscription,let i=d.subscriptions?.firstIndex(where:{$0.id==payment.id}),var r=d.subscriptions?[i] {
-                let end=Calendar.current.date(byAdding:r.period.component,value:r.period.step,to:r.next) ?? r.next
-                r.payments.append(.init(date:Date(),amount:payment.amount,currency:payment.currency,through:end));r.next=end;d.subscriptions?[i]=r;next=end
-            } else if let i=d.obligations.firstIndex(where:{$0.id==payment.id}) {
-                d.obligations[i].paid+=payment.amount
-                if d.obligations[i].remaining>0 {d.obligations[i].due=shift(d.obligations[i].due,1);next=d.obligations[i].due}
-            }
-            d.reminders?.removeAll{$0.linkedID==payment.id}
-            if let next=next { for r in previous { var copy=r;copy.date=next.addingTimeInterval(r.date.timeIntervalSince(payment.date)); if copy.date>Date() {renewed.append(copy)} };d.reminders=(d.reminders ?? [])+renewed }
-        }
-        if ok {previous.forEach{ReminderScheduler.cancel($0)};let scheduled=renewed;Task { @MainActor in for r in scheduled { do {try await ReminderScheduler.schedule(r)} catch {self.error="Платіж збережено. Нагадування: "+error.localizedDescription} } }}
-        return ok
-    }
-}
-struct FinamiPaymentCard:View {
-    @EnvironmentObject var s:Store
-    @Environment(\.finamiMask) private var masked
-    var payment:FinamiPayment
-    var showRemaining = true
-    var showDate = true
-    var showImage = true
-    var dashboardSize: DashboardSize? = nil
-    var body:some View { VStack(alignment:.leading,spacing:dashboardSize == .small ? 5 : dashboardSize == .large ? 16 : 10) {
-        HStack(alignment:.top) { VStack(alignment:.leading,spacing:5) { Text(payment.kind).font(.caption).foregroundStyle(.secondary);Text(payment.name).font(.headline).fixedSize(horizontal:false,vertical:true) };Spacer(minLength:8);if showImage && dashboardSize != .small { if let data=s.db.paymentPhotos?[payment.id],let image=UIImage(data:data) {Image(uiImage:image).resizable().scaledToFill().frame(width:62,height:62).clipShape(RoundedRectangle(cornerRadius:14)).accessibilityHidden(true)}else{FinamiArt(icon:payment.subscription ? "repeat" : "calendar.badge.clock",tint:.indigo,size:62)} } }
-        Text(masked ? "••••" : s.visibleMoney(payment.amount,payment.currency)).font(dashboardSize == .small ? .title3.bold() : dashboardSize == .medium ? .title.bold() : .largeTitle.bold()).monospacedDigit().fixedSize(horizontal:false,vertical:true)
-        if showDate { Label(payment.date.formatted(date:.abbreviated,time:.omitted),systemImage:"calendar").foregroundStyle(payment.overdue ? Color.orange : Color.secondary) }
-        if payment.overdue {Label("Прострочено",systemImage:"exclamationmark.circle").font(.caption).foregroundStyle(.orange)}
-        if showRemaining, let remaining=payment.remaining {FinamiMetric(title:"Залишок",value:masked ? "••••" : s.visibleMoney(remaining))}
-        HStack {Text("Деталі платежу").font(.subheadline.weight(.medium));Spacer();Image(systemName:"chevron.right")}.foregroundStyle(.tint)
-    }.padding(dashboardSize == .small ? 6 : dashboardSize == .large ? 20 : 14).frame(maxWidth:.infinity,alignment:.leading).modifier(FinamiCardStyle(tint:.indigo)) }
-}
-struct FinamiMonthPayments:View {
-    @EnvironmentObject var s:Store
-    @Environment(\.finamiMask) private var masked
-    var dashboardSize: DashboardSize? = nil
-    var body:some View { VStack(alignment:.leading,spacing:dashboardSize == .small ? 4 : dashboardSize == .large ? 12 : 8) {if dashboardSize != .small { Text("Заплановано до кінця місяця").font(.headline) };ForEach(["UAH","USD"],id:\.self) { currency in let total=s.scheduledThisMonth(currency:currency); if total>0 || currency=="UAH" {Text(masked ? "••••" : s.visibleMoney(total,currency)).font(dashboardSize == .small ? .title3.bold() : dashboardSize == .large ? .largeTitle.bold() : .title.bold()).monospacedDigit()} };if dashboardSize != .small { Text("Прогноз за графіком; прострочені платежі показано окремо.").font(.caption).foregroundStyle(.secondary) } }.padding(dashboardSize == .small ? 6 : dashboardSize == .large ? 20 : 14).frame(maxWidth:.infinity,alignment:.leading).modifier(FinamiCardStyle(tint:.indigo)) }
-}
-struct FinamiPaymentDetails:View {
-    @EnvironmentObject var s:Store; @Environment(\.dismiss) var dismiss
-    var payment:FinamiPayment
-    @State private var photo:PhotosPickerItem?
-    @State private var confirm=false
-    var body:some View { NavigationStack { Form {
-        Section {FinamiPaymentCard(payment:payment)}
-        Section("Керування") {
-            Button("Позначити сплаченим") {confirm=true}
-            if payment.subscription,let r=s.db.subscriptions?.first(where:{$0.id==payment.id}) {NavigationLink("Редагувати підписку") {SubscriptionEditor(original:r)}}
-            else if let o=s.db.obligations.first(where:{$0.id==payment.id}) {NavigationLink("Редагувати платіж / дату") {ObligationEditor(original:o)}}
-            PhotosPicker(selection:$photo,matching:.images) {Label("Вибрати фотографію",systemImage:"photo")}
-            if s.db.paymentPhotos?[payment.id] != nil {Button("Видалити фотографію",role:.destructive){s.change{$0.paymentPhotos?.removeValue(forKey:payment.id)}}}
-        }
-        Section("Нагадування") {
-            ForEach((s.db.reminders ?? []).filter{$0.linkedID==payment.id}) {r in NavigationLink {ReminderEditor(original:r)} label:{Label(r.date.formatted(date:.abbreviated,time:.shortened),systemImage:r.enabled ? "bell.fill" : "bell.slash")}}
-            .onDelete { offsets in let all=(s.db.reminders ?? []).filter{$0.linkedID==payment.id};let ids=offsets.map{all[$0]};if s.change({d in d.reminders?.removeAll{r in ids.contains{$0.id==r.id}}}){ids.forEach{ReminderScheduler.cancel($0)}} }
-            NavigationLink {ReminderEditor(original:.init(title:payment.name,date:max(Date().addingTimeInterval(3600),payment.date.addingTimeInterval(-86400)),linkedID:payment.id,hideDetails:true))} label:{Label("Додати нагадування",systemImage:"bell.badge")}
-            Text("Можна створити кілька нагадувань із власними датою та часом.").font(.caption)
-        }
-    }.navigationTitle("Деталі платежу").toolbar{ToolbarItem(placement:.cancellationAction){Button("Готово"){dismiss()}}}.confirmationDialog("Позначити платіж сплаченим?",isPresented:$confirm){Button("Підтвердити оплату"){if s.confirmPayment(payment){dismiss()}};Button("Скасувати",role:.cancel){} } message:{Text("Оновлює залишок і дату, але не створює банківську операцію повторно.")}
-        .onChange(of:photo) { item in guard let item=item else{return};Task { @MainActor in if let data=try? await item.loadTransferable(type:Data.self),let image=UIImage(data:data) { let size=image.size;guard size.width>0,size.height>0 else{return};let factor=min(1,800/max(size.width,size.height));let resized=UIGraphicsImageRenderer(size:CGSize(width:size.width*factor,height:size.height*factor)).image{_ in image.draw(in:CGRect(x:0,y:0,width:size.width*factor,height:size.height*factor))};if let jpeg=resized.jpegData(compressionQuality:0.75){s.change{d in var all=d.paymentPhotos ?? [:];all[payment.id]=jpeg;d.paymentPhotos=all}} } } }
-    } }
-}
 struct FinamiHelp:View {
     var body:some View { List {
         Section("Перші кроки") { Label("1. Створи рахунки та введи власні кошти або кредитний борг.",systemImage:"wallet.pass");Label("2. Додай операцію вручну або імпортуй виписку.",systemImage:"plus.circle");Label("3. Налаштуй блоки огляду, видимість сум і дизайн.",systemImage:"slider.horizontal.3");Label("4. Відкрий календар, обери платіж і додай нагадування в деталях.",systemImage:"calendar") }
@@ -234,7 +145,7 @@ struct FinamiVoice:View {
     @EnvironmentObject var s:Store;@StateObject private var speech=FinamiSpeech();@State private var draft:Operation?
     @State private var started = false
     @Environment(\.dismiss) private var dismiss
-    var body:some View { NavigationStack { Form { Section {if s.db.preferences?.voiceHideHint != true { HStack(alignment:.top) { Text("Скажи, наприклад: витратив 450 гривень в АТБ.").font(.subheadline); Button { s.change { d in var p=d.preferences ?? .init();p.voiceHideHint=true;d.preferences=p } } label:{Image(systemName:"xmark.circle.fill")}.buttonStyle(.borderless).accessibilityLabel("Приховати підказку") } } else { Button("Показати підказку") { s.change { d in var p=d.preferences ?? .init();p.voiceHideHint=false;d.preferences=p } } };Button {if speech.recording{speech.stop()}else{Task{await speech.start()}}} label:{Label(speech.recording ? "Зупинити" : "Почати запис",systemImage:speech.recording ? "stop.circle.fill" : "mic.fill")};if !speech.message.isEmpty {Text(speech.message).foregroundStyle(.orange)};TextEditor(text:$speech.text).frame(minHeight:100);Text("Якщо локальне розпізнавання недоступне, Apple може обробляти мовлення онлайн.").font(.caption)};Button("Підготувати операцію") {speech.stop();let note=speech.text;let kind:Kind=note.lowercased().contains("дохід") || note.lowercased().contains("отримав") ? .income : .expense;let amount=finamiVoiceAmount(note) ?? 0;let account=s.db.accounts.first(where:{!$0.name.isEmpty && $0.code=="UAH" && note.localizedCaseInsensitiveContains($0.name)})?.id ?? s.db.accounts.first(where:{$0.code=="UAH"})?.id ?? cash;draft=Operation(kind:kind,amount:amount,category:suggestedCategory(note,kind:kind,database:s.db),note:note,account:account)}.disabled(speech.text.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty) }.navigationTitle("Голосовий запис").toolbar { ToolbarItem(placement:.cancellationAction){Button("Закрити"){speech.stop();dismiss()}} }.sheet(item:$draft){OpEditor(original:$0)} }.task { if !started { started=true;await speech.start() } }.onDisappear{speech.stop()} }
+    var body:some View { NavigationStack { Form { Section {if s.db.preferences?.voiceHideHint != true { HStack(alignment:.top) { Text("Скажи, наприклад: витратив 450 гривень в АТБ.").font(.subheadline); Button { s.changeAppearance { p in p.voiceHideHint=true } } label:{Image(systemName:"xmark.circle.fill")}.buttonStyle(.borderless).accessibilityLabel("Приховати підказку") } } else { Button("Показати підказку") { s.changeAppearance { p in p.voiceHideHint=false } } };Button {if speech.recording{speech.stop()}else{Task{await speech.start()}}} label:{Label(speech.recording ? "Зупинити" : "Почати запис",systemImage:speech.recording ? "stop.circle.fill" : "mic.fill")};if !speech.message.isEmpty {Text(speech.message).foregroundStyle(.orange)};TextEditor(text:$speech.text).frame(minHeight:100);Text("Якщо локальне розпізнавання недоступне, Apple може обробляти мовлення онлайн.").font(.caption)};Button("Підготувати операцію") {speech.stop();let note=speech.text;let kind:Kind=note.lowercased().contains("дохід") || note.lowercased().contains("отримав") ? .income : .expense;let amount=finamiVoiceAmount(note) ?? 0;let account=s.db.accounts.first(where:{!$0.name.isEmpty && $0.code=="UAH" && note.localizedCaseInsensitiveContains($0.name)})?.id ?? s.db.accounts.first(where:{$0.code=="UAH"})?.id ?? cash;draft=Operation(kind:kind,amount:amount,category:suggestedCategory(note,kind:kind,database:s.db),note:note,account:account)}.disabled(speech.text.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty) }.navigationTitle("Голосовий запис").toolbar { ToolbarItem(placement:.cancellationAction){Button("Закрити"){speech.stop();dismiss()}} }.sheet(item:$draft){OpEditor(original:$0)} }.task { if !started { started=true;await speech.start() } }.onDisappear{speech.stop()} }
 }
 
 struct FinamiBlockSettings:View {

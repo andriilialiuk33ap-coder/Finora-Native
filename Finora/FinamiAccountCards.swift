@@ -120,7 +120,7 @@ struct FinamiHomeAccountCard: View {
             let excludedFields: Set<String> = mode == "own" ? ["limit", "used", "available"] : mode == "credit" ? ["own"] : []
             let preferredFields = Set(a.cardOptions?.fields ?? s.db.preferences?.homeAccountFields ?? HomeAccountField.defaults).subtracting(excludedFields)
             let fields = dashboardSize == .small ? preferredFields.intersection(["own", "limit", "used", "available", "currency", "type"]) : preferredFields
-            let activity = AccountActivity(account: a, operations: s.db.operations, month: date)
+            let activity = s.accountActivity(a, month: date)
             let tint = accountTint(a, fallback: fallbackTint)
             card(a, style: style, right: right, fields: fields, activity: activity, tint: tint)
                 .sheet(item: $route) { route in
@@ -216,7 +216,7 @@ struct FinamiHomeAccountCard: View {
         case .art: HomeAccountArt(account: a, tint: tint)
         case .photo:
             if isMasked(a) { HomeAccountArt(account: a, tint: tint) }
-            else if let data = a.cardOptions?.photo, let image = UIImage(data: data) {
+            else if let data = a.cardOptions?.photo, let image = FinamiImageCache.shared.image(data) {
                 Image(uiImage: image).resizable().scaledToFill().frame(width: 110, height: 92).clipped().clipShape(RoundedRectangle(cornerRadius: 13)).accessibilityLabel("Фото рахунку")
             } else { Button { route = .settings } label: { VStack(spacing: 4) { HomeAccountArt(account: a, tint: tint); Text("Додати фото").font(.caption2) } }.buttonStyle(.plain) }
         case .expenses: panel { metric("Витрати за місяць", amount(activity.spending, a), tint: .primary) }
@@ -300,17 +300,17 @@ struct FinamiHomeAccountsSettings: View {
     @EnvironmentObject private var s: Store
     private var accounts: [Account] { finamiOrderedAccounts(s.db.accounts) }
     private func preference<T>(_ key: WritableKeyPath<AppearancePreferences, T?>, fallback: T) -> Binding<T> {
-        Binding(get: { (s.db.preferences ?? .init())[keyPath: key] ?? fallback }, set: { value in s.change { d in var p = d.preferences ?? .init(); p[keyPath: key] = value; d.preferences = p } })
+        Binding(get: { (s.db.preferences ?? .init())[keyPath: key] ?? fallback }, set: { value in s.changeAppearance { p in p[keyPath: key] = value } })
     }
     private func field(_ field: HomeAccountField) -> Binding<Bool> {
         Binding(get: { (s.db.preferences?.homeAccountFields ?? HomeAccountField.defaults).contains(field.rawValue) }, set: { enabled in
-            s.change { d in var p = d.preferences ?? .init(); var values = p.homeAccountFields ?? HomeAccountField.defaults; values.removeAll { $0 == field.rawValue }; if enabled { values.append(field.rawValue) }; p.homeAccountFields = values; d.preferences = p }
+            s.changeAppearance { p in var values = p.homeAccountFields ?? HomeAccountField.defaults; values.removeAll { $0 == field.rawValue }; if enabled { values.append(field.rawValue) }; p.homeAccountFields = values }
         })
     }
     var body: some View {
         List {
             Section("Загальний стиль") {
-                Picker("Шаблон", selection: Binding(get: { accountStyle(s.db.preferences?.homeAccountLayout).rawValue }, set: { v in s.change { d in var p = d.preferences ?? .init(); p.homeAccountLayout = v; d.preferences = p } })) {
+                Picker("Шаблон", selection: Binding(get: { accountStyle(s.db.preferences?.homeAccountLayout).rawValue }, set: { v in s.changeAppearance { p in p.homeAccountLayout = v } })) {
                     ForEach(HomeAccountStyle.allCases) { Text($0.title).tag($0.rawValue) }
                 }
                 Picker("Права частина", selection: preference(\.homeAccountRight, fallback: "")) {
@@ -374,7 +374,7 @@ struct FinamiHomeAccountSettings: View {
                     if !a.isCredit { Text("Кредитні показники відображаються лише для кредитних рахунків.").font(.caption).foregroundStyle(.secondary) }
                 }
                 Section("Фото рахунку") {
-                    if let data = options.photo, let image = UIImage(data: data) { Image(uiImage: image).resizable().scaledToFit().frame(maxHeight: 140).clipShape(RoundedRectangle(cornerRadius: 12)) }
+                    if let data = options.photo, let image = FinamiImageCache.shared.image(data) { Image(uiImage: image).resizable().scaledToFit().frame(maxHeight: 140).clipShape(RoundedRectangle(cornerRadius: 12)) }
                     PhotosPicker(selection: $photo, matching: .images) { Label("Вибрати фото", systemImage: "photo") }.disabled(photoLoading)
                     if photoLoading { ProgressView("Обробка фото") }
                     if options.photo != nil { Button("Видалити фото", role: .destructive) { update { $0.photo = nil; if $0.right == "photo" { $0.right = "art" } } } }
@@ -393,11 +393,8 @@ struct FinamiHomeAccountSettings: View {
                 photoLoading = true
                 Task { @MainActor in
                     defer { photoLoading = false; photo = nil }
-                    let thumbnailOptions: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceThumbnailMaxPixelSize: 640]
                     guard let data = try? await item.loadTransferable(type: Data.self),
-                          let source = CGImageSourceCreateWithData(data as CFData, nil),
-                          let thumb = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions as CFDictionary),
-                          let jpeg = UIImage(cgImage: thumb).jpegData(compressionQuality: 0.75) else { photoError = true; return }
+                          let jpeg = await Task.detached(priority:.userInitiated, operation:{finamiThumbnailJPEG(data,maxPixels:640)}).value else { photoError = true; return }
                     update { $0.photo = jpeg; $0.right = "photo" }
                 }
             }
@@ -414,7 +411,7 @@ private struct HomeAccountHistory: View {
     var body: some View {
         List {
             if let a = s.db.accounts.first(where: { $0.id == accountID }) {
-                let activity = AccountActivity(account: a, operations: s.db.operations, month: Date())
+                let activity = s.accountActivity(a, month: Date())
                 let mask = blockMasked || s.privateAmounts || a.hideAmounts == true
                 if activity.history.isEmpty { Text("Немає операцій") }
                 ForEach(activity.history) { o in
