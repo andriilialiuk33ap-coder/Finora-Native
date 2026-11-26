@@ -96,31 +96,83 @@ enum FinamiScanParser {
         }
         return result
     }
-    static func installment(_ lines: [String]) -> ScanInstallmentDraft {
+    // Only explicitly labelled, unambiguous amounts are filled automatically.
+    private static let installmentLabels: [[String]] = [
+        ["загальний кредит", "загальна сума кредиту", "сума кредиту", "сума договору", "загальна сума", "початкова сума", "вартість покупки", "сума покупки", "сума розстрочки", "повна вартість", "сума фінансування", "тіло кредиту початкове"],
+        ["залишок боргу", "поточний залишок", "залишок розстрочки", "залишилося сплатити", "залишилось сплатити", "залишок заборгованості", "залишок до сплати", "залишок кредиту", "залишок суми кредиту", "залишок основного боргу", "непогашена сума", "сума до повного погашення", "залишок до погашення", "залишилось погасити", "залишилося погасити"],
+        ["щомісячний платіж", "регулярний платіж", "сума наступного платежу", "сума платежу", "платіж на місяць", "платіж щомісяця", "щомісячна оплата", "розмір платежу", "наступний платіж", "черговий платіж", "обов'язковий платіж", "щомісячний внесок"],
+        ["наступний платіж", "дата платежу", "дата наступного платежу", "сплатити до", "наступне списання", "дата списання", "дата чергового платежу", "черговий платіж", "наступна оплата", "дата оплати"],
+        ["вже сплачено", "вже погашено", "сплачено всього", "погашено всього", "сума погашеного основного боргу", "погашено основного боргу"]
+    ]
+    static func installmentDate(_ text: String) -> Date? {
+        if let d = date(text) { return d }
+        let tokens = matches(#"(?<!\d)\d{1,2}[./]\d{1,2}[./]\d{4}(?!\d)"#, in: text)
+        if tokens.count == 1 {
+            let parts = tokens[0].split(whereSeparator: { $0 == "." || $0 == "/" }).compactMap { Int($0) }
+            if parts.count == 3 { return bankDate(String(format: "%02d.%02d.%04d", parts[0], parts[1], parts[2])) }
+        }
+        let months = ["січня", "лютого", "березня", "квітня", "травня", "червня", "липня", "серпня", "вересня", "жовтня", "листопада", "грудня"]
+        let words = matches(#"(?<!\d)\d{1,2}\s+(?:січня|лютого|березня|квітня|травня|червня|липня|серпня|вересня|жовтня|листопада|грудня)\s+\d{4}(?!\d)"#, in: text.lowercased())
+        if words.count == 1 {
+            let p = words[0].split(whereSeparator: \.isWhitespace)
+            if p.count == 3, let day = Int(p[0]), let month = months.firstIndex(of: String(p[1])), let year = Int(p[2]) { return bankDate(String(format: "%02d.%02d.%04d", day, month+1, year)) }
+        }
+        return nil
+    }
+    private static func installmentAmount(_ text: String) -> ScanMoney? {
+        // Remove only explicit dates before parsing amounts; a date alone is not money.
+        var line = text.replacingOccurrences(of: #"(?<!\d)\d{1,2}[./]\d{1,2}[./]\d{4}(?!\d)"#, with: " ", options: .regularExpression)
+        line = line.replacingOccurrences(of: #"(?i)\d{1,2}\s+(?:січня|лютого|березня|квітня|травня|червня|липня|серпня|вересня|жовтня|листопада|грудня)\s+\d{4}"#, with: " ", options: .regularExpression)
+        return money(line.replacingOccurrences(of: ":", with: " "), allowBare: true)
+    }
+    static func installmentCandidates(_ lines: [String]) -> [String] {
+        var seen = Set<String>()
+        return lines.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { line in
+            !line.isEmpty && seen.insert(line).inserted && (installmentAmount(line) != nil || installmentDate(line) != nil)
+        }
+    }
+    static func installmentCandidateAmount(_ text: String) -> Int64? {
+        guard let m = installmentAmount(text), m.currency != "USD", m.minor >= 0 else { return nil }; return m.minor
+    }
+    static func installment(_ input: [String]) -> ScanInstallmentDraft {
+        let lines = input.map(bankClean).filter { !$0.isEmpty }
         var draft = ScanInstallmentDraft()
         draft.foreignCurrency = lines.contains(where: hasUnsupportedCurrency)
-        var totals: [Int64] = [], remains: [Int64] = [], monthly: [Int64] = [], dates: [Date] = []
-        let totalLabels = ["загальний кредит", "сума кредиту", "сума договору", "загальна сума", "початкова сума", "вартість покупки", "сума розстрочки"]
-        let remainingLabels = ["залишок боргу", "поточний залишок", "залишок розстрочки", "залишилося сплатити", "залишок заборгованості", "залишок до сплати", "залишок кредиту"]
-        let monthlyLabels = ["щомісячний платіж", "регулярний платіж", "сума наступного платежу", "сума платежу", "платіж на місяць"]
-        let dueLabels = ["наступний платіж", "дата платежу", "дата наступного платежу", "сплатити до", "наступне списання"]
+        var values = Array(repeating: [Int64](), count: 5), dates: [Date] = []
+        func groups(_ line: String) -> [Int] {
+            let low = line.lowercased().replacingOccurrences(of: "’", with: "'")
+            return installmentLabels.indices.filter { i in installmentLabels[i].contains { low.contains($0) } }
+        }
+        func amountOnly(_ line: String) -> ScanMoney? {
+            guard line.range(of: #"^\s*[+−-]?[\d\s,.₴$]+(?:грн\.?|UAH|USD)?\s*$"#, options: [.regularExpression, .caseInsensitive]) != nil, installmentDate(line) == nil else { return nil }
+            return installmentAmount(line)
+        }
         for (i, line) in lines.enumerated() {
-            let low = line.lowercased()
-            let next = i + 1 < lines.count ? lines[i+1] : ""
-            let nextIsValue = next.range(of: #"^\s*[+−-]?[\d\s,.₴$]+(?:грн\.?|UAH|USD)?\s*$"#, options:[.regularExpression,.caseInsensitive]) != nil
-            if let m = money(line, allowBare: true) ?? (nextIsValue ? money(next, allowBare: true) : nil) {
-                if totalLabels.contains(where: {low.contains($0)}) { if m.currency == "USD" { draft.foreignCurrency = true } else if m.minor > 0 { totals.append(m.minor) } }
-                else if remainingLabels.contains(where: {low.contains($0)}) { if m.currency == "USD" { draft.foreignCurrency = true } else if m.minor >= 0 { remains.append(m.minor) } }
-                else if monthlyLabels.contains(where: {low.contains($0)}) { if m.currency == "USD" { draft.foreignCurrency = true } else if m.minor > 0 { monthly.append(m.minor) } }
+            let low = line.lowercased(), kinds = groups(line)
+            let next = i+1 < lines.count ? lines[i+1] : ""
+            // Do not assign an amount from a row with more than one distinct money label.
+            let moneyKinds = kinds.filter { $0 != 3 }
+            if moneyKinds.count == 1, let kind = moneyKinds.first {
+                // A short date without a year (01.12) is ambiguous and must not become a payment.
+                let looksLikeShortDate = kinds.contains(3) && !matches(#"(?<!\d)\d{1,2}[./]\d{1,2}(?![\d./])"#, in: line).isEmpty && matches(currency, in: line).isEmpty
+                let m = looksLikeShortDate ? nil : (installmentAmount(line) ?? amountOnly(next))
+                if let m = m { if m.currency == "USD" { draft.foreignCurrency = true } else if m.minor >= 0 { values[kind].append(m.minor) } }
             }
-            if dueLabels.contains(where: {low.contains($0)}), let d = date(line) ?? date(next) { dates.append(d) }
-            if draft.name.isEmpty && ["назва:","товар:","покупка:"].contains(where: {low.hasPrefix($0)}) {
-                draft.name = bankRedact(String(line.split(separator: ":", maxSplits: 1).dropFirst().joined(separator: ":")))
+            if kinds.contains(3), let d = installmentDate(line) ?? (groups(next).isEmpty ? installmentDate(next) : nil) { dates.append(d) }
+            if draft.name.isEmpty {
+                if ["назва", "товар", "назва товару", "предмет договору"].contains(low.trimmingCharacters(in: CharacterSet(charactersIn: ": "))), groups(next).isEmpty, installmentAmount(next) == nil, installmentDate(next) == nil, !next.isEmpty { draft.name = bankRedact(next) }
+                for prefix in ["назва:", "товар:", "покупка:", "назва товару:", "предмет договору:"] where low.hasPrefix(prefix) {
+                    let value = bankRedact(String(line.dropFirst(prefix.count))); if !value.isEmpty { draft.name = value }
+                }
             }
         }
-        if Set(totals).count == 1 { draft.total = totals.first }
-        if Set(remains).count == 1 { draft.remaining = remains.first }
-        if Set(monthly).count == 1 { draft.monthly = monthly.first }
+        func unique(_ a: [Int64]) -> Int64? { Set(a).count == 1 ? a.first : nil }
+        draft.total = unique(values[0]); draft.remaining = unique(values[1]); draft.monthly = unique(values[2])
+        // Only derive remaining from explicitly labelled principal paid, never generic payments with fees.
+        if draft.remaining == nil, values[1].isEmpty, let t = draft.total {
+            let principal = lines.filter { $0.lowercased().contains("погашено основного боргу") || $0.lowercased().contains("погашеного основного боргу") }
+            if principal.count == 1, let paid = installmentCandidateAmount(principal[0]), paid <= t { draft.remaining = t-paid }
+        }
         if Set(dates).count == 1 { draft.due = dates.first }
         return draft
     }

@@ -68,6 +68,9 @@ struct FinamiShortcutCheckIntent: AppIntent {
 }
 struct FinamiShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
+        AppShortcut(intent: CaptureBankNotificationIntent(), phrases: ["Record bank notification with \(.applicationName)"], shortTitle: "Сповіщення банку", systemImageName: "bell.badge")
+        AppShortcut(intent: CaptureWalletIntent(), phrases: ["Record Wallet payment with \(.applicationName)"], shortTitle: "Apple Pay", systemImageName: "creditcard")
+        AppShortcut(intent: CaptureMessageIntent(), phrases: ["Record bank message with \(.applicationName)"], shortTitle: "Банківське SMS", systemImageName: "message")
         AppShortcut(intent: FinamiShortcutCheckIntent(), phrases: ["Check \(.applicationName)"], shortTitle: "Перевірка зв’язку", systemImageName: "checkmark.shield")
     }
 }

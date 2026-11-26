@@ -38,6 +38,10 @@ private func recognizeScan(_ data: Data) throws -> ScanPhoto {
         do { try VNImageRequestHandler(cgImage: image, options: [:]).perform([retry]); recognized = retry }
         catch { warning = "Vision не зміг розпізнати текст: " + error.localizedDescription }
     }
+    if (recognized.results ?? []).isEmpty {
+        let retry = VNRecognizeTextRequest(); retry.recognitionLevel = .accurate; retry.usesLanguageCorrection = false
+        if (try? VNImageRequestHandler(cgImage: image, options: [:]).perform([retry])) != nil, !(retry.results ?? []).isEmpty { recognized = retry; warning = nil }
+    }
     // Vision returns bounding boxes. Join items on the same horizontal row (merchant + amount).
     let observations = (recognized.results ?? []).compactMap { o -> (CGRect, String)? in
         guard let text = o.topCandidates(1).first?.string else { return nil }
@@ -322,11 +326,13 @@ private struct ScanInstallmentReview: View {
     @State private var duplicateOverride = false
     @State private var busy = false
     private let foreign: Bool
+    private let recognizedDue: Bool
+    @State private var sourceAssignment = "total"
     init(photo: ScanPhoto) {
         self.photo = photo; let d = FinamiScanParser.installment(photo.lines)
         _name = State(initialValue: d.name); _total = State(initialValue: d.total.map(amountText) ?? "")
         _remaining = State(initialValue: d.remaining.map(amountText) ?? ""); _monthly = State(initialValue: d.monthly.map(amountText) ?? "")
-        _due = State(initialValue: d.due ?? Date()); foreign = d.foreignCurrency
+        _due = State(initialValue: d.due ?? Date()); foreign = d.foreignCurrency; recognizedDue = d.due != nil
     }
     private var existing: [Obligation] { s.db.obligations.filter { $0.kind == .installment || $0.kind == .owe } }
     private var exact: Bool { existing.contains { $0.scanFingerprint == photo.id && $0.id != targetID } }
@@ -349,6 +355,22 @@ private struct ScanInstallmentReview: View {
                 Text("Оновлення змінює дані договору, але не створює операцію списання. Історія рахунків не змінюється.").font(.caption)
                 if exact { Label("Скриншот вже пов’язаний з іншим договором. Вибери його для оновлення.", systemImage: "exclamationmark.triangle").foregroundStyle(.orange) }
                 else if similar { Toggle("Це інший договір, не дубль", isOn: $duplicateOverride) }
+            }
+            Section("Розпізнано зі скриншота") {
+                Text("Заповнено \([name, total, remaining, monthly].filter { !$0.isEmpty }.count) із 4 текстових полів. \(recognizedDue ? "Дату знайдено." : "Дату потрібно вибрати вручну.")").font(.caption)
+                if photo.lines.isEmpty { Text("Vision не повернув текст. Спробуй інший скриншот або введи дані вручну.").foregroundStyle(.orange) }
+                else {
+                    Picker("Куди підставити значення", selection: $sourceAssignment) {
+                        Text("Загальний кредит").tag("total"); Text("Поточний залишок").tag("remaining"); Text("Щомісячний платіж").tag("monthly"); Text("Наступна дата").tag("due"); Text("Назва").tag("name")
+                    }
+                    ForEach(Array(photo.lines.enumerated()), id: \.offset) { entry in
+                        let line = entry.element
+                        if sourceAssignment == "name" || (sourceAssignment == "due" ? FinamiScanParser.installmentDate(line) != nil : FinamiScanParser.installmentCandidateAmount(line) != nil) {
+                            Button { assign(line) } label: { Label(line, systemImage: "arrow.down.circle").font(.subheadline) }
+                        }
+                    }
+                    Text("Обери поле, потім натисни потрібний рядок. Суми без чіткого підпису не підставляються навмання.").font(.caption).foregroundStyle(.secondary)
+                }
             }
             Section("Дані договору · UAH") {
                 FinamiField("Назва", text: $name)
@@ -380,6 +402,13 @@ private struct ScanInstallmentReview: View {
                 if name.isEmpty { name = old.name }; if total.isEmpty { total = amountText(old.target) }; if remaining.isEmpty { remaining = amountText(old.remaining) }; if monthly.isEmpty { monthly = amountText(old.monthly) }
             }
         }.onChange(of: due) { _ in dateChecked = false }.onChange(of: name) { _ in checked = false; duplicateOverride = false }.onChange(of: total) { _ in checked = false; duplicateOverride = false }.onChange(of: remaining) { _ in checked = false }.onChange(of: monthly) { _ in checked = false; duplicateOverride = false }
+    }
+    private func assign(_ line: String) {
+        checked = false; duplicateOverride = false
+        if sourceAssignment == "name" { name = bankRedact(line); return }
+        if sourceAssignment == "due" { if let d = FinamiScanParser.installmentDate(line) { due = d; dateChecked = false }; return }
+        guard let amount = FinamiScanParser.installmentCandidateAmount(line) else { return }
+        switch sourceAssignment { case "total": total = amountText(amount); case "remaining": remaining = amountText(amount); case "monthly": monthly = amountText(amount); default: break }
     }
     private func save() {
         guard valid, let t = bankMinor(total), let r = bankMinor(remaining), let m = bankMinor(monthly) else { return }

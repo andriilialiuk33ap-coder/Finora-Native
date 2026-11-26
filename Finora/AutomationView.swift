@@ -116,8 +116,8 @@ struct AutomationCenter: View {
                 Text(chosen.id).font(.caption2.monospaced()).textSelection(.enabled)
             }
             Text("Спочатку створіть рахунок у вкладці Рахунки. Для кожної картки налаштуйте окрему автоматизацію. Код рахунку — внутрішній ID, не номер картки.").font(.caption)
-            Button { if let chosen { UIPasteboard.general.string = chosen.id; copied = true }; launchShortcuts() } label: { Label("Копіювати код і відкрити Команди", systemImage: "bolt.fill") }.disabled(chosen == nil)
-            Text("Це відкриває Команди, але не створює автоматизацію. Тригер та його параметри потрібно один раз налаштувати вручну.").font(.caption).foregroundStyle(.secondary)
+            Button { if let chosen { UIPasteboard.general.string = chosen.id; copied = true }; launchShortcuts() } label: { Label("Відкрити Команди для налаштування", systemImage: "bolt.fill") }.disabled(chosen == nil)
+            Text("Шукай готові дії в Команди → Програми → Finami. Ця кнопка не встановлює персональну автоматизацію. Тригер та його параметри потрібно один раз налаштувати вручну.").font(.caption).foregroundStyle(.secondary)
         }.onChange(of:account){_ in copied=false}
     }
     private var connectionSection: some View {
@@ -227,7 +227,7 @@ struct AutomationGuide: View {
     let steps: [String]
     var body: some View {
         ScrollView {VStack(alignment:.leading,spacing:20){
-            if title.contains("Apple Pay") || title.contains("Сповіщення банку") { Picker("Рахунок Finami",selection:$accountID){Text("Вибрати рахунок").tag("");ForEach(s.db.accounts){a in Text(a.name+" · "+a.code).tag(a.id)}};Button { UIPasteboard.general.string=accountID;if let url=URL(string:"shortcuts://") {openURL(url)} } label:{Label("Копіювати код і відкрити Команди",systemImage:"bolt.fill")}.buttonStyle(.borderedProminent).disabled(accountID.isEmpty);Text("Код рахунку скопіюється. У Командах додай потрібний системний тригер. Ця кнопка відкриває Команди, а не імпортує готовий шаблон.").font(.caption).foregroundStyle(.secondary) }
+            if title.contains("Apple Pay") || title.contains("Сповіщення банку") { Picker("Рахунок Finami",selection:$accountID){Text("Вибрати рахунок").tag("");ForEach(s.db.accounts){a in Text(a.name+" · "+a.code).tag(a.id)}};Button { UIPasteboard.general.string=accountID;if let url=URL(string:"shortcuts://") {openURL(url)} } label:{Label("Відкрити Команди для налаштування",systemImage:"bolt.fill")}.buttonStyle(.borderedProminent).disabled(accountID.isEmpty);Text("Код рахунку скопіюється. У Командах додай потрібний системний тригер. Ця кнопка відкриває Команди, а не імпортує готовий шаблон.").font(.caption).foregroundStyle(.secondary) }
             ForEach(Array(steps.enumerated()),id:\.offset){entry in
                 HStack(alignment:.top,spacing:14){
                     Text(String(entry.offset+1)).font(.headline).foregroundStyle(.white).frame(width:36,height:36).background(finoraAccent,in:Circle())
@@ -257,7 +257,7 @@ struct AutomationGuide: View {
         "На iOS 27 відкрийте Команди, створіть нову команду та в редакторі виберіть розділ Автоматизація → Сповіщення (Notification). На старіших iOS використовуйте SMS, Wallet або виписки.",
         "Виберіть тільки застосунок потрібного банку. За можливості встановіть фільтр на проведені покупки й конкретну картку, а не всі сповіщення.",
         "Додайте дію Finami: сповіщення банку. У Текст сповіщення виберіть змінну Сповіщення та її текст/тіло (Body). Якщо сума у заголовку чи підзаголовку, об’єднайте лише потрібні поля через дію Текст. У Код рахунку Finami вставте скопійований код. Не передавайте OTP чи повідомлення безпеки.",
-        "Увімкніть автоматизацію в редакторі команди. За можливості вимкніть підтвердження перед запуском. Перевірте наступну реальну оплату у вхідних Finami та час останнього повідомлення. Не вмикайте одночасно два джерела для тієї ж картки без звірки. Готове посилання на імпорт команди ще не опубліковано."]
+        "Увімкніть автоматизацію в редакторі команди. За можливості вимкніть підтвердження перед запуском. Перевірте наступну реальну оплату у вхідних Finami та час останнього повідомлення. Не вмикайте одночасно два джерела для тієї ж картки без звірки. Готові дії доступні через Програми → Finami після реєстрації iOS. Щоб отримати імпортований шаблон, збережіть створену команду через Поділитися → Копіювати посилання iCloud."]
     static let banks=[
         "ПУМБ: Wallet або SMS/сповіщення, якщо доступні; для звірки використовуйте PDF-виписку. Кредитний ліміт задайте в картці, не як дохід.",
         "А-БАНК: Wallet або SMS/сповіщення, якщо доступні; PDF із MCC для точнішої категоризації.",
