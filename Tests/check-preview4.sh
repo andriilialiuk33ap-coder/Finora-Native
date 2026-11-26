@@ -54,6 +54,12 @@ require(p.installment(["Загальна сума 2000 ₴ Залишок бор
 require(p.installmentCandidateAmount("2 500,00 ₴") == 250000 && p.installmentCandidateAmount("5 грудня 2026") == nil, "P8 source amount selection")
 require(p.installment(["Сума кредиту 10000 ₴", "Погашено основного боргу 2500 ₴"]).remaining == 750000, "P8 derive remaining from explicitly paid principal")
 require(p.installment(["Сума кредиту 10000 ₴", "Вже сплачено 2500 ₴"]).remaining == nil, "P8 no generic paid derivation with unknown fees")
+let reverse = p.installment(["Назва: Телефон", "30 000 ₴", "Загальний кредит", "15 000 ₴", "Поточний залишок", "2 500 ₴", "Щомісячний платіж", "01.12.2026", "Дата наступного платежу"])
+require(reverse.total == 3000000 && reverse.remaining == 1500000 && reverse.monthly == 250000 && reverse.due == p.date("01.12.2026"), "QA: amounts and date above labels retain correct fields")
+let forward = p.installment(["Назва: Телефон", "Загальний кредит", "30 000 ₴", "Поточний залишок", "15 000 ₴", "Щомісячний платіж", "2 500 ₴", "Дата наступного платежу", "01.12.2026"])
+require(forward.total == 3000000 && forward.remaining == 1500000 && forward.monthly == 250000 && forward.due == p.date("01.12.2026"), "QA: amounts and date below labels retain correct fields")
+let ambiguous = p.installment(["Загальний кредит", "15 000 ₴", "Поточний залишок"])
+require(ambiguous.total == nil && ambiguous.remaining == nil, "QA: a value between two unmatched labels is not guessed")
 SWIFT
 swiftc -warnings-as-errors Finora/BankCore.swift Finora/FinamiScanCore.swift "$tmp/Models.swift" "$tmp/main.swift" -o "$tmp/preview4-tests"
 TZ=Europe/Kyiv "$tmp/preview4-tests"

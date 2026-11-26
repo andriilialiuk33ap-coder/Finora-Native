@@ -95,5 +95,5 @@ import Foundation
     }
 }
 SWIFT
-swiftc Finora/BankCore.swift Finora/MoneyCore.swift Finora/AutomationCore.swift "$tmp/CaptureModels.swift" "$tmp/CaptureHarness.swift" -o "$tmp/capture-test"
+swiftc Finora/BankCore.swift Finora/FinamiScanCore.swift Finora/MoneyCore.swift Finora/AutomationCore.swift "$tmp/CaptureModels.swift" "$tmp/CaptureHarness.swift" -o "$tmp/capture-test"
 "$tmp/capture-test"
