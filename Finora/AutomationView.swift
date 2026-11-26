@@ -124,8 +124,8 @@ struct AutomationCenter: View {
     }
     var body: some View {
         List {
-            setupSection
             templateSection
+            setupSection
             connectionSection
             autoSection
             inboxSection
@@ -137,7 +137,7 @@ struct AutomationCenter: View {
             .alert("Не вдалося відкрити Команди", isPresented: $openFailed) { Button("OK", role: .cancel) {} } message: { Text("Відкрий системний застосунок Команди вручну.") }
     }
     private var setupSection: some View {
-        Section("1. Виберіть картку") {
+        Section("Рахунок та ручне налаштування (за потреби)") {
             Picker("Рахунок",selection:$account) {
                 Text("Вибрати").tag("")
                 ForEach(s.db.accounts){a in Text(a.name+" · "+a.code).tag(a.id)}
@@ -163,7 +163,7 @@ struct AutomationCenter: View {
             Button { importShortcut(walletShortcutLink) } label: {
                 Label(finamiSharedShortcutURL(walletShortcutLink) == nil ? "Налаштувати шаблон · Apple Pay" : "Додати в Команди · Apple Pay", systemImage: "plus.circle.fill")
             }.buttonStyle(.borderless).accessibilityIdentifier("qa.automation.import.wallet")
-            Text("Готовий шаблон: перевір вибраний банк, змінну Сповіщення та рахунок auto. У додаткових параметрах дії вкажи банк і за потреби окремо заголовок сповіщення. Увімкни тригер у Командах. Не додавай повторно, якщо команда вже встановлена.").font(.caption)
+            Text("1. Імпортуй шаблон. 2. Підтвердь банк і тригер у Командах. 3. Перевір отримання реальної операції. Рахунок auto використовує банк і маску картки. Не додавай ту саму команду повторно.").font(.caption)
             if finamiSharedShortcutURL(walletShortcutLink) == nil {
                 Text("Для Apple Pay окремого імпортованого шаблону ще немає. Скористайся готовою дією Finami нижче або додай власне посилання.").font(.caption).foregroundStyle(.secondary)
             }

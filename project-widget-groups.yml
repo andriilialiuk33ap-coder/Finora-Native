@@ -1,0 +1,11 @@
+include:
+  - project.yml
+targets:
+  Finora:
+    settings:
+      base:
+        CODE_SIGN_ENTITLEMENTS: Config/WidgetGroups.entitlements
+  FinamiWidgets:
+    settings:
+      base:
+        CODE_SIGN_ENTITLEMENTS: Config/WidgetGroups.entitlements

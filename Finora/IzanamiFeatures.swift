@@ -37,6 +37,8 @@ struct AppearancePreferences: Codable {
     var reportsPeriod: String? = nil
     var reportsAccount: String? = nil
     var reportsShowIncome: Bool? = nil
+    var reportsShowIncoming: Bool? = nil
+    var reportsCompareElapsed: Bool? = nil
     var reportsShowComparison: Bool? = nil
     var reportsShowAccounts: Bool? = nil
     var reportsShowReview: Bool? = nil
@@ -66,7 +68,7 @@ struct IzanamiShell: View {
     var scheme: ColorScheme? { p.mode == "dark" ? .dark : p.mode == "light" ? .light : p.mode == "preset" ? preset.scheme : nil }
     var design: Font.Design { p.font == "rounded" ? .rounded : p.font == "serif" ? .serif : p.font == "monospaced" ? .monospaced : p.font == "preset" ? preset.font : .default }
     var body: some View {
-        Root().tint(accent).preferredColorScheme(scheme).environment(\.font, .system(.body, design: design))
+        Root().tint(accent).preferredColorScheme(scheme).environment(\.font, .system(.body, design: design)).environment(\.locale, Locale(identifier:"uk_UA"))
     }
 }
 // A single visual vocabulary for menus and overview cards.
@@ -150,15 +152,11 @@ func ruleKey(_ note: String, kind: Kind) -> String { kind.rawValue + ":" + note.
 func suggestedCategory(_ note: String, kind: Kind, database: Database) -> String {
     let hidden = kind == .income ? database.hiddenIncomeCategories ?? [] : database.hiddenExpenseCategories ?? []
     let allowed = (kind == .income ? database.incomeCategories : database.expenseCategories).filter { !hidden.contains($0) }
-    if let learned = database.merchantRules?[ruleKey(note, kind: kind)], allowed.contains(learned) { return learned }
-    guard kind == .expense else { return "Без категорії" }
-    let n = note.lowercased()
-    let rules: [(String,String)] = [("uklon","🚕 Таксі"),("bolt.eu","🚕 Таксі"),("1taxi","🚕 Таксі"),("thrash","🛒 Продукти"),("torba","🛒 Продукти"),("атб","🛒 Продукти"),("atb","🛒 Продукти"),("atб","🛒 Продукти"),("apteka","💊 Здоров’я"),("lifecell","📱 Зв’язок"),("utility","🧾 Комунальні"),("kavy ta chaiu","☕ Кава"),("netflix","📺 Підписки"),("spotify","📺 Підписки")]
-    return rules.first(where: { n.contains($0.0) && allowed.contains($0.1) })?.1 ?? "Без категорії"
+    return finamiIntelligentCategory(note, kind: kind, allowed: allowed, learned: database.merchantRules ?? [:])
 }
 
 enum DashboardKind: String, Codable, CaseIterable, Identifiable {
-    case balance, cashflow, categories, recent, accounts, budget, obligations, subscriptions, reminders, forecast, uncategorized, goals, debt, installments, recurring, statistics, fees, savings, ownFunds, creditDebt, availableCredit, review, creditLimit, creditPortfolio, allAvailable, monthlyPayments
+    case balance, cashflow, categories, recent, accounts, budget, obligations, subscriptions, reminders, forecast, uncategorized, goals, debt, installments, recurring, statistics, fees, savings, ownFunds, creditDebt, availableCredit, review, creditLimit, creditPortfolio, allAvailable, monthlyPayments, paymentCalendar
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -188,6 +186,7 @@ enum DashboardKind: String, Codable, CaseIterable, Identifiable {
         case .creditPortfolio: return "Кредитні кошти"
         case .allAvailable: return "Власні + доступний кредит"
         case .monthlyPayments: return "Платежі до кінця місяця"
+        case .paymentCalendar: return "Календар платежів"
         }
     }
     var icon: String {
@@ -208,7 +207,7 @@ enum DashboardKind: String, Codable, CaseIterable, Identifiable {
         case .review: return "exclamationmark.bubble.fill"
         case .creditLimit,.creditPortfolio: return "creditcard.fill"
         case .allAvailable: return "wallet.pass.fill"
-        case .monthlyPayments: return "calendar"
+        case .monthlyPayments,.paymentCalendar: return "calendar"
         }
     }
 }
@@ -220,7 +219,7 @@ extension DashboardKind {
         case .creditDebt,.fees,.debt,.review: return .orange
         case .accounts,.availableCredit,.creditLimit,.creditPortfolio,.allAvailable: return .blue
         case .subscriptions,.categories: return .purple
-        case .obligations,.reminders,.recurring,.monthlyPayments: return .cyan
+        case .obligations,.reminders,.recurring,.monthlyPayments,.paymentCalendar: return .cyan
         case .forecast,.statistics: return .teal
         case .cashflow,.budget: return .indigo
         case .recent,.uncategorized,.installments: return .pink
@@ -241,6 +240,8 @@ struct DashboardItem: Codable, Identifiable {
     var showPaymentRemaining: Bool? = nil
     var showPaymentDate: Bool? = nil
     var showPaymentImage: Bool? = nil
+    var showPaymentTotal: Bool? = nil
+    var showPaymentNames: Bool? = nil
     var hideAmounts: Bool? = nil
     static var defaults: [Self] { DashboardKind.allCases.map { k in
         .init(kind: k, enabled: [.ownFunds,.categories,.obligations,.recent].contains(k), size: [.balance,.ownFunds,.categories,.obligations,.creditPortfolio,.recent].contains(k) ? .large : .medium)
@@ -288,7 +289,7 @@ struct CustomDashboard: View {
     var rows: [[DashboardItem]] {
         var result: [[DashboardItem]] = []; var pair: [DashboardItem] = []
         for item in items {
-            if item.size == .small && ![.balance,.ownFunds,.creditLimit,.creditPortfolio,.obligations,.allAvailable,.monthlyPayments,.accounts].contains(item.kind) && !dynamicTypeSize.isAccessibilitySize { pair.append(item); if pair.count == 2 { result.append(pair); pair = [] } }
+            if item.size == .small && ![.balance,.ownFunds,.creditLimit,.creditPortfolio,.obligations,.allAvailable,.monthlyPayments,.accounts,.paymentCalendar].contains(item.kind) && !dynamicTypeSize.isAccessibilitySize { pair.append(item); if pair.count == 2 { result.append(pair); pair = [] } }
             else { if !pair.isEmpty { result.append(pair); pair = [] }; result.append([item]) }
         }
         if !pair.isEmpty { result.append(pair) }; return result
@@ -323,7 +324,7 @@ struct DashboardTile: View {
     var inc: Int64 { s.totals(ops,.income) }
     var exp: Int64 { s.totals(ops,.expense) }
     var balance: Int64 { s.includedAccounts.reduce(0) { $0 + s.balance($1) } }
-    var small: Bool { item.size == .small && ![.balance,.ownFunds,.creditLimit,.creditPortfolio,.obligations,.allAvailable,.monthlyPayments,.accounts].contains(item.kind) && !dynamicTypeSize.isAccessibilitySize }
+    var small: Bool { item.size == .small && ![.balance,.ownFunds,.creditLimit,.creditPortfolio,.obligations,.allAvailable,.monthlyPayments,.accounts,.paymentCalendar].contains(item.kind) && !dynamicTypeSize.isAccessibilitySize }
     @State private var paymentDetails: FinamiPayment?
     @State private var accountSettings = false
     var masked: Bool { s.privateAmounts || item.hideAmounts == true }
@@ -437,6 +438,7 @@ struct DashboardTile: View {
         case .creditPortfolio: FinamiCreditSummary(showLimit:item.showLimit ?? true,showUsed:item.showUsed ?? true,showAvailable:item.showAvailable ?? true, dashboardSize: item.size)
         case .allAvailable: amount(s.totalOwnFunds+s.totalAvailableCredit);detail("Власні кошти разом із доступним кредитом")
         case .monthlyPayments: FinamiMonthPayments(dashboardSize: item.size)
+        case .paymentCalendar: FinamiCalendarGrid(compact: compact, masked: masked)
         case .cashflow: cashFlow
         case .categories: categories
         case .recent:
@@ -458,16 +460,14 @@ struct DashboardTile: View {
         case .obligations:
             if let next=s.upcomingPayments.first { Button { paymentDetails=next } label:{FinamiPaymentCard(payment:next,showRemaining:item.showPaymentRemaining ?? true,showDate:item.showPaymentDate ?? true,showImage:item.showPaymentImage ?? true, dashboardSize: item.size)}.buttonStyle(.plain) }
             else {detail("Немає запланованих платежів")}
-        case .subscriptions:
-            value(String((s.db.subscriptions ?? []).filter{$0.active}.count)); detail("Активних підписок")
-            if let next = (s.db.subscriptions ?? []).filter({$0.active}).sorted(by: {$0.next < $1.next}).first { Text(next.name).font(.subheadline.weight(.medium)); detail(next.next.formatted(.dateTime.day().month(.wide).locale(Locale(identifier: "uk_UA")))) }
+        case .subscriptions: paymentSummary(s.upcomingPayments.filter(\.subscription), showRemaining: false)
         case .reminders: value(String((s.db.reminders ?? []).filter{$0.enabled && $0.date > Date()}.count)); detail("Майбутніх нагадувань")
         case .forecast: if let f = s.db.forecast { amount(s.totalOwnFunds + f.expected - f.reserve - f.planned); detail("Прогнозований залишок") } else { detail("За бажанням") }
         case .uncategorized: value(String(ops.filter{$0.category == "Без категорії"}.count)); detail("Операцій без категорії")
         case .goals: obligationSummary([.goal])
         case .debt: metric("Мені винні", s.db.obligations.filter{$0.kind == .owed}.reduce(0){$0+$1.remaining}, .green); metric("Я винен", s.db.obligations.filter{$0.kind == .owe}.reduce(0){$0+$1.remaining}, .orange)
-        case .installments: obligationSummary([.installment])
-        case .recurring: obligationSummary([.recurring])
+        case .installments: paymentSummary(s.upcomingPayments.filter { $0.kind == ObligationKind.installment.title }, showRemaining: true)
+        case .recurring: paymentSummary(s.upcomingPayments.filter { $0.subscription || $0.kind == ObligationKind.recurring.title || $0.kind == ObligationKind.installment.title }, showRemaining: false)
         case .statistics: value(String(ops.count)); detail("Операцій · потік \(visible(inc-exp))")
         case .fees: amount(ops.filter{$0.kind == .expense && $0.category == "🏦 Комісії"}.reduce(0){$0+$1.amount})
         case .ownFunds:
@@ -478,6 +478,38 @@ struct DashboardTile: View {
         case .availableCredit: amount(s.totalAvailableCredit); detail("Не є власними коштами")
         case .review: value(String(ops.filter{$0.kind.needsReview}.count)); detail("Потребують перевірки")
         case .savings: value(masked ? "••••" : inc > 0 ? ((Double(inc-exp)/Double(inc)).formatted(.percent.precision(.fractionLength(1)))) : "—"); detail("Частка доходу після витрат")
+        }
+    }
+    @ViewBuilder func paymentSummary(_ payments: [FinamiPayment], showRemaining: Bool) -> some View {
+        if payments.isEmpty { detail("Немає активних платежів") }
+        else {
+            let remainingMode = showRemaining && item.showPaymentRemaining != false
+            let interval = Calendar.current.dateInterval(of: .month, for: date)
+            let ids = Set(payments.map(\.id))
+            let planned = interval.map { s.calendarEvents(interval:$0).filter { event in !event.paid && ids.contains(event.paymentID) } } ?? []
+            if item.showPaymentTotal != false {
+                ForEach(Array(Set(payments.map(\.currency))).sorted(), id: \.self) { code in
+                    let total = remainingMode ? payments.filter { $0.currency == code }.reduce(Int64(0)) { $0 + ($1.remaining ?? $1.amount) } : planned.filter { $0.currency == code }.reduce(Int64(0)) { $0 + $1.amount }
+                    Text(visible(total, code)).font(.title2.bold()).monospacedDigit()
+                }
+                detail(remainingMode ? "Залишок боргу" : "Неоплачене за графіком · " + monthName(date))
+            }
+            if item.showPaymentNames != false {
+                ForEach(Array(payments.prefix(max(1, min(20, item.categoryCount ?? (compact ? 1 : detailed ? 6 : 3)))))) { p in
+                    Button { paymentDetails = p } label: {
+                        HStack(alignment: .firstTextBaseline) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(p.name).font(.subheadline).lineLimit(2)
+                                if item.showPaymentDate != false { Text(p.date.formatted(.dateTime.day().month(.wide).locale(Locale(identifier: "uk_UA")))).font(.caption).foregroundStyle(.secondary) }
+                            }
+                            Spacer(minLength: 4)
+                            Text(visible(remainingMode ? (p.remaining ?? p.amount) : p.amount, p.currency)).font(.subheadline.weight(.semibold)).monospacedDigit()
+                        }
+                    }.buttonStyle(.plain)
+                }
+                if payments.count > (item.categoryCount ?? (compact ? 1 : detailed ? 6 : 3)) { detail("Усього: \(payments.count)") }
+            }
+            if item.showPaymentTotal == false && item.showPaymentNames == false { detail("Показники приховано") }
         }
     }
     @ViewBuilder func obligationSummary(_ kinds: [ObligationKind]) -> some View {
@@ -600,6 +632,7 @@ struct SubscriptionsView: View {
     var list: [SubscriptionRecord] { (s.db.subscriptions ?? []).sorted{$0.next < $1.next} }
     var body: some View {
         List {
+            Section { NavigationLink("Виявити підписки за операціями") { FinamiRecurringSuggestionsView() } }
             Section("Активні") { ForEach(["UAH","USD"], id: \.self) { currency in let active = list.filter{$0.active && $0.currency == currency}; if !active.isEmpty { let total = active.reduce(0.0) { n,r in n + Double(r.amount) * (r.period == .week ? 52.0/12 : r.period == .year ? 1.0/12 : 1) }; LabeledContent("Місячна оцінка \(currency)", value: s.visibleMoney(Int64(total.rounded()),currency)) } } }
             ForEach(list) { r in
                 Button { edit = r } label: { HStack { IzanamiLabel(title: r.name,icon:"repeat",color:.purple); Spacer(); VStack(alignment:.trailing){Text(s.visibleMoney(r.amount,r.currency)).bold(); Text(r.active ? r.next.formatted(date:.abbreviated,time:.omitted) : "Призупинено").font(.caption)} } }.buttonStyle(.plain)

@@ -15,6 +15,7 @@ struct FinamiReportTotals {
     var count = 0
     var review = 0
     var net: Int64 { income - expense }
+    var incoming: Int64 { income + refunds + transfersIn + creditDraw + creditTopUp + unclassifiedIn }
     // Gross movements are separate from income/expense. For internal transfers,
     // each account sees only its own leg; the aggregate sees both legs once.
     mutating func add(_ o: Operation, account: String? = nil) {
@@ -159,5 +160,35 @@ struct FinamiReportCache {
         let value = FinamiReportSnapshot(operations: operations, date: date, annual: annual, account: account, calendar: calendar)
         entry = (key, value)
         return value
+    }
+}
+
+// Use the same number of calendar days for an unfinished period. Full historical periods remain full.
+func finamiComparableTotals(operations: [Operation], current: DateInterval, previous: DateInterval, account: String?, now: Date = Date(), elapsed: Bool, calendar: Calendar = .current) -> (current: FinamiReportTotals, previous: FinamiReportTotals) {
+    var a = FinamiReportTotals(), b = FinamiReportTotals()
+    var currentEnd = current.end, previousEnd = previous.end
+    if elapsed && current.start <= now && now < current.end {
+        let tomorrow = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: now)) ?? now
+        currentEnd = min(current.end, tomorrow)
+        let days = calendar.dateComponents([.day], from: current.start, to: currentEnd).day ?? 0
+        previousEnd = min(previous.end, calendar.date(byAdding: .day, value: days, to: previous.start) ?? previous.end)
+    }
+    for o in operations {
+        if o.date >= current.start && o.date < currentEnd { a.add(o, account: account) }
+        else if o.date >= previous.start && o.date < previousEnd { b.add(o, account: account) }
+    }
+    return (a,b)
+}
+
+struct FinamiComparisonCache {
+    private struct Key: Equatable { let current: DateInterval; let previous: DateInterval; let account: String?; let day: Date; let elapsed: Bool; let calendar: Calendar }
+    private var entry: (Key, FinamiReportTotals, FinamiReportTotals)?
+    mutating func removeAll() { entry = nil }
+    mutating func totals(operations: [Operation], current: DateInterval, previous: DateInterval, account: String?, now: Date = Date(), elapsed: Bool, calendar: Calendar = .current) -> (current: FinamiReportTotals, previous: FinamiReportTotals) {
+        let key = Key(current:current,previous:previous,account:account,day:calendar.startOfDay(for:now),elapsed:elapsed,calendar:calendar)
+        if let entry, entry.0 == key { return (entry.1,entry.2) }
+        let result = finamiComparableTotals(operations:operations,current:current,previous:previous,account:account,now:now,elapsed:elapsed,calendar:calendar)
+        entry = (key,result.current,result.previous)
+        return result
     }
 }

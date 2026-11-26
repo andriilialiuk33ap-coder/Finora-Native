@@ -307,7 +307,8 @@ struct BankReview: View {
         let k = kind(row); guard k.isReportCategory else {return "Без категорії"}
         let byName = suggestedCategory(row.note,kind:k,database:s.db)
         if byName != "Без категорії" {return byName}
-        if let c = mccCategory(row.mcc,incoming:row.signed>0),s.db.expenseCategories.contains(c) {return c}
+        let allowed = k == .income ? s.db.incomeCategories.filter { !(s.db.hiddenIncomeCategories ?? []).contains($0) } : s.db.expenseCategories.filter { !(s.db.hiddenExpenseCategories ?? []).contains($0) }
+        if let c = mccCategory(row.mcc,incoming:row.signed>0),allowed.contains(c) {return c}
         return "Без категорії"
     }
     func save() {

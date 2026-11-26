@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-{ echo 'import Foundation'; echo 'let cash="cash"'; echo 'let expenseDefaults=["Без категорії", "💳 Розстрочка"]; let incomeDefaults=["Без категорії"]'; sed -n '/^enum Kind:/,/^struct Legacy:/p' Finora/Finora.swift | sed '$d'; sed -n '/^enum OperationSort:/,/^func ruleKey/p' Finora/IzanamiFeatures.swift | sed '$d'; sed -n '/^enum SubscriptionPeriod:/,/^func currencyMoney/p' Finora/IzanamiFeatures.swift | sed '$d'; sed -n '/^struct FinamiPayment:/,/^struct FinamiPaymentCard:/p' Finora/FinamiPayments.swift | sed '$d'; cat <<'SWIFT'
+{ echo 'import Foundation'; echo 'let cash="cash"'; echo 'let expenseDefaults=["Без категорії", "💳 Розстрочка"]; let incomeDefaults=["Без категорії"]'; sed -n '/^enum Kind:/,/^struct Legacy:/p' Finora/Finora.swift | sed '$d'; sed -n '/^enum OperationSort:/,/^func ruleKey/p' Finora/IzanamiFeatures.swift | sed '$d'; grep '^func ruleKey(' Finora/IzanamiFeatures.swift; sed -n '/^enum SubscriptionPeriod:/,/^func currencyMoney/p' Finora/IzanamiFeatures.swift | sed '$d'; sed -n '/^struct FinamiPayment:/,/^struct FinamiPaymentCard:/p' Finora/FinamiPayments.swift | sed '$d'; cat <<'SWIFT'
 struct DashboardItem: Codable {}
 struct AppearancePreferences: Codable { var theme = "old" }
 struct ForecastPreferences: Codable {}
@@ -11,7 +11,7 @@ struct PersonalReminder: Codable { var id = UUID().uuidString; var title = ""; v
 @MainActor enum ReminderScheduler { static func cancel(_ r: PersonalReminder) {}; static func schedule(_ r: PersonalReminder) async throws {} }
 @MainActor final class Store {
     var db=Database(); var error: String?; var currentRate: Decimal?; var failWrite=false
-    func change(_ update:(inout Database)->Void)->Bool { if failWrite {return false};var copy=db;update(&copy);db=copy;return true }
+    func change(_ update:(inout Database)->Void)->Bool { if failWrite {return false};var copy=db;update(&copy);guard finamiLinkedOperationsPreserved(before:db,after:copy) else{return false};db=copy;return true }
 }
 SWIFT
 } > "$tmp/Models.swift"
@@ -44,6 +44,42 @@ import Foundation
         check(store.confirmPayment(store.upcomingPayments[0],mode:.markOnly,accountID:"",operationID:"",paidDate:date,kind:.expense) && store.db.operations.count==2,"mark only does not touch ledger")
         store.db.subscriptions=[SubscriptionRecord(name:"Music",amount:500,currency:"UAH",next:date)]
         check(store.confirmPayment(store.upcomingPayments[0],mode:.newOperation,accountID:account.id,operationID:"",paidDate:date,kind:.expense) && store.db.subscriptions?[0].payments.count==1 && store.db.operations.last?.expenseValue==500,"subscription paid from account with expense")
+        // Directly entering or editing a ledger debit must advance the same schedule.
+        do {
+        let direct = Store(); let credit = Account(id:"credit",name:"Credit",opening:-30_000,accountType:"credit",creditLimit:100_000)
+        direct.db.accounts=[account,credit]
+        direct.db.obligations=[Obligation(kind:.installment,name:"Direct loan",target:30_000,monthly:10_000,due:date)]
+        let first=direct.upcomingPayments[0]
+        let transferDraft=Operation(kind:.transfer,amount:10_000,date:date,account:account.id,destination:credit.id)
+        check(direct.confirmPayment(first,mode:.newOperation,accountID:account.id,operationID:transferDraft.id,paidDate:date,kind:.transfer,operationDraft:transferDraft),"direct transfer links explicitly to installment")
+        check(direct.db.obligations[0].remaining==20_000 && direct.upcomingPayments[0].date>date && direct.db.paidRecords?.first?.operationID==transferDraft.id,"all schedule views use updated balance and due")
+        let ledger=FinamiLedgerIndex(operations:direct.db.operations)
+        check(ledger.balance(account)==90_000 && ledger.balance(credit)==(-20_000) && direct.db.operations.count==1,"one transfer debit and credit, no duplicate operation")
+        let second=direct.upcomingPayments[0]
+        check(!direct.confirmPayment(second,mode:.newOperation,accountID:account.id,operationID:transferDraft.id,paidDate:date,kind:.transfer,operationDraft:transferDraft),"already linked operation cannot pay another installment")
+        let old=Operation(kind:.creditRepayment,amount:10_000,date:date,account:account.id)
+        direct.db.operations.append(old)
+        let priorBalance=FinamiLedgerIndex(operations:direct.db.operations).balance(account)
+        check(direct.confirmPayment(second,mode:.newOperation,accountID:account.id,operationID:old.id,paidDate:date,kind:old.kind,operationDraft:old),"link earlier operation directly from editor")
+        check(direct.db.operations.count==2 && direct.db.obligations[0].remaining==10_000 && FinamiLedgerIndex(operations:direct.db.operations).balance(account)==priorBalance,"link earlier debit without second debit")
+        check(!direct.change{$0.operations.removeAll{$0.id==old.id}},"linked debit cannot be deleted by edit or batch")
+        check(!direct.change{$0.operations[0].amount=99},"linked debit amount cannot change silently")
+        check(direct.change{$0.operations[0].note="Updated"},"linked debit note can change")
+        let final=direct.upcomingPayments[0];let wrong=Operation(kind:.creditRepayment,amount:500,date:date,account:account.id)
+        check(!direct.confirmPayment(final,mode:.newOperation,accountID:account.id,operationID:wrong.id,paidDate:date,kind:wrong.kind,operationDraft:wrong),"mismatched payment amount rejected")
+        let finalDebit=Operation(kind:.creditRepayment,amount:10_000,date:date,account:account.id)
+        direct.failWrite=true
+        check(!direct.confirmPayment(final,mode:.newOperation,accountID:account.id,operationID:finalDebit.id,paidDate:date,kind:finalDebit.kind,operationDraft:finalDebit) && direct.db.obligations[0].remaining==10_000 && direct.db.operations.count==2,"direct link failure leaves both schedule and ledger unchanged")
+        direct.failWrite=false
+        check(direct.confirmPayment(final,mode:.newOperation,accountID:account.id,operationID:finalDebit.id,paidDate:date,kind:finalDebit.kind,operationDraft:finalDebit) && direct.upcomingPayments.isEmpty,"last linked repayment closes installment")
+        direct.db.subscriptions=[SubscriptionRecord(name:"Music direct",amount:500,currency:"UAH",next:date)]
+        let sub=direct.upcomingPayments[0];let expense=Operation(kind:.expense,amount:500,date:date,category:"Music",note:"Music",account:account.id)
+        check(direct.confirmPayment(sub,mode:.newOperation,accountID:account.id,operationID:expense.id,paidDate:date,kind:.expense,operationDraft:expense,learnCategory:true) && direct.db.subscriptions?[0].payments.count==1 && direct.db.subscriptions![0].next>date && direct.db.operations.last?.expenseValue==500,"subscription direct expense advances date and records one expense")
+        check(direct.db.merchantRules?[ruleKey("Music",kind:.expense)]=="Music","direct linked expense preserves learning category")
+        check(!finamiPaymentDraftMatches(expense,account:credit,currency:"UAH",amount:500),"wrong account rejected")
+        check(!finamiPaymentDraftMatches(expense,account:account,currency:"USD",amount:500),"wrong currency rejected")
+        check(!finamiPaymentDraftMatches(Operation(kind:.income,amount:500,date:date,account:account.id),account:account,currency:"UAH",amount:500),"incoming payment rejected")
+        }
         let usd=Account(id:"usd",name:"USD",currency:"USD")
         check(finamiNewPaymentOperation(name:"USD",account:usd,currency:"USD",amount:100,date:date,kind:.expense,rate:nil,categories:[])==nil,"missing exchange rate blocks payment")
         let foreign=finamiNewPaymentOperation(name:"USD",account:usd,currency:"USD",amount:100,date:date,kind:.expense,rate:40,categories:[])!

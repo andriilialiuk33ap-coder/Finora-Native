@@ -118,6 +118,20 @@ struct OpEditor: View {
   @State private var learnRule = false
   @State private var entryCurrency = "UAH"
   @State private var rate = ""
+  @State private var linkedPaymentID = ""
+  @State private var separatePayment = false
+  private var linkedRecord: FinamiPaidRecord? { (s.db.paidRecords ?? []).first { $0.operationID == o.id } }
+  private var savedOperation: Bool { s.db.operations.contains { $0.id == o.id } }
+  private var paymentChoices: [FinamiPayment] { s.upcomingPayments.filter { $0.currency == sourceCode && $0.amount > 0 } }
+  private var selectedPayment: FinamiPayment? { paymentChoices.first { $0.id == linkedPaymentID } }
+  private var nativeAmount: Int64? { sourceCode == "USD" ? bankMinor(amount) : converted }
+  private var similarPayments: [Operation] {
+    guard let payment = selectedPayment, !savedOperation else { return [] }
+    return finamiEligiblePaymentOperations(s.db.operations, records: s.db.paidRecords ?? [], account: o.account, currency: payment.currency, amount: payment.amount, date: o.date)
+  }
+  private var paymentSelectionValid: Bool {
+    linkedPaymentID.isEmpty || (linkedRecord == nil && finamiPaymentDebitKind(o.kind) && selectedPayment?.amount == nativeAmount && selectedPayment != nil && o.date <= Date() && (similarPayments.isEmpty || separatePayment))
+  }
   init(original: Operation) {
     _o = State(initialValue: original)
     let input = original.entryCurrency == "USD" ? (original.originalAmount ?? original.sourceMinor ?? original.amount) : original.amount
@@ -145,7 +159,7 @@ struct OpEditor: View {
     return uah
   }
   var valid: Bool {
-    (converted ?? 0)>0 && s.db.accounts.contains { $0.id == o.account } && (!requiresRate || usedRate != nil)
+    paymentSelectionValid && (converted ?? 0)>0 && s.db.accounts.contains { $0.id == o.account } && (!requiresRate || usedRate != nil)
       && (sourceCode != "USD" || entryCurrency == "USD")
       && (o.kind != .transfer || (o.account != o.destination && s.db.accounts.contains { $0.id == o.destination } && (received ?? 0)>0 && entryCurrency == sourceCode))
   }
@@ -153,26 +167,47 @@ struct OpEditor: View {
     NavigationStack {
       Form {
         Picker("Тип", selection: $o.kind) { ForEach(allowedKinds) { Text($0.title).tag($0) } }
-          .pickerStyle(.menu)
+          .pickerStyle(.menu).disabled(linkedRecord != nil)
         if o.kind.needsReview { Text("Не входить у доходи чи витрати до уточнення. Баланс враховує рух коштів.").font(.caption) }
-        FinamiField("Сума, \(entryCurrency)", text: $amount, keyboard: .decimalPad)
+        FinamiField("Сума, \(entryCurrency)", text: $amount, keyboard: .decimalPad).disabled(linkedRecord != nil)
         if o.kind != .transfer && sourceCode == "UAH" && o.sourceBank == nil {
-          Picker("Валюта введення",selection:$entryCurrency){Text("Гривня").tag("UAH");Text("Долар").tag("USD")}
+          Picker("Валюта введення",selection:$entryCurrency){Text("Гривня").tag("UAH");Text("Долар").tag("USD")}.disabled(linkedRecord != nil)
         }
-        if requiresRate { FinamiField("Курс UAH за 1 USD", text: $rate, keyboard: .decimalPad); if let n=converted { LabeledContent("Сума у гривнях",value:money(n)) } }
-        DatePicker("Дата і час", selection: $o.date, displayedComponents: [.date,.hourAndMinute])
+        if requiresRate { FinamiField("Курс UAH за 1 USD", text: $rate, keyboard: .decimalPad).disabled(linkedRecord != nil); if let n=converted { LabeledContent("Сума у гривнях",value:money(n)) } }
+        DatePicker("Дата і час", selection: $o.date, displayedComponents: [.date,.hourAndMinute]).disabled(linkedRecord != nil)
         Picker("Рахунок", selection: $o.account) {
           ForEach(s.db.accounts.filter{o.sourceBank == nil || $0.code == "UAH"}) { Text($0.name).tag($0.id) }
-        }
+        }.disabled(linkedRecord != nil)
         if o.kind == .transfer {
           Picker("Куди", selection: $o.destination) {
             Text("Вибрати").tag("")
             ForEach(s.db.accounts) { Text($0.name).tag($0.id) }
-          }
+          }.disabled(linkedRecord != nil)
           if let n=received, !o.destination.isEmpty { LabeledContent("Зарахувати",value:currencyMoney(n,destinationCode)) }
         } else if o.kind.isReportCategory {
           Picker("Категорія", selection: $o.category) {
             ForEach(categories, id: \.self) { Text($0).tag($0) }
+          }
+        }
+        if let record = linkedRecord {
+          Section("Пов’язаний платіж") {
+            LabeledContent("Оплачено", value: s.db.obligations.first(where: { $0.id == record.paymentID })?.name ?? s.db.subscriptions?.first(where: { $0.id == record.paymentID })?.name ?? "Платіж з історії").accessibilityIdentifier("qa.operation.linked")
+            Text("Ця операція вже оновила графік. Фінансові поля та видалення захищені від випадкової зміни; примітку й категорію можна редагувати.").font(.caption)
+          }
+        } else if finamiPaymentDebitKind(o.kind) {
+          Section("Пов’язати з платежем") {
+            Picker("Розстрочка, кредит або підписка", selection: $linkedPaymentID) {
+              Text("Не пов’язувати").tag("")
+              ForEach(paymentChoices) { p in Text(p.kind + " · " + p.name + " · " + s.visibleMoney(p.amount, p.currency)).tag(p.id) }
+            }.accessibilityIdentifier("qa.operation.payment")
+            if paymentChoices.isEmpty { Text("Немає активних платежів у валюті цього рахунку.").font(.caption) }
+            if let payment = selectedPayment {
+              Button("Підставити суму платежу") { amount = amountText(payment.amount); entryCurrency = sourceCode }.disabled(o.sourceBank != nil)
+              if nativeAmount != payment.amount { Text("Сума має дорівнювати найближчому платежу. Часткові оплати тут не підтримуються.").font(.caption).foregroundStyle(.orange) }
+              if !similarPayments.isEmpty { Toggle("Це окрема нова оплата", isOn: $separatePayment); Text("Є схожа операція. Якщо оплату вже записано, відкрий її та прив’яжи платіж там.").font(.caption).foregroundStyle(.orange) }
+              Text("Збереження оновить рахунок, залишок договору, наступну дату та нагадування одним записом.").font(.caption)
+              if o.kind == .transfer { Text("Прив’язуй переказ лише якщо це фактична оплата договору, а не звичайне поповнення кредитної картки.").font(.caption).foregroundStyle(.orange) }
+            }
           }
         }
         TextField("Магазин / примітка / теги", text: $o.note)
@@ -185,7 +220,7 @@ struct OpEditor: View {
           Button("Визначити категорію") { o.category = suggestedCategory(o.note, kind: o.kind, database: s.db) }
           Toggle("Запам’ятати категорію для цього продавця", isOn: $learnRule)
         }
-        if s.db.operations.contains(where: { $0.id == o.id }) {
+        if savedOperation && linkedRecord == nil {
           Button("Видалити операцію", role: .destructive) { confirm = true }
         }
       }.navigationTitle("Операція").navigationBarTitleDisplayMode(.inline).toolbar {
@@ -201,6 +236,11 @@ struct OpEditor: View {
             o.entryCurrency=entryCurrency
             o.exchangeRate=requiresRate ? rate : nil
             if o.sourceBank == nil {o.originalAmount=entered;o.originalCurrency=entryCurrency}
+            if !linkedPaymentID.isEmpty {
+              guard let payment = selectedPayment else { return }
+              if s.confirmPayment(payment, mode: .newOperation, accountID: o.account, operationID: o.id, paidDate: o.date, kind: o.kind, allowSeparate: separatePayment, operationDraft: o, learnCategory: learnRule) { dismiss() }
+              return
+            }
             if s.change({ d in
               d.operations.removeAll { $0.id == o.id }
               d.operations.append(o)
@@ -213,8 +253,18 @@ struct OpEditor: View {
           }.disabled(!valid)
         }
       }.onAppear {if sourceCode == "USD" {entryCurrency="USD"};if rate.isEmpty {rate=s.db.currencyPreferences?.usdRate ?? ""}}
-      .onChange(of:o.account) { _ in entryCurrency=sourceCode }
+      .onChange(of:o.account) { _ in entryCurrency=sourceCode; linkedPaymentID=""; separatePayment=false }
+      .onChange(of:linkedPaymentID) { _ in separatePayment=false }
+      .onChange(of:amount) { _ in separatePayment=false }
+      .onChange(of:o.date) { _ in separatePayment=false }
+      .onChange(of:o.note) { newNote in
+        if o.kind.isReportCategory && o.category == "Без категорії" && !savedOperation {
+          let suggestion = suggestedCategory(newNote,kind:o.kind,database:s.db)
+          if categories.contains(suggestion) { o.category = suggestion }
+        }
+      }
       .onChange(of: o.kind) { _ in
+        if !finamiPaymentDebitKind(o.kind) { linkedPaymentID="" }; separatePayment=false
         if o.kind == .transfer {entryCurrency=sourceCode}
         if !categories.contains(o.category) { o.category = categories.first ?? "Інше" }
       }.confirmationDialog("Видалити запис?", isPresented: $confirm, titleVisibility: .visible) {

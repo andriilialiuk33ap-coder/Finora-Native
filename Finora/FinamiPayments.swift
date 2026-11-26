@@ -24,13 +24,25 @@ extension Store {
         return total
     }
     // One atomic write advances the schedule, records the chosen account, and optionally adds a ledger entry.
-    func confirmPayment(_ payment: FinamiPayment, mode: FinamiPaymentMode, accountID: String, operationID: String, paidDate: Date, kind: Kind, allowSeparate: Bool = false) -> Bool {
+    func confirmPayment(_ payment: FinamiPayment, mode: FinamiPaymentMode, accountID: String, operationID: String, paidDate: Date, kind: Kind, allowSeparate: Bool = false, operationDraft: Operation? = nil, learnCategory: Bool = false) -> Bool {
         guard let live=upcomingPayments.first(where:{$0.id==payment.id}),live.date==payment.date,live.amount==payment.amount,live.amount>0, live.currency == payment.currency, paidDate <= Date(), !(db.paidRecords ?? []).contains(where: { $0.paymentID == payment.id && $0.scheduledDate == payment.date }) else {error="Платіж уже змінено. Відкрий його знову.";return false}
         let account = db.accounts.first { $0.id == accountID && $0.code == payment.currency }
         let candidates = finamiEligiblePaymentOperations(db.operations, records: db.paidRecords ?? [], account: accountID, currency: payment.currency, amount: payment.amount, date: paidDate)
         let existing = candidates.first { $0.id == operationID }
         var newOperation: Operation?
-        if mode == .newOperation {
+        if let draft = operationDraft {
+            guard mode == .newOperation, let account,
+                  finamiPaymentDraftMatches(draft, account: account, currency: payment.currency, amount: payment.amount),
+                  draft.date == paidDate,
+                  !(db.paidRecords ?? []).contains(where: { $0.operationID == draft.id }),
+                  draft.kind != .transfer || (draft.destination != draft.account && db.accounts.contains(where: { $0.id == draft.destination }) && (draft.destinationMinor ?? draft.amount) > 0) else {
+                error = "Операція не відповідає вибраному платежу або вже прив’язана."; return false
+            }
+            guard db.operations.contains(where: { $0.id == draft.id }) || candidates.isEmpty || allowSeparate else {
+                error = "Є схоже списання. Відкрий наявну операцію або підтвердь окрему оплату."; return false
+            }
+            newOperation = draft
+        } else if mode == .newOperation {
             guard candidates.isEmpty || allowSeparate else { error = "Є схоже списання. Прив’яжи його або підтвердь, що це інша оплата."; return false }
             let category = payment.subscription ? "📺 Підписки" : payment.kind == "Розстрочка" ? "💳 Розстрочка" : "Без категорії"
             guard let account, let operation = finamiNewPaymentOperation(name: payment.name, account: account, currency: payment.currency, amount: payment.amount, date: paidDate, kind: kind, rate: currentRate, categories: db.expenseCategories, preferredCategory:category) else { error = "Перевір рахунок, валюту та курс."; return false }
@@ -50,7 +62,13 @@ extension Store {
                 guard finamiAdvanceObligation(&d.obligations[i], scheduled: payment.date, amount: payment.amount) else { return }
                 if d.obligations[i].remaining>0 {next=d.obligations[i].due}
             } else { return }
-            if let newOperation { d.operations.append(newOperation) }
+            if let newOperation {
+                d.operations.removeAll { $0.id == newOperation.id }
+                d.operations.append(newOperation)
+                if learnCategory && (newOperation.kind == .expense || newOperation.kind == .income) && !newOperation.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    var rules = d.merchantRules ?? [:]; rules[ruleKey(newOperation.note, kind: newOperation.kind)] = newOperation.category; d.merchantRules = rules
+                }
+            }
             d.paidRecords = (d.paidRecords ?? []) + [record]
             d.reminders?.removeAll{$0.linkedID==payment.id}
             if let next=next { for r in previous { var copy=r;copy.date=next.addingTimeInterval(r.date.timeIntervalSince(payment.date)); if copy.date>Date() {renewed.append(copy)} };d.reminders=(d.reminders ?? [])+renewed }
@@ -71,7 +89,7 @@ struct FinamiPaymentCard:View {
     var body:some View { VStack(alignment:.leading,spacing:dashboardSize == .small ? 5 : dashboardSize == .large ? 16 : 10) {
         HStack(alignment:.top) { VStack(alignment:.leading,spacing:5) { Text(payment.kind).font(.caption).foregroundStyle(.secondary);Text(payment.name).font(.headline).fixedSize(horizontal:false,vertical:true) };Spacer(minLength:8);if showImage && dashboardSize != .small { if let data=s.db.paymentPhotos?[payment.id],let image=FinamiImageCache.shared.image(data) {Image(uiImage:image).resizable().scaledToFill().frame(width:62,height:62).clipShape(RoundedRectangle(cornerRadius:14)).accessibilityHidden(true)}else{FinamiArt(icon:payment.subscription ? "repeat" : "calendar.badge.clock",tint:.indigo,size:62)} } }
         Text(masked ? "••••" : s.visibleMoney(payment.amount,payment.currency)).font(dashboardSize == .small ? .title3.bold() : dashboardSize == .medium ? .title.bold() : .largeTitle.bold()).monospacedDigit().fixedSize(horizontal:false,vertical:true)
-        if showDate { Label(payment.date.formatted(date:.abbreviated,time:.omitted),systemImage:"calendar").foregroundStyle(payment.overdue ? Color.orange : Color.secondary) }
+        if showDate { Label(payment.date.formatted(.dateTime.day().month(.wide).locale(Locale(identifier:"uk_UA"))),systemImage:"calendar").foregroundStyle(payment.overdue ? Color.orange : Color.secondary) }
         if payment.overdue {Label("Прострочено",systemImage:"exclamationmark.circle").font(.caption).foregroundStyle(.orange)}
         if showRemaining, let remaining=payment.remaining {FinamiMetric(title:"Залишок",value:masked ? "••••" : s.visibleMoney(remaining))}
         HStack {Text("Деталі платежу").font(.subheadline.weight(.medium));Spacer();Image(systemName:"chevron.right")}.foregroundStyle(.tint)

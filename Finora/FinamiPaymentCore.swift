@@ -8,7 +8,7 @@ enum FinamiPaymentMode: String, CaseIterable, Identifiable {
 func finamiEligiblePaymentOperations(_ operations: [Operation], records: [FinamiPaidRecord], account: String, currency: String, amount: Int64, date: Date) -> [Operation] {
     let used = Set(records.compactMap(\.operationID))
     return operations.filter { o in
-        o.account == account && !o.kind.incoming && (currency == "UAH" || o.entryCurrency == currency) && (o.sourceMinor ?? o.amount) == amount && !used.contains(o.id) && o.date <= Date() && abs(o.date.timeIntervalSince(date)) <= 7 * 86400
+        o.account == account && finamiPaymentDebitKind(o.kind) && (currency == "UAH" || o.entryCurrency == currency) && (o.sourceMinor ?? o.amount) == amount && !used.contains(o.id) && o.date <= Date() && abs(o.date.timeIntervalSince(date)) <= 7 * 86400
     }.sorted { abs($0.date.timeIntervalSince(date)) < abs($1.date.timeIntervalSince(date)) }
 }
 func finamiNewPaymentOperation(name: String, account: Account, currency: String, amount: Int64, date: Date, kind: Kind, rate: Decimal?, categories: [String], preferredCategory: String = "💳 Розстрочка") -> Operation? {
@@ -30,4 +30,28 @@ func finamiAdvanceObligation(_ o: inout Obligation, scheduled: Date, amount: Int
     if remainder > 0 { guard let next = calendar.date(byAdding: .month, value: 1, to: o.due), next > o.due else { return false }; o.due = next }
     o.paid += amount
     return true
+}
+
+// A payment can only be linked to a real outgoing ledger entry. Native amounts
+// are compared in the currency of the debited account, not the reporting currency.
+func finamiPaymentDebitKind(_ kind: Kind) -> Bool {
+    [.expense, .creditRepayment, .transfer, .movementOut, .unclassifiedDebit].contains(kind)
+}
+func finamiPaymentDraftMatches(_ operation: Operation, account: Account, currency: String, amount: Int64, now: Date = Date()) -> Bool {
+    operation.account == account.id && account.code == currency && amount > 0 &&
+    (operation.sourceMinor ?? operation.amount) == amount && operation.amount > 0 &&
+    operation.date <= now && finamiPaymentDebitKind(operation.kind)
+}
+// Linked debits are not silently removed or changed by editing or batch deletion.
+// Notes, categories and statement metadata can still be updated.
+func finamiLinkedOperationsPreserved(before: Database, after: Database) -> Bool {
+    let ids = Set((before.paidRecords ?? []).compactMap(\.operationID))
+    guard !ids.isEmpty else { return true }
+    let afterByID = Dictionary(after.operations.filter { ids.contains($0.id) }.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+    return before.operations.filter { ids.contains($0.id) }.allSatisfy { old in
+        guard let new = afterByID[old.id] else { return false }
+        return old.kind == new.kind && old.account == new.account && old.destination == new.destination &&
+            old.amount == new.amount && (old.sourceMinor ?? old.amount) == (new.sourceMinor ?? new.amount) &&
+            (old.destinationMinor ?? old.amount) == (new.destinationMinor ?? new.amount) && old.date == new.date
+    }
 }

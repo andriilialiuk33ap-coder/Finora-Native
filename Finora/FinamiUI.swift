@@ -170,6 +170,13 @@ struct FinamiBlockSettings:View {
                 Toggle("Показувати дату",isOn:Binding(get:{self.item?.showPaymentDate ?? true},set:{v in edit{$0.showPaymentDate=v}}))
                 Toggle("Показувати зображення",isOn:Binding(get:{self.item?.showPaymentImage ?? true},set:{v in edit{$0.showPaymentImage=v}}))
             }
+            if [.installments, .subscriptions, .recurring].contains(item.kind) {
+                Picker("Кількість записів", selection: Binding(get:{self.item?.categoryCount ?? (item.size == .small ? 1 : item.size == .large ? 6 : 3)},set:{v in edit{$0.categoryCount=v}})) { ForEach([1,2,3,4,5,6,10,20],id:\.self){Text("\($0)").tag($0)} }
+                Toggle("Показувати дату",isOn:Binding(get:{self.item?.showPaymentDate ?? true},set:{v in edit{$0.showPaymentDate=v}}))
+                Toggle("Показувати загальну суму",isOn:Binding(get:{self.item?.showPaymentTotal ?? true},set:{v in edit{$0.showPaymentTotal=v}}))
+                Toggle("Показувати назви платежів",isOn:Binding(get:{self.item?.showPaymentNames ?? true},set:{v in edit{$0.showPaymentNames=v}}))
+                if item.kind == .installments { Toggle("Залишок замість планових платежів",isOn:Binding(get:{self.item?.showPaymentRemaining ?? true},set:{v in edit{$0.showPaymentRemaining=v}})) }
+            }
             if item.kind == .categories {
                 Picker("Кількість категорій",selection:Binding(get:{self.item?.categoryCount ?? 10},set:{v in edit{$0.categoryCount=v}})){ForEach([3,4,5,10,15,30],id:\.self){Text("Топ \($0)").tag($0)}}
                 Toggle("Усі категорії",isOn:Binding(get:{self.item?.categorySelection==nil},set:{v in edit{$0.categorySelection=v ? nil : s.db.expenseCategories}}))

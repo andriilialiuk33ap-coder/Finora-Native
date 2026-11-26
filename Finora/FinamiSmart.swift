@@ -178,14 +178,16 @@ struct FinamiReconciliation: View {
                             Text(account.name).font(.headline)
                             Text(observation.date.formatted(date: .abbreviated, time: .shortened)).font(.caption)
                             LabeledContent("Доступно за даними банку", value: account.hideAmounts == true ? "••••" : s.visibleMoney(observation.available, account.code))
-                            if s.db.operations.contains(where: { ($0.account == account.id || ($0.kind == .transfer && $0.destination == account.id)) && $0.date > observation.date }) {
-                                Text("Після повідомлення є нові операції — сума може бути застарілою.").font(.caption).foregroundStyle(.secondary)
-                            } else {
-                                let available = s.available(account)
-                                LabeledContent("Розрахунок Finami", value: account.hideAmounts == true ? "••••" : s.visibleMoney(available, account.code))
-                                LabeledContent("Різниця", value: account.hideAmounts == true ? "••••" : s.visibleMoney(observation.available-available, account.code))
-                                Text("Різниця не є підтвердженою помилкою: банк може враховувати холди або комісії.").font(.caption)
+                            let result = finamiReconcile(account: account, operations: s.historyForAccount(account.id), observedAt: observation.date, reported: observation.available)
+                            LabeledContent("Finami на час сповіщення", value: account.hideAmounts == true ? "••••" : s.visibleMoney(result.computedAtObservation, account.code))
+                            LabeledContent("Різниця на ту дату", value: account.hideAmounts == true ? "••••" : s.visibleMoney(result.difference, account.code))
+                            if result.laterOperations > 0 { Text("Після сповіщення: \(result.laterOperations) нових операцій. Вони не включені в історичну звірку.").font(.caption).foregroundStyle(.secondary) }
+                            if result.possibleUnclassified > 0 { Text("Неуточнені операції до цієї дати: \(result.possibleUnclassified)").font(.caption) }
+                            if result.difference != 0 {
+                                NavigationLink("Перевірити банківську виписку") { BankCenter() }
+                                NavigationLink("Переглянути неуточнені операції") { FinamiImportHub() }
                             }
+                            Text("Історична оцінка за поточними початковим балансом і лімітом. Якщо ліміт змінився, банк врахував холди чи комісії, різниця не є підтвердженою помилкою. Автоматичного коригування немає.").font(.caption)
                         }.padding(.vertical, 4)
                     }
                 }

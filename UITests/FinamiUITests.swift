@@ -148,9 +148,49 @@ final class FinamiUITests: XCTestCase {
         let operations=app.tabBars.buttons["Операції"];visible(operations);operations.tap()
         visible(app.staticTexts["QA installment"]);capture("payment-operation-persisted")
     }
+    func testExistingOperationLinksToInstallment() {
+        app.terminate()
+        app.launchArguments = ["--finami-qa", "--finami-qa-reset", "--finami-qa-link-fixture"]
+        app.launch()
+        let tab = app.tabBars.buttons["Операції"]; visible(tab); tab.tap()
+        let debit = app.staticTexts["QA existing debit"]; visible(debit); debit.tap()
+        let picker = app.descendants(matching: .any).matching(identifier: "qa.operation.payment").firstMatch
+        for _ in 0..<8 { if picker.exists && picker.isHittable { break }; app.swipeUp() }
+        visible(picker); picker.tap()
+        let loan = app.buttons.containing(NSPredicate(format: "label CONTAINS %@", "QA installment")).firstMatch
+        visible(loan); loan.tap()
+        let save = app.navigationBars.buttons["Зберегти"]; visible(save); XCTAssertTrue(save.isEnabled); save.tap()
+        visible(debit); XCTAssertEqual(app.staticTexts.matching(identifier: "QA existing debit").count, 1)
+        app.terminate(); app.launchArguments = ["--finami-qa"]; app.launch()
+        visible(tab); tab.tap(); visible(debit); debit.tap()
+        let linked = app.descendants(matching: .any).matching(identifier: "qa.operation.linked").firstMatch
+        for _ in 0..<8 { if linked.exists && linked.isHittable { break }; app.swipeUp() }
+        visible(linked); capture("operation-linked-persisted")
+    }
     func testLaunchPerformance() {
         app.terminate();app.launchArguments=["--finami-qa"]
         measure(metrics:[XCTApplicationLaunchMetric()]) { app.launch() }
+    }
+
+    func testRecurringSuggestionCreatesSubscription() {
+        app.terminate(); app.launchArguments = ["--finami-qa", "--finami-qa-reset", "--finami-qa-recurring-fixture"]; app.launch()
+        let more = app.tabBars.buttons["Ще"]; visible(more); more.tap()
+        let open = app.descendants(matching:.any).matching(identifier:"qa.recurring.open").firstMatch
+        visible(open); open.tap()
+        visible(app.staticTexts["QA Streaming"])
+        let accept = app.buttons["qa.recurring.accept"]; visible(accept); accept.tap()
+        let add = app.alerts.buttons["Додати"]; visible(add); add.tap()
+        visible(app.staticTexts["qa.recurring.empty"]); capture("recurring-suggestion-accepted")
+    }
+    func testPaymentCalendarOpensAndChangesMonth() {
+        app.tabBars.buttons["Ще"].tap()
+        let open = app.descendants(matching:.any).matching(identifier:"qa.calendar.open").firstMatch
+        for _ in 0..<12 { if open.exists && open.isHittable { break }; app.swipeUp() }
+        visible(open); open.tap()
+        visible(app.navigationBars["Календар платежів"])
+        let next = app.buttons["Наступний місяць"]; visible(next); next.tap()
+        let prev = app.buttons["Попередній місяць"]; visible(prev); prev.tap()
+        capture("calendar-month")
     }
 
 }

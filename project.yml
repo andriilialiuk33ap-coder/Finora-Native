@@ -5,8 +5,8 @@ options:
 settings:
   base:
     SWIFT_VERSION: '5.0'
-    MARKETING_VERSION: '5.1.2'
-    CURRENT_PROJECT_VERSION: '27'
+    MARKETING_VERSION: '5.2'
+    CURRENT_PROJECT_VERSION: '29'
     TARGETED_DEVICE_FAMILY: '1'
 packages:
   ZIPFoundation:
@@ -16,9 +16,17 @@ targets:
   Finora:
     type: application
     platform: iOS
-    sources: [Finora]
+    sources: [Finora, WidgetShared]
+    info:
+      path: Config/Finora-Info.plist
+      properties:
+        CFBundleURLTypes:
+          - CFBundleURLName: ua.finora.personal.widgets
+            CFBundleURLSchemes: [finami-widget]
     dependencies:
       - package: ZIPFoundation
+      - target: FinamiWidgets
+        embed: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: ua.finora.personal
@@ -29,6 +37,21 @@ targets:
         INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: "Розпізнавання голосової чернетки операції"
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+  FinamiWidgets:
+    type: app-extension
+    platform: iOS
+    sources: [FinamiWidgets, WidgetShared]
+    info:
+      path: Config/FinamiWidgets-Info.plist
+      properties:
+        CFBundleDisplayName: Finami Widgets
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ua.finora.personal.widgets
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
   FinamiUITests:
     type: bundle.ui-testing
     platform: iOS

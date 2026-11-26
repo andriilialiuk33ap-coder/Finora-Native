@@ -71,6 +71,7 @@ struct Reports: View {
         FinamiReportPanel(title: "Підсумок", icon: "wallet.pass.fill", tint: .teal, hidden: hidden("flow")) {
             if showIncome { FinamiMetric(title: "Чистий потік", value: s.visibleMoney(x.totals.net), tint: x.totals.net >= 0 ? .green : .orange) }
             if showIncome { metric("Доходи", x.totals.income, .green, "arrow.down.left") }
+            if prefs.reportsShowIncoming != false { metric("Усі надходження", x.totals.incoming, .blue, "arrow.down.circle"); Text("Включно з поповненнями, переказами, поверненнями та кредитними надходженнями. Не є чистим доходом.").font(.caption).foregroundStyle(.secondary) }
             metric("Чисті витрати", x.totals.expense, .orange, "arrow.up.right")
             if x.totals.refunds != 0 { metric("Повернення покупок", x.totals.refunds, .blue, "arrow.uturn.backward") }
             movementLines(x.totals)
@@ -84,11 +85,15 @@ struct Reports: View {
         }.padding(10).background(tint.opacity(0.07), in: RoundedRectangle(cornerRadius: 14))
     }
     private func comparison(_ x: FinamiReportSnapshot) -> some View {
-        FinamiReportPanel(title: "Порівняння періодів", icon: "arrow.left.arrow.right", tint: .indigo, hidden: hidden("comparison")) {
+        let elapsed = prefs.reportsCompareElapsed != false
+        let comparable = s.reportComparison(current: x.interval, previous: x.previousInterval, account: selectedAccount == "all" ? nil : selectedAccount, elapsed: elapsed)
+        return FinamiReportPanel(title: "Порівняння періодів", icon: "arrow.left.arrow.right", tint: .indigo, hidden: hidden("comparison")) {
+            Picker("Порівнювати", selection: binding(\.reportsCompareElapsed, true)) { Text("Однакові дні").tag(true); Text("Цілі періоди").tag(false) }.pickerStyle(.segmented)
             Text("Зіставлення з періодом: " + panelTitle(x.previousInterval.start)).font(.caption).foregroundStyle(.secondary)
-            comparisonLine("Витрати", current: x.totals.expense, previous: x.previous.expense)
-            if showIncome { comparisonLine("Доходи", current: x.totals.income, previous: x.previous.income); comparisonLine("Чистий потік", current: x.totals.net, previous: x.previous.net) }
-            Text("Порівнюються цілі календарні періоди, навіть якщо поточний ще не завершився.").font(.caption).foregroundStyle(.secondary)
+            comparisonLine("Витрати", current: comparable.current.expense, previous: comparable.previous.expense)
+            if showIncome { comparisonLine("Доходи", current: comparable.current.income, previous: comparable.previous.income); comparisonLine("Чистий потік", current: comparable.current.net, previous: comparable.previous.net) }
+            if prefs.reportsShowIncoming != false { comparisonLine("Усі надходження", current: comparable.current.incoming, previous: comparable.previous.incoming) }
+            Text(elapsed ? "Для незавершеного періоду зіставляється однакова кількість календарних днів (не довше попереднього періоду)." : "Порівнюються цілі календарні періоди.").font(.caption).foregroundStyle(.secondary)
         }
     }
     private func comparisonLine(_ title: String, current: Int64, previous: Int64) -> some View {
@@ -231,6 +236,7 @@ struct Reports: View {
         Form {
             Section("Показники") {
                 Toggle("Доходи та чистий потік", isOn: binding(\.reportsShowIncome, true))
+                Toggle("Усі надходження", isOn: binding(\.reportsShowIncoming, true))
                 Toggle("Порівняння періодів", isOn: binding(\.reportsShowComparison, true))
                 Toggle("Категорії витрат", isOn: binding(\.reportsShowCategories, true))
                 Toggle("За рахунками", isOn: binding(\.reportsShowAccounts, true))
