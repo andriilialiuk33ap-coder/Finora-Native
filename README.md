@@ -439,3 +439,15 @@ Fixed the Xcode 16.4 type-check timeout in FinamiExportView.swift by moving the 
 ### 6.2.1 — Dashboard & Stability
 
 Див. [FINAMI-6.2.1-UK.md](FINAMI-6.2.1-UK.md).
+
+### 6.3.0 Preview — Design 3.0 Foundation (Build 46)
+
+Проміжний етап: спільне сховище оформлення, Fusion Crystal та згортання карток. Див. [FINAMI-6.3.0-PREVIEW-UK.md](FINAMI-6.3.0-PREVIEW-UK.md) і [FINAMI-DESIGN-3.0-SPEC-UK.md](FINAMI-DESIGN-3.0-SPEC-UK.md).
+
+### 6.3.1 Preview — Design 3.0: Operations & Accounts (Build 47)
+
+Чотири стилі операцій (два нові Preview), чотири стилі рахунків, незалежні налаштування та Credit Ring. Див. [FINAMI-6.3.1-PREVIEW-UK.md](FINAMI-6.3.1-PREVIEW-UK.md).
+
+### 6.4.0 Integration Preview — Design 3.0 (Build 48)
+
+Інтеграція решти груп стилів, звітів і діаграм. Див. [FINAMI-6.4.0-INTEGRATION-UK.md](FINAMI-6.4.0-INTEGRATION-UK.md) щодо фактичного обсягу, відомих відмінностей, тестування й встановлення. Не підтверджена збірка iOS.
