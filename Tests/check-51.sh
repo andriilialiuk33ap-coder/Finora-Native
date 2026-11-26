@@ -49,6 +49,17 @@ import Foundation
         check(store.db.operations.count==1 && store.db.operations[0].account==account.id && FinamiLedgerIndex(operations:store.db.operations).balance(account)==90_000,"single native debit; other account unaffected")
         check(store.db.operations[0].expenseValue==0 && store.db.paidRecords?.first?.operationID==store.db.operations[0].id,"principal excluded from expense and history linked")
         check(!store.confirmPayment(p,mode:.newOperation,accountID:account.id,operationID:"",paidDate:date,kind:.creditRepayment) && store.db.operations.count==1,"repeat tap cannot debit twice")
+        var archived = store.db
+        let originalOperations = archived.operations
+        let originalRecords = archived.paidRecords?.map(\.id)
+        archived.partnerGroups = [FinamiPartnerGroup(name:"Test",limit:100000,obligationIDs:[loan.id])]
+        check(finamiRemoveInstallment(loan.id, from:&archived) && archived.obligations.isEmpty && archived.removedInstallments?.count == 1,"installment archive removes future obligations")
+        check(archived.operations == originalOperations && archived.paidRecords?.map(\.id) == originalRecords && archived.partnerGroups?.first?.obligationIDs.isEmpty == true,"archive preserves actual debit and history, detaches partner group")
+        check(!finamiRemoveInstallment(loan.id, from:&archived),"duplicate archive rejected")
+        let restoredArchive = try JSONDecoder().decode(Database.self, from:JSONEncoder().encode(archived))
+        archived = restoredArchive
+        check(finamiRestoreInstallment(loan.id, into:&archived) && archived.obligations.first?.remaining == 10000 && archived.operations == originalOperations,"archive survives backup and restores original schedule")
+        check(!finamiRestoreInstallment(loan.id, into:&archived),"duplicate restore rejected")
         let next=store.upcomingPayments[0]; let other=Operation(kind:.expense,amount:10_000,date:date,account:otp.id)
         store.db.operations.append(other)
         check(!store.confirmPayment(next,mode:.existing,accountID:account.id,operationID:other.id,paidDate:date,kind:.expense),"reject existing operation from wrong account")

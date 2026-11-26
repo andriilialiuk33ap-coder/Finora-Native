@@ -1,5 +1,24 @@
 import Foundation
 
+// Removing an installment changes future planning only. Keep its original ID and paid history.
+@discardableResult func finamiRemoveInstallment(_ id: String, from db: inout Database) -> Bool {
+    guard let o = db.obligations.first(where: { $0.id == id && $0.kind == .installment }),
+          !(db.removedInstallments ?? []).contains(where: { $0.id == id }) else {return false}
+    db.removedInstallments = (db.removedInstallments ?? []) + [o]
+    db.obligations.removeAll { $0.id == id }
+    db.reminders?.removeAll { $0.linkedID == id }
+    if var groups = db.partnerGroups {
+        for index in groups.indices { groups[index].obligationIDs.removeAll { $0 == id } }
+        db.partnerGroups = groups
+    }
+    return true
+}
+@discardableResult func finamiRestoreInstallment(_ id: String, into db: inout Database) -> Bool {
+    guard let o = db.removedInstallments?.first(where: { $0.id == id && $0.kind == .installment }),
+          !db.obligations.contains(where: { $0.id == id }) else {return false}
+    db.obligations.append(o); db.removedInstallments?.removeAll { $0.id == id }
+    return true
+}
 // Explicit matching: no amount-only automatic linkage, one recorded payment per operation.
 enum FinamiPaymentMode: String, CaseIterable, Identifiable {
     case newOperation = "Створити списання", existing = "Вже є в операціях", markOnly = "Лише позначити сплаченим"

@@ -78,6 +78,8 @@ struct FinamiDiagnostics: View {
     @State private var exportingDiagnostics=false
     @AppStorage("finami.lastShortcutCheck") private var lastCheck: Double = 0
     @AppStorage("finami.lastWalletCapture") private var lastWallet: Double = 0
+    @AppStorage("finami.lastWalletAttempt") private var lastWalletAttempt: Double = 0
+    @AppStorage("finami.lastWalletStatus") private var lastWalletStatus = ""
     @AppStorage("finami.lastBankNotification") private var lastBank: Double = 0
     @AppStorage("finami.lastNotificationAttempt") private var lastNotificationAttempt: Double = 0
     @AppStorage("finami.lastNotificationStatus") private var lastNotificationStatus = ""
@@ -109,6 +111,9 @@ struct FinamiDiagnostics: View {
                 LabeledContent("Посилання Wallet", value: finamiSharedShortcutURL(walletLink) == nil ? "Не задано" : "Формат правильний")
                 LabeledContent("Останній тест", value: stamp(lastCheck))
                 LabeledContent("Останній Wallet", value: stamp(lastWallet))
+                LabeledContent("Останній виклик Wallet", value: stamp(lastWalletAttempt))
+                Text(FinamiNotificationStatus.display(lastWalletStatus)).font(.caption)
+                LabeledContent("Карткові прив’язки", value: String(s.db.capturePreferences?.walletBindings?.count ?? 0))
                 LabeledContent("Остання прийнята операція банку", value: stamp(lastBank))
                 LabeledContent("Останній виклик сповіщення", value: stamp(lastNotificationAttempt))
                 Text(FinamiNotificationStatus.display(lastNotificationStatus)).font(.caption).accessibilityIdentifier("qa.diagnostics.notificationStatus")

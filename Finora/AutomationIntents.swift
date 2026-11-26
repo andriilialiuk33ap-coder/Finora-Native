@@ -13,10 +13,39 @@ struct CaptureWalletIntent: AppIntent {
         Summary("Apple Pay: \(\.$amount) \(\.$currency), \(\.$merchant), \(\.$account)")
     }
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        let event = try captureWallet(amount:amount,merchant:merchant,account:account,currency:currency)
-        try CaptureInbox.enqueue(event,in:CaptureInbox.folder())
-        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "finami.lastWalletCapture")
+        try finamiQueueWallet(amount: amount, merchant: merchant, account: account, currency: currency)
         return .result(dialog:"Payment captured. Open Finami to process it. / Оплату отримано. Відкрийте Finami для обробки.")
+    }
+}
+private func finamiQueueWallet(amount: Double, merchant: String, account: String, currency: String) throws {
+    let defaults = UserDefaults.standard
+    let now = Date().timeIntervalSince1970
+    defaults.set(now, forKey: "finami.lastWalletAttempt")
+    let event: CapturedPayment
+    do { event = try captureWallet(amount: amount, merchant: merchant, account: account, currency: currency) }
+    catch { defaults.set("invalid", forKey: "finami.lastWalletStatus"); throw error }
+    do { try CaptureInbox.enqueue(event, in: CaptureInbox.folder()) }
+    catch { defaults.set("storageError", forKey: "finami.lastWalletStatus"); throw error }
+    defaults.set(now, forKey: "finami.lastWalletCapture")
+    defaults.set("queued", forKey: "finami.lastWalletStatus")
+}
+// A separate action keeps all existing per-account shortcuts compatible.
+struct CaptureWalletAliasIntent: AppIntent {
+    static var title: LocalizedStringResource = "Finami: Apple Pay · прив’язка картки"
+    static var description: IntentDescription? = IntentDescription("Передайте унікальну назву або маску картки, прив’язану в Finami. Не передавайте повний номер картки.")
+    static var openAppWhenRun: Bool = false
+    @Parameter(title: "Сума") var amount: Double
+    @Parameter(title: "Продавець") var merchant: String
+    @Parameter(title: "Валюта") var currency: String
+    @Parameter(title: "Ключ картки") var cardKey: String
+    static var parameterSummary: some ParameterSummary {
+        Summary("Apple Pay: \(\.$amount) \(\.$currency), \(\.$merchant), картка \(\.$cardKey)")
+    }
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        // Unknown or missing key is intentionally queued for manual routing.
+        let key = finamiWalletAliasKey(cardKey) ?? "wallet:unresolved"
+        try finamiQueueWallet(amount: amount, merchant: merchant, account: key, currency: currency)
+        return .result(dialog: "Оплату отримано. Відкрийте Finami для обробки.")
     }
 }
 struct CaptureMessageIntent: AppIntent {
@@ -82,6 +111,7 @@ struct FinamiShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         AppShortcut(intent: CaptureBankNotificationIntent(), phrases: ["Record bank notification with \(.applicationName)"], shortTitle: "Сповіщення банку", systemImageName: "bell.badge")
         AppShortcut(intent: CaptureWalletIntent(), phrases: ["Record Wallet payment with \(.applicationName)"], shortTitle: "Apple Pay", systemImageName: "creditcard")
+        AppShortcut(intent: CaptureWalletAliasIntent(), phrases: ["Record linked card payment with \(.applicationName)"], shortTitle: "Apple Pay · картка", systemImageName: "creditcard.fill")
         AppShortcut(intent: CaptureMessageIntent(), phrases: ["Record bank message with \(.applicationName)"], shortTitle: "Банківське SMS", systemImageName: "message")
         AppShortcut(intent: FinamiShortcutCheckIntent(), phrases: ["Check \(.applicationName)"], shortTitle: "Перевірка зв’язку", systemImageName: "checkmark.shield")
     }

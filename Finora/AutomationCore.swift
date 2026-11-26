@@ -286,6 +286,31 @@ struct FinamiCaptureAccount {
     let suffix: String?
     let bank: String?
 }
+// Wallet aliases are explicit user bindings. Never infer a card from the merchant or name alone.
+func finamiWalletAliasKey(_ label: String) -> String? {
+    let clean = label.split(whereSeparator: \.isWhitespace).joined(separator: " ").lowercased().precomposedStringWithCanonicalMapping
+    guard !clean.isEmpty, clean.count <= 120, clean.range(of: #"\d(?:[ -]?\d){7,}"#, options: .regularExpression) == nil else { return nil }
+    return "wallet:" + captureSHA256(Array(clean.utf8))
+}
+func finamiWalletAccount(_ event: CapturedPayment, bindings: [String:String]) -> CapturedPayment {
+    var routed = event
+    if event.source == "Apple Pay" && event.account.hasPrefix("wallet:") {
+        routed.account = bindings[event.account] ?? ""
+    }
+    return routed
+}
+// Cross-account conflicts are review candidates, never automatic deletion or reassignment.
+func finamiCaptureAccountConflict(_ e: CapturedPayment, otherAccount: String, otherCurrency: String, otherAmount: Int64, otherIncoming: Bool, otherDate: Date, otherSource: String?, otherMerchant: String) -> Bool {
+    guard !e.account.isEmpty, !otherAccount.isEmpty, e.account != otherAccount, e.currency == otherCurrency,
+          e.minor == otherAmount, e.incoming == otherIncoming, abs(e.date.timeIntervalSince(otherDate)) <= 600,
+          let otherSource, (e.source == "Apple Pay") != (otherSource == "Apple Pay") else { return false }
+    func merchantKey(_ value: String) -> String {
+        let parts = value.lowercased().components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty }
+        return parts.filter { !["vinnitsa", "vinnytsia", "vinnytsya", "ua", "uaua", "kyiv"].contains($0) }.joined()
+    }
+    let first = merchantKey(e.merchant), second = merchantKey(otherMerchant)
+    return first.count >= 4 && first == second
+}
 // Explicit account remains the fallback only when metadata does not contradict it.
 // An unscoped suffix cannot redirect a payment to a different bank on its own.
 func finamiCaptureRoute(_ event: CapturedPayment, accounts: [FinamiCaptureAccount]) -> String? {

@@ -7,13 +7,14 @@ struct CapturePreferences: Codable {
     var walletAuto = false
     var messageAuto = false
     var notifySaved: Bool? = nil
+    var walletBindings: [String:String]? = nil
 }
 
 @MainActor extension Store {
     func routedCapture(_ e: CapturedPayment) -> CapturedPayment {
-        var event = e
+        var event = finamiWalletAccount(e, bindings: db.capturePreferences?.walletBindings ?? [:])
         let accounts = db.accounts.map { a in FinamiCaptureAccount(id: a.id, currency: a.code, suffix: a.lastFour, bank: finamiBankHint((a.bankName ?? "") + " " + a.name)) }
-        event.account = finamiCaptureRoute(e, accounts: accounts) ?? ""
+        event.account = finamiCaptureRoute(event, accounts: accounts) ?? ""
         return event
     }
     func captureRepeat(_ e: CapturedPayment) -> Bool {
@@ -23,7 +24,7 @@ struct CapturePreferences: Codable {
         if captureRepeat(e) {return true}
         let paid = Set((db.paidRecords ?? []).compactMap(\.operationID))
         return db.operations.contains { o in
-            capturePossibleDuplicate(e,otherAccount:o.account,otherCurrency:o.entryCurrency ?? "UAH",otherAmount:o.sourceMinor ?? o.amount,otherIncoming:o.kind.incoming,otherDate:o.date,otherSource:o.captureSource,isBank:o.sourceBank != nil || o.bankKey != nil || paid.contains(o.id))
+            finamiCaptureAccountConflict(e, otherAccount:o.account, otherCurrency:o.entryCurrency ?? "UAH", otherAmount:o.sourceMinor ?? o.amount, otherIncoming:o.kind.incoming, otherDate:o.date, otherSource:o.captureSource, otherMerchant:o.note) || capturePossibleDuplicate(e,otherAccount:o.account,otherCurrency:o.entryCurrency ?? "UAH",otherAmount:o.sourceMinor ?? o.amount,otherIncoming:o.kind.incoming,otherDate:o.date,otherSource:o.captureSource,isBank:o.sourceBank != nil || o.bankKey != nil || paid.contains(o.id))
         }
     }
     func capturedOperation(_ e: CapturedPayment, kind: Kind) -> Operation? {
@@ -99,6 +100,10 @@ struct AutomationCenter: View {
     @State private var testResult=""
     @AppStorage("finami.lastShortcutCheck") private var lastShortcutCheck: Double = 0
     @AppStorage("finami.lastWalletCapture") private var lastWalletCapture: Double = 0
+    @AppStorage("finami.lastWalletAttempt") private var lastWalletAttempt: Double = 0
+    @AppStorage("finami.lastWalletStatus") private var lastWalletStatus = ""
+    @State private var walletKey = ""
+    @State private var walletBindingMessage = ""
     @AppStorage("finami.lastBankNotification") private var lastBankNotification: Double = 0
     @AppStorage("finami.lastNotificationAttempt") private var lastNotificationAttempt: Double = 0
     @AppStorage("finami.lastNotificationStatus") private var lastNotificationStatus = ""
@@ -126,6 +131,7 @@ struct AutomationCenter: View {
         List {
             templateSection
             setupSection
+            walletBindingSection
             connectionSection
             autoSection
             inboxSection
@@ -135,6 +141,35 @@ struct AutomationCenter: View {
             .onAppear {if account.isEmpty {account=s.db.accounts.first(where:{$0.id != cash})?.id ?? s.db.accounts.first?.id ?? ""};s.refreshCaptures()}
             .sheet(item:$review){CaptureReview(event:$0)}
             .alert("Не вдалося відкрити Команди", isPresented: $openFailed) { Button("OK", role: .cancel) {} } message: { Text("Відкрий системний застосунок Команди вручну.") }
+    }
+    private var walletBindingSection: some View {
+        Section("Apple Pay · універсальна команда") {
+            Text("Стара дія Apple Pay з кодом рахунку залишається робочою. Для нової дії «Apple Pay · прив’язка картки» передай унікальний ключ картки з транзакції, якщо Команди його надають. Однакові назви не підходять; використовуй окремі команди або власні унікальні ключі. Не вводь повний номер картки.").font(.caption)
+            TextField("Унікальний ключ картки", text: $walletKey).textInputAutocapitalization(.never).autocorrectionDisabled()
+            Button("Прив’язати до вибраного рахунку") {
+                guard let key = finamiWalletAliasKey(walletKey), let chosen else {return}
+                var prefs = s.db.capturePreferences ?? .init()
+                var bindings = prefs.walletBindings ?? [:]
+                guard bindings[key] == nil || bindings[key] == chosen.id else {
+                    walletBindingMessage = "Ключ уже належить іншому рахунку. Видали стару прив’язку або обери інший ключ."; return
+                }
+                bindings[key] = chosen.id; prefs.walletBindings = bindings
+                if s.change({$0.capturePreferences = prefs}) { walletKey = ""; walletBindingMessage = "Прив’язку збережено"; s.refreshCaptures() }
+            }.disabled(chosen == nil || finamiWalletAliasKey(walletKey) == nil)
+            if !walletBindingMessage.isEmpty { Text(walletBindingMessage).font(.caption) }
+            ForEach(s.db.accounts) { a in
+                let count = (s.db.capturePreferences?.walletBindings ?? [:]).values.filter { $0 == a.id }.count
+                if count > 0 {
+                    HStack { Text(a.name); Spacer(); Text("\(count)").foregroundStyle(.secondary)
+                        Button(role: .destructive) {
+                            s.change { d in var prefs = d.capturePreferences ?? .init(); prefs.walletBindings = (prefs.walletBindings ?? [:]).filter { $0.value != a.id }; d.capturePreferences = prefs }
+                            s.refreshCaptures(auto: false)
+                        } label: { Image(systemName: "trash").accessibilityLabel("Видалити прив’язки рахунку") }.buttonStyle(.borderless)
+                    }
+                }
+            }
+            Text("Ключ зберігається як хеш; невідома картка потрапляє у Вхідні без автоматичного запису. Для двох однакових назв Wallet рекомендовано окремі команди з кодами рахунків.").font(.caption).foregroundStyle(.secondary)
+        }
     }
     private var setupSection: some View {
         Section("Рахунок та ручне налаштування (за потреби)") {
@@ -194,6 +229,9 @@ struct AutomationCenter: View {
         Section("Перевірка зв’язку та сповіщень") {
             LabeledContent("Тест дії Команд", value: stamp(lastShortcutCheck))
             LabeledContent("Останній прийом Apple Pay", value: stamp(lastWalletCapture))
+            LabeledContent("Останній виклик Apple Pay", value: stamp(lastWalletAttempt))
+            Text(FinamiNotificationStatus.display(lastWalletStatus)).font(.caption)
+            LabeledContent("Очікують перевірки", value: String(s.capturePending.count))
             LabeledContent("Остання прийнята операція банку", value: stamp(lastBankNotification))
             LabeledContent("Останній виклик сповіщення", value: stamp(lastNotificationAttempt))
             Text(FinamiNotificationStatus.display(lastNotificationStatus)).font(.caption).accessibilityIdentifier("qa.automation.notificationStatus")
@@ -230,6 +268,7 @@ struct AutomationCenter: View {
                         Text(e.merchant.isEmpty ? e.source:e.merchant).foregroundStyle(.primary).font(.headline)
                         Text(s.visibleMoney(e.minor,e.currency)).font(.title3.bold())
                         Text(s.accountName(e.account)+" · "+e.date.formatted(date:.abbreviated,time:.shortened)).font(.caption)
+                        if e.account.isEmpty { Label("Невідомий або неоднозначний рахунок", systemImage: "questionmark.circle").foregroundStyle(.orange).font(.caption) }
                         if s.captureMatch(e) {Label(s.captureRepeat(e) ? "Повтор повідомлення" : "Можливий дублікат",systemImage:"exclamationmark.triangle").foregroundStyle(.orange).font(.caption)}
                     }
                 }
@@ -329,7 +368,7 @@ struct AutomationGuide: View {
     }
     static let wallet=[
         "У Finami → Рахунки створіть картку, перевірте валюту та кредитний ліміт. У Ще → Автоматизація виберіть цю картку і скопіюйте її код.",
-        "Відкрийте Команди (Shortcuts) → Автоматизація → +. Знайдіть Транзакція (Transaction) або Wallet. Тригер доступний на підтримуваних iOS 17 і новіших.",
+        "Відкрийте Команди. У новому редакторі додайте тригер «Коли торкають картку»; у старішому — Автоматизація → + → Транзакція. Шукайте Wallet або Гаманець. Доступність залежить від iOS.",
         "Виберіть лише потрібну картку в When I tap / Коли торкаюся. Категорії та продавці — усі. Виберіть Run Immediately / Запускати негайно, якщо доступно.",
         "Натисніть Далі → Нова порожня автоматизація → Додати дію. Знайдіть Finami: Apple Pay (пошук Finami). Якщо дія не відображається, відкрийте Finami після встановлення, закрийте й знову відкрийте Команди. Спробуйте запустити Finami: перевірка зв’язку; це безпечний тест, не покупка.",
         "У Amount / Сума вставте змінну Shortcut Input / Вхідні дані команди. Торкніться змінної ще раз і виберіть властивість Amount, а не весь об’єкт. Merchant / Продавець — та сама змінна, властивість Merchant. Якщо поле продавця недоступне, введіть Apple Pay.",
@@ -346,7 +385,7 @@ struct AutomationGuide: View {
         "Для різних карток використовуйте різні фільтри. SMS можуть бути платними або недоступними у вашому банку. Перекази, поповнення й погашення підтверджуйте окремо."]
     static let notifications=[
         "На iOS 27 відкрийте Команди, створіть нову команду та в редакторі виберіть розділ Автоматизація → Сповіщення (Notification). На старіших iOS використовуйте SMS, Wallet або виписки.",
-        "Виберіть тільки застосунок потрібного банку. За можливості встановіть фільтр на проведені покупки й конкретну картку, а не всі сповіщення.",
+        "Виберіть тільки застосунок потрібного банку. Заповніть фільтр Назва містить Купівля (якщо банк використовує цей заголовок) або видаліть порожній фільтр. Для інших типів операцій використайте окреме правило; коди безпеки не передавайте.",
         "Додайте дію Finami: сповіщення банку. У Текст сповіщення виберіть змінну Сповіщення та її текст/тіло (Body). Якщо банк передає тип операції окремо (наприклад, Купівля), розгорніть дію та передайте властивість Title в Заголовок сповіщення. Якщо сума у підзаголовку, об’єднайте потрібні поля через дію Текст. У Код рахунку Finami вставте скопійований код. Не передавайте OTP чи повідомлення безпеки.",
         "Увімкніть автоматизацію в редакторі команди. За можливості вимкніть підтвердження перед запуском. Перевірте наступну реальну оплату у вхідних Finami та час останнього повідомлення. Не вмикайте одночасно два джерела для тієї ж картки без звірки. Готові дії доступні через Програми → Finami після реєстрації iOS. Щоб отримати імпортований шаблон, збережіть створену команду через Поділитися → Копіювати посилання iCloud."]
     static let banks=[

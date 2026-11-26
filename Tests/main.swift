@@ -122,3 +122,13 @@ check(!capturePossibleDuplicate(msg,otherAccount:msg.account,otherCurrency:"USD"
 check(capturePossibleDuplicate(msg,otherAccount:msg.account,otherCurrency:"UAH",otherAmount:msg.minor,otherIncoming:false,otherDate:msg.date.addingTimeInterval(-180),otherSource:"Bank message",isBank:false),"nearby separate purchases require review rather than deletion")
 check(!capturePossibleDuplicate(msg,otherAccount:msg.account,otherCurrency:"UAH",otherAmount:msg.minor,otherIncoming:false,otherDate:msg.date.addingTimeInterval(-86400),otherSource:"Bank message",isBank:false),"different day same source not matched by amount alone")
 check(capturePossibleDuplicate(msg,otherAccount:msg.account,otherCurrency:"UAH",otherAmount:msg.minor,otherIncoming:false,otherDate:msg.date.addingTimeInterval(-86400),otherSource:nil,isBank:true),"posted statement match sent to review")
+
+let walletAlias = finamiWalletAliasKey(" Test   Card 1234 ")!
+check(walletAlias == finamiWalletAliasKey("test card 1234"),"Wallet alias normalization")
+check(finamiWalletAliasKey("1234 5678 9012 3456") == nil,"Wallet full card number rejected")
+var aliasPayment = try captureWallet(amount: 503.20, merchant: "Test Shop", account: walletAlias, currency: "UAH")
+check(finamiWalletAccount(aliasPayment, bindings: [walletAlias:"card-a"]).account == "card-a","Wallet alias explicit routing")
+check(finamiWalletAccount(aliasPayment, bindings: [:]).account.isEmpty,"Wallet unknown alias requires review")
+aliasPayment.account = "card-a"
+check(finamiCaptureAccountConflict(aliasPayment, otherAccount: "card-b", otherCurrency: "UAH", otherAmount: 50320, otherIncoming: false, otherDate: aliasPayment.date, otherSource: "Bank message", otherMerchant: "Test Shop VINNITSA UA"),"Wallet bank cross-account conflict requires review")
+check(!finamiCaptureAccountConflict(aliasPayment, otherAccount: "card-b", otherCurrency: "UAH", otherAmount: 50320, otherIncoming: false, otherDate: aliasPayment.date, otherSource: "Bank message", otherMerchant: "Other Shop"),"Different merchant not cross-account conflict")

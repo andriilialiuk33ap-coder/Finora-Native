@@ -88,6 +88,23 @@ import Foundation
         let queued=try CaptureInbox.read(in:dir);precondition(queued==[new])
         restarted.failWrite=false;restarted.refreshCaptures(inbox:dir)
         precondition(restarted.db.operations.count==3 && restarted.captureRepeat(new))
+        let routeStore = Store()
+        routeStore.db.accounts = [Account(id:"card-a",name:"Test debit"), Account(id:"card-b",name:"Test credit")]
+        let key = finamiWalletAliasKey("Test Card 1234")!
+        routeStore.db.capturePreferences = CapturePreferences(walletAuto:true,messageAuto:true,walletBindings:[key:"card-a"])
+        let w = try captureWallet(amount:503.20,merchant:"Test Shop",account:key,currency:"UAH")
+        try CaptureInbox.enqueue(w,in:dir); routeStore.refreshCaptures(inbox:dir)
+        precondition(routeStore.db.operations.count == 1 && routeStore.db.operations[0].account == "card-a")
+        var bank = try captureMessage("Купівля 503.20UAH Test Shop VINNITSA UA 26-11-2026 16:20",account:"card-b")
+        bank.date = w.date
+        try CaptureInbox.enqueue(bank,in:dir); routeStore.refreshCaptures(inbox:dir)
+        precondition(routeStore.db.operations.count == 1 && routeStore.capturePending.count == 1 && routeStore.captureMatch(bank))
+        precondition(routeStore.finishCapture(bank,operation:nil,inbox:dir))
+        let unknown = try captureWallet(amount:77,merchant:"Test Shop",account:"wallet:unknown",currency:"UAH")
+        try CaptureInbox.enqueue(unknown,in:dir); routeStore.refreshCaptures(inbox:dir)
+        precondition(routeStore.capturePending.count == 1 && routeStore.capturePending[0].account.isEmpty && routeStore.db.operations.count == 1)
+        precondition(routeStore.finishCapture(unknown,operation:nil,inbox:dir))
+        print("PASS: actual Store wallet alias routing, cross-account duplicate review, unknown card inbox")
         // Legacy databases missing new optional fields still decode.
         let old=try JSONDecoder().decode(Database.self,from:JSONEncoder().encode(Database()))
         precondition(old.captureMessageFingerprints==nil)

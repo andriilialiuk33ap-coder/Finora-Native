@@ -328,6 +328,7 @@ struct Database: Codable {
   var reconciliationUndo: Data? = nil
   var exchangeDiary: [FinamiExchangeRecord]? = nil
   var partnerGroups: [FinamiPartnerGroup]? = nil
+  var removedInstallments: [Obligation]? = nil
 }
 struct Legacy: Decodable {
   struct Entry: Decodable {
@@ -484,7 +485,7 @@ struct DataFile: FileDocument {
     }
     if db.operations != copy.operations, db.reconciliationUndo == copy.reconciliationUndo {copy.reconciliationUndo=nil}
     if let images = copy.scanImages {
-      let references = Set(copy.operations.compactMap(\.scanImageID) + copy.obligations.compactMap(\.scanImageID))
+      let references = Set(copy.operations.compactMap(\.scanImageID) + copy.obligations.compactMap(\.scanImageID) + (copy.removedInstallments ?? []).compactMap(\.scanImageID))
       copy.scanImages = images.filter { references.contains($0.key) }
     }
     var newlyCaptured = 0
@@ -605,6 +606,9 @@ struct DataFile: FileDocument {
         Set(decoded.operations.map(\.id)).count == decoded.operations.count,
         finamiExchangeBalance(decoded.exchangeDiary ?? []) != nil,
         finamiValidPartnerGroups(decoded.partnerGroups ?? []),
+        Set((decoded.removedInstallments ?? []).map(\.id)).count == (decoded.removedInstallments ?? []).count,
+        (decoded.removedInstallments ?? []).allSatisfy({ $0.kind == .installment && $0.target >= 0 && $0.paid >= 0 && $0.paid <= $0.target && $0.monthly >= 0 && $0.target <= 1_000_000_000_000 }),
+        Set(decoded.obligations.map(\.id)).isDisjoint(with: (decoded.removedInstallments ?? []).map(\.id)),
         decoded.obligations.allSatisfy({ o in (o.importedSchedule ?? []).allSatisfy { $0.amount > 0 && $0.amount <= 1_000_000_000_000 } && (o.currentDuePaid.map { $0 >= 0 && $0 < o.monthly && $0 <= o.paid } ?? true) }),
         (decoded.balanceObservations ?? [:]).values.allSatisfy({ $0.available >= 0 && $0.available <= 1_000_000_000_000 && ["UAH","USD"].contains($0.currency) }),
         decoded.operations.allSatisfy({ o in
@@ -1272,6 +1276,11 @@ struct Obligations: View {
   var kind: ObligationKind
   @State private var paymentDetails: FinamiPayment?
   @State private var edit: Obligation?
+  @State private var remove: Obligation?
+  private func moveToArchive(_ o: Obligation) {
+    let linked = (s.db.reminders ?? []).filter { $0.linkedID == o.id }
+    if s.change({ d in finamiRemoveInstallment(o.id, from: &d) }) { linked.forEach { ReminderScheduler.cancel($0) } }
+  }
   var body: some View {
     List {
       if kind == .installment { NavigationLink { FinamiScanView(initialMode: .installment) } label: { Label("Додати зі скриншота", systemImage: "doc.viewfinder") } }
@@ -1280,6 +1289,7 @@ struct Obligations: View {
           .font(.title.bold())
       }
       ForEach(s.db.obligations.filter { $0.kind == kind }) { o in
+        HStack(spacing: 10) {
         Button {
           if let payment = s.upcomingPayments.first(where: { $0.id == o.id && !$0.subscription }) { paymentDetails = payment }
           else { edit = o }
@@ -1296,8 +1306,26 @@ struct Obligations: View {
             ).font(.caption).foregroundStyle(.secondary)
           }
         }.buttonStyle(.plain)
+        if kind == .installment {
+          Button(role: .destructive) { remove = o } label: { Image(systemName: "trash").frame(minWidth: 44, minHeight: 44).accessibilityLabel("Видалити розстрочку") }.buttonStyle(.borderless)
+        }
+        }.swipeActions(edge: .trailing, allowsFullSwipe: false) {
+          if kind == .installment { Button { remove = o } label: { Label("Видалити", systemImage: "trash") }.tint(.red) }
+        }
       }
-    }.navigationTitle(kind.title).toolbar {
+      if kind == .installment, let archived = s.db.removedInstallments, !archived.isEmpty {
+        Section("Архів розстрочок") {
+          ForEach(archived) { o in
+            HStack { VStack(alignment: .leading) { Text(o.name); Text(s.visibleMoney(o.remaining)).font(.caption).foregroundStyle(.secondary) }; Spacer(); Button("Відновити") { s.change { d in finamiRestoreInstallment(o.id, into: &d) } }.buttonStyle(.borderless) }
+          }
+          Text("Відновлення повертає графік. Нагадування та прив’язку до партнерської групи налаштуй повторно.").font(.caption).foregroundStyle(.secondary)
+        }
+      }
+    }.confirmationDialog("Прибрати розстрочку з активного плану?", isPresented: Binding(get: { remove != nil }, set: { if !$0 { remove = nil } }), titleVisibility: .visible) {
+      Button("Видалити в архів", role: .destructive) { if let o = remove { moveToArchive(o) }; remove = nil }
+      Button("Скасувати", role: .cancel) { remove = nil }
+    } message: { Text("Банківські операції та історія сплати залишаться. Майбутні платежі й нагадування буде прибрано. Розстрочку можна відновити з архіву.") }
+    .navigationTitle(kind.title).toolbar {
       Button {
         edit = Obligation(kind: kind)
       } label: {
@@ -1426,7 +1454,10 @@ struct ObligationEditor: View {
       .confirmationDialog("Видалити запис?", isPresented: $confirm) {
         Button("Видалити", role: .destructive) {
           let linked=(s.db.reminders ?? []).filter{$0.linkedID==o.id}
-        if s.change({d in d.obligations.removeAll{$0.id==o.id};d.reminders?.removeAll{$0.linkedID==o.id}}) {linked.forEach{ReminderScheduler.cancel($0)};dismiss()}
+        if s.change({d in
+          if o.kind == .installment { finamiRemoveInstallment(o.id, from: &d) }
+          else { d.obligations.removeAll{$0.id==o.id};d.reminders?.removeAll{$0.linkedID==o.id} }
+        }) {linked.forEach{ReminderScheduler.cancel($0)};dismiss()}
         }
       }
     }
