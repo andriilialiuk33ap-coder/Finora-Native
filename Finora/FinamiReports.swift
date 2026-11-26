@@ -71,6 +71,8 @@ struct Reports: View {
         FinamiReportPanel(title: "Підсумок", icon: "wallet.pass.fill", tint: .teal, hidden: hidden("flow")) {
             if showIncome { FinamiMetric(title: "Чистий потік", value: s.visibleMoney(x.totals.net), tint: x.totals.net >= 0 ? .green : .orange) }
             if showIncome { metric("Доходи", x.totals.income, .green, "arrow.down.left") }
+            if prefs.reportsShowIncoming == false { Button("Показати надходження") { s.changeAppearance { $0.reportsShowIncoming = true } }.font(.caption) }
+            if !showIncome { Button("Показати доходи") { s.changeAppearance { $0.reportsShowIncome = true } }.font(.caption) }
             if prefs.reportsShowIncoming != false { metric("Усі надходження", x.totals.incoming, .blue, "arrow.down.circle"); Text("Включно з поповненнями, переказами, поверненнями та кредитними надходженнями. Не є чистим доходом.").font(.caption).foregroundStyle(.secondary) }
             metric("Чисті витрати", x.totals.expense, .orange, "arrow.up.right")
             if x.totals.refunds != 0 { metric("Повернення покупок", x.totals.refunds, .blue, "arrow.uturn.backward") }

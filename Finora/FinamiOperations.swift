@@ -8,7 +8,7 @@ struct OperationRow: View {
     HStack {
       FinamiIconTile(icon: finamiOperationIcon(o), tint: o.kind == .income ? .green : o.kind == .expense ? .orange : .blue, side: 42)
       VStack(alignment: .leading) {
-        Text(o.note.isEmpty ? (o.kind == .transfer ? "Переказ" : o.category) : o.note).font(
+        Text(o.note.isEmpty ? (o.kind == .transfer ? "Переказ" : o.category) : finamiMerchantDisplay(o.note)).font(
           .subheadline.bold())
         Text("\(o.kind.title) · \(s.accountName(o.account)) · \(o.date.formatted(.dateTime.day().month(.abbreviated).year().locale(Locale(identifier: "uk_UA"))))")
           .font(.caption).foregroundStyle(.secondary)
@@ -127,10 +127,10 @@ struct OpEditor: View {
   private var nativeAmount: Int64? { sourceCode == "USD" ? bankMinor(amount) : converted }
   private var similarPayments: [Operation] {
     guard let payment = selectedPayment, !savedOperation else { return [] }
-    return finamiEligiblePaymentOperations(s.db.operations, records: s.db.paidRecords ?? [], account: o.account, currency: payment.currency, amount: payment.amount, date: o.date)
+    return finamiEligiblePaymentOperations(s.db.operations, records: s.db.paidRecords ?? [], account: o.account, currency: payment.currency, amount: nativeAmount ?? payment.amount, date: o.date)
   }
   private var paymentSelectionValid: Bool {
-    linkedPaymentID.isEmpty || (linkedRecord == nil && finamiPaymentDebitKind(o.kind) && selectedPayment?.amount == nativeAmount && selectedPayment != nil && o.date <= Date() && (similarPayments.isEmpty || separatePayment))
+    linkedPaymentID.isEmpty || (linkedRecord == nil && finamiPaymentDebitKind(o.kind) && selectedPayment.map { p in if let amount=nativeAmount { return amount > 0 && (p.kind == "Розстрочка" ? amount <= (p.remaining ?? 0) : amount == p.amount) };return false } == true && o.date <= Date() && (similarPayments.isEmpty || separatePayment))
   }
   init(original: Operation) {
     _o = State(initialValue: original)
@@ -203,7 +203,7 @@ struct OpEditor: View {
             if paymentChoices.isEmpty { Text("Немає активних платежів у валюті цього рахунку.").font(.caption) }
             if let payment = selectedPayment {
               Button("Підставити суму платежу") { amount = amountText(payment.amount); entryCurrency = sourceCode }.disabled(o.sourceBank != nil)
-              if nativeAmount != payment.amount { Text("Сума має дорівнювати найближчому платежу. Часткові оплати тут не підтримуються.").font(.caption).foregroundStyle(.orange) }
+              if nativeAmount != payment.amount { Text(payment.kind == "Розстрочка" ? "Часткова або дострокова оплата: перевір графік банку." : "Сума має дорівнювати плановому платежу.").font(.caption).foregroundStyle(.orange) }
               if !similarPayments.isEmpty { Toggle("Це окрема нова оплата", isOn: $separatePayment); Text("Є схожа операція. Якщо оплату вже записано, відкрий її та прив’яжи платіж там.").font(.caption).foregroundStyle(.orange) }
               Text("Збереження оновить рахунок, залишок договору, наступну дату та нагадування одним записом.").font(.caption)
               if o.kind == .transfer { Text("Прив’язуй переказ лише якщо це фактична оплата договору, а не звичайне поповнення кредитної картки.").font(.caption).foregroundStyle(.orange) }
@@ -212,6 +212,7 @@ struct OpEditor: View {
         }
         TextField("Магазин / примітка / теги", text: $o.note)
         if let bank = o.sourceBank { LabeledContent("Джерело", value: bank) }
+        if let description = o.destinationBankNote { LabeledContent("Опис другої сторони",value:description) }
         if let capture = o.captureSource { LabeledContent("Джерело запису", value: capture) }
         if let imageID = o.scanImageID { NavigationLink("Вкладений скриншот") { FinamiScanAttachment(imageID: imageID) } }
         if let n = o.originalAmount, let c = o.originalCurrency { LabeledContent("Оригінальна сума", value: currencyMoney(n,c)) }
@@ -238,7 +239,7 @@ struct OpEditor: View {
             if o.sourceBank == nil {o.originalAmount=entered;o.originalCurrency=entryCurrency}
             if !linkedPaymentID.isEmpty {
               guard let payment = selectedPayment else { return }
-              if s.confirmPayment(payment, mode: .newOperation, accountID: o.account, operationID: o.id, paidDate: o.date, kind: o.kind, allowSeparate: separatePayment, operationDraft: o, learnCategory: learnRule) { dismiss() }
+              if s.confirmPayment(payment, mode: .newOperation, accountID: o.account, operationID: o.id, paidDate: o.date, kind: o.kind, allowSeparate: separatePayment, operationDraft: o, learnCategory: learnRule, actualAmount: o.sourceMinor ?? o.amount) { dismiss() }
               return
             }
             if s.change({ d in

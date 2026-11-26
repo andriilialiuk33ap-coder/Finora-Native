@@ -55,3 +55,19 @@ func finamiLinkedOperationsPreserved(before: Database, after: Database) -> Bool 
             (old.destinationMinor ?? old.amount) == (new.destinationMinor ?? new.amount) && old.date == new.date
     }
 }
+
+// The first occurrence can be partially paid. Extra principal reduces remaining debt,
+// but never pretends that the bank waived or moved multiple due dates.
+func finamiApplyInstallment(_ o: inout Obligation, scheduled: Date, amount: Int64, calendar: Calendar = .current) -> Bool {
+    guard o.kind == .installment, o.due == scheduled, amount > 0, amount <= o.remaining, o.nextCharge > 0 else { return false }
+    let due = o.nextCharge
+    if amount < due { o.currentDuePaid = max(0,o.currentDuePaid ?? 0) + amount }
+    else {
+        if o.remaining > amount { guard let next=calendar.date(byAdding:.month,value:1,to:o.due),next>o.due else{return false};o.due=next }
+        o.currentDuePaid=nil
+    }
+    o.paid += amount; return true
+}
+func finamiReminderFingerprint(_ values: [PersonalReminder]) -> Data? {
+    let encoder=JSONEncoder();encoder.outputFormatting=[.sortedKeys];return try? encoder.encode(values.sorted{$0.id<$1.id})
+}

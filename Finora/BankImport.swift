@@ -17,6 +17,7 @@ private enum StatementPDF {
         let width: CGFloat = pumb ? 595.304 : 841.889
         let pattern = pumb ? #"^\d{4}-\d{2}-\d{2}$"# : #"^\d{2}\.\d{2}\.\d{4}$"#
         var result = BankBatch()
+        result.statementLastFour = bankStatementLastFour(String(first.prefix(1800)))
         for i in 0..<doc.pageCount {
             guard let page = doc.page(at:i) else { continue }
             let bounds = page.bounds(for:.mediaBox), scale = bounds.width / width
@@ -192,6 +193,9 @@ struct BankCenter: View {
     private func reviewSection(_ batch: BankBatch) -> some View {
         Section("Перевірка") {
             Text("Розпізнано \(batch.rows.count), пропущено \(batch.rejected)")
+            if let last=batch.statementLastFour { Text("Картка у заголовку: ••"+last).font(.caption) }
+            if let a=supportedLocalAccounts.first(where:{$0.id==account}), let last=batch.statementLastFour, let own=a.lastFour, own != last { Text("Номер картки не збігається. Обери правильний рахунок.").foregroundStyle(.orange).font(.caption) }
+            if let bank=batch.rows.first?.source,let a=supportedLocalAccounts.first(where:{$0.id==account}),let assigned=a.bankName,!assigned.isEmpty,bankCanonicalName(bank) != bankCanonicalName(assigned) { Text("Банк виписки відрізняється від банку рахунку. Перевір вибір.").foregroundStyle(.orange).font(.caption) }
             Picker("Рахунок Finami", selection: $account) {
                 Text("Вибрати").tag("")
                 ForEach(supportedLocalAccounts) { a in
@@ -201,7 +205,7 @@ struct BankCenter: View {
             NavigationLink("Переглянути та імпортувати") {
                 BankReview(batch: batch, account: account)
             }
-            .disabled(account.isEmpty)
+            .disabled(account.isEmpty || (batch.statementLastFour.map { last in supportedLocalAccounts.first(where:{$0.id==account})?.lastFour.map{$0 != last} ?? false } ?? false))
         }
     }
     private func importFile(_ result: Result<URL, Error>) {
@@ -221,6 +225,10 @@ struct BankCenter: View {
                     return parsed
                 }.value
                 pending = batch; account = ""
+                if let last=batch.statementLastFour, let bank=batch.rows.first?.source {
+                    let candidates=supportedLocalAccounts.filter{$0.lastFour==last && bankCanonicalName($0.bankName ?? "")==bankCanonicalName(bank)}
+                    if candidates.count==1 {account=candidates[0].id}
+                }
             } catch { s.error = error.localizedDescription }
         }
     }
@@ -283,10 +291,13 @@ struct BankReview: View {
         let matches = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, index.candidates($0)) })
         let selected = rows.filter { isSelected($0,matches:matches[$0.id] ?? []) }
         let linkedCount = rows.filter { linked[$0.id] != nil }.count
+        let otherKeys=Set(s.db.operations.flatMap { o in [o.account != account ? o.bankKey : nil,o.destination != account ? o.destinationBankKey : nil].compactMap{$0} })
         let needsReview = rows.filter { !(matches[$0.id] ?? []).isEmpty && linked[$0.id] == nil && !isSelected($0,matches:matches[$0.id] ?? []) }.count
         return List {
             Section {
+                LabeledContent("Рахунок",value:s.accountName(account))
                 LabeledContent("Нові рядки",value:String(rows.count))
+                if batch.rows.contains(where:{otherKeys.contains($0.key)}) { Text("Деякі банківські ключі вже є на іншому рахунку. Перевір, чи обрано правильну картку; імпорт не об’єднує їх автоматично.").font(.caption).foregroundStyle(.orange) }
                 LabeledContent("Уже імпортовано / повтори",value:String(batch.rows.count-rows.count))
                 LabeledContent("Потребують звірки",value:String(needsReview))
                 LabeledContent("Нових операцій до запису",value:String(selected.count))
@@ -368,6 +379,6 @@ struct BankImportHistory: View {
                     VStack(alignment:.leading,spacing:8){Text(first.sourceBank ?? first.captureSource ?? "Виписка").font(.headline);Text("\(group.count) операцій · \(s.accountName(first.account))").font(.caption);if let d=group.map(\.date).max(){Text("Остання операція: \(d.formatted(date:.abbreviated,time:.omitted))").font(.caption)};Button("Скасувати імпорт",role:.destructive){pending=id;confirm=true}}
                 }
             }
-        }.navigationTitle("Історія імпорту").confirmationDialog("Видалити всі операції пакета, включно з відредагованими?",isPresented:$confirm){Button("Видалити пакет",role:.destructive){if let id=pending{s.change{$0.operations.removeAll{$0.importBatch==id}}};pending=nil};Button("Скасувати",role:.cancel){pending=nil}}
+        }.navigationTitle("Історія імпорту").confirmationDialog("Видалити всі операції пакета, включно з відредагованими?",isPresented:$confirm){Button("Видалити пакет",role:.destructive){if let id=pending { if s.db.operations.contains(where:{($0.mergedImportBatches ?? []).contains(id)}) {s.error="Пакет містить звірений переказ. Щоб не видалити обидві сторони, віднови попередню копію або перевір операцію окремо."} else {s.change{$0.operations.removeAll{$0.importBatch==id}}} };pending=nil};Button("Скасувати",role:.cancel){pending=nil}}
     }
 }

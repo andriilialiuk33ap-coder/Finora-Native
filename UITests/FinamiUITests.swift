@@ -73,9 +73,25 @@ final class FinamiUITests: XCTestCase {
         let hub = app.descendants(matching: .any).matching(identifier: "qa.smart.hub").firstMatch
         for _ in 0..<12 { if hub.exists && hub.isHittable { break }; app.swipeUp() }
         visible(hub); hub.tap()
-        visible(app.navigationBars["Центр імпорту"])
+        visible(app.navigationBars["Імпорт та експорт"])
         visible(app.staticTexts["Скриншоти розстрочок"])
         capture("import-hub")
+    }
+    func testExportAndRulesScreensOpen() {
+        app.tabBars.buttons["Ще"].tap()
+        let hub = app.descendants(matching:.any).matching(identifier:"qa.smart.hub").firstMatch
+        for _ in 0..<12 { if hub.exists && hub.isHittable { break }; app.swipeUp() }
+        visible(hub);hub.tap();visible(app.navigationBars["Імпорт та експорт"])
+        let export = app.staticTexts["PDF, Excel, CSV, календар"].firstMatch
+        for _ in 0..<10 { if export.exists && export.isHittable { break }; app.swipeUp() }
+        visible(export);export.tap();visible(app.navigationBars["Експорт звітів"])
+        visible(app.staticTexts["Показувати суми"]);capture("export-privacy")
+        app.navigationBars.buttons.firstMatch.tap()
+        let rules=app.staticTexts["Правила категоризації"].firstMatch
+        for _ in 0..<10 { if rules.exists && rules.isHittable { break }; app.swipeUp() }
+        visible(rules);rules.tap();visible(app.navigationBars["Правила категорій"])
+        let install=app.buttons["Додати погоджений набір категорій і правил"]
+        visible(install);install.tap();capture("category-rules")
     }
     func testDiagnosticsRunsLocalParser() {
         app.tabBars.buttons["Ще"].tap()

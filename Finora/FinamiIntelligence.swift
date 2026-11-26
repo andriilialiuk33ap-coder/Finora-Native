@@ -76,7 +76,7 @@ struct FinamiCalendarEvent: Identifiable {
         var events: [FinamiCalendarEvent] = []
         for p in upcomingPayments {
             let period = p.subscription ? db.subscriptions?.first(where: { $0.id == p.id })?.period : nil
-            for row in finamiPlannedOccurrences(id: p.id, start: p.date, amount: p.amount, remaining: p.remaining, component: period?.component ?? .month, step: period?.step ?? 1, interval: interval) {
+            for row in finamiPlannedOccurrences(id: p.id, start: p.date, amount: p.amount, remaining: p.remaining, subsequentAmount: p.recurringAmount, component: period?.component ?? .month, step: period?.step ?? 1, interval: interval) {
                 events.append(.init(id: row.id, paymentID: p.id, date: row.date, name: p.name, currency: p.currency, amount: row.amount, kind: p.kind, projected: row.projected, paid: false, payment: row.projected ? nil : p))
             }
         }

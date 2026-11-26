@@ -1,13 +1,14 @@
 import Foundation
 
 // Forecast scheduled payments without treating them as actual transactions.
-func finamiScheduledAmounts(start: Date, amount: Int64, remaining: Int64?, component: Calendar.Component, step: Int, from: Date, until: Date, calendar: Calendar = .current) -> [Int64] {
+func finamiScheduledAmounts(start: Date, amount: Int64, remaining: Int64?, subsequentAmount: Int64? = nil, component: Calendar.Component, step: Int, from: Date, until: Date, calendar: Calendar = .current) -> [Int64] {
     guard amount > 0, step > 0, until > from else { return [] }
     // Do not silently assume overdue installments were paid. An overdue entry stays in the calendar separately.
     guard start >= from else { return [] }
     var date = start, left = remaining, result: [Int64] = []
     while date < until && result.count < 366 {
-        let charge = min(amount, left ?? amount)
+        let planned = result.isEmpty ? amount : (subsequentAmount ?? amount)
+        let charge = min(planned, left ?? planned)
         guard charge > 0 else { break }
         result.append(charge)
         if let balance = left { left = balance - charge }

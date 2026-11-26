@@ -97,6 +97,8 @@ struct Operation: Codable, Identifiable, Equatable {
   var destination = ""
   var bankKey: String? = nil
   var destinationBankKey: String? = nil
+  var destinationBankNote: String? = nil
+  var mergedImportBatches: [String]? = nil
   var sourceBank: String? = nil
   var originalAmount: Int64? = nil
   var originalCurrency: String? = nil
@@ -198,7 +200,9 @@ struct Obligation: Codable, Identifiable {
   var scanImageID: String? = nil
   var scanSourceIDs: [String]? = nil
   var importedSchedule: [FinamiScheduleRow]? = nil
+  var currentDuePaid: Int64? = nil
   var remaining: Int64 { max(0, target - paid) }
+  var nextCharge: Int64 { monthly > 0 ? min(max(0, monthly - max(0, currentDuePaid ?? 0)), remaining) : remaining }
 }
 // Optional history keeps older Finora.json files compatible.
 struct FinamiPaidRecord: Codable, Identifiable {
@@ -210,6 +214,15 @@ struct FinamiPaidRecord: Codable, Identifiable {
   var currency: String
   var accountID: String?
   var operationID: String?
+  var obligationUndo: FinamiObligationUndo? = nil
+  var historicalOnly: Bool? = nil
+}
+struct FinamiObligationUndo: Codable {
+  var beforePaid: Int64; var beforeDue: Date; var beforeProgress: Int64?
+  var afterPaid: Int64; var afterDue: Date; var afterProgress: Int64?
+  var target: Int64; var monthly: Int64
+  var priorReminders: [PersonalReminder]
+  var renewedReminders: [PersonalReminder]
 }
 struct Database: Codable {
   var accounts = [Account(id: cash, name: "Готівка")]
@@ -251,7 +264,7 @@ struct Legacy: Decodable {
   var budget: Double?
 }
 struct DataFile: FileDocument {
-  static var readableContentTypes: [UTType] { [.json, .commaSeparatedText] }
+  static var readableContentTypes: [UTType] { [.json, .commaSeparatedText, .pdf, UTType(filenameExtension: "xlsx") ?? .data, UTType(filenameExtension: "ics") ?? .data] }
   var data: Data
   init(data: Data) { self.data = data }
   init(configuration: ReadConfiguration) throws {
@@ -500,7 +513,7 @@ struct DataFile: FileDocument {
         decoded.accounts.allSatisfy({ ["UAH","USD"].contains($0.code) && $0.opening >= -1_000_000_000_000 && $0.opening <= 1_000_000_000_000 && ($0.creditLimit ?? 0) >= 0 && ($0.creditLimit ?? 0) <= 1_000_000_000_000 }),
         (!decoded.accounts.contains(where:{$0.code=="USD"}) || fxRate(decoded.currencyPreferences?.usdRate ?? "") != nil),
         Set(decoded.operations.map(\.id)).count == decoded.operations.count,
-        decoded.obligations.allSatisfy({ o in (o.importedSchedule ?? []).allSatisfy { $0.amount > 0 && $0.amount <= 1_000_000_000_000 } }),
+        decoded.obligations.allSatisfy({ o in (o.importedSchedule ?? []).allSatisfy { $0.amount > 0 && $0.amount <= 1_000_000_000_000 } && (o.currentDuePaid.map { $0 >= 0 && $0 < o.monthly && $0 <= o.paid } ?? true) }),
         (decoded.balanceObservations ?? [:]).values.allSatisfy({ $0.available >= 0 && $0.available <= 1_000_000_000_000 && ["UAH","USD"].contains($0.currency) }),
         decoded.operations.allSatisfy({ o in
           o.amount > 0 && o.amount <= 1_000_000_000_000
@@ -569,7 +582,7 @@ struct DataFile: FileDocument {
   var storageHealthy: Bool { ready }
   func backup() -> DataFile { DataFile(data: (try? JSONEncoder().encode(db)) ?? Data()) }
   func csv() -> DataFile {
-    func q(_ s: String) -> String { "\"" + s.replacingOccurrences(of: "\"", with: "\"\"") + "\"" }
+    func q(_ s: String) -> String { finamiCSVText(s) }
     let f = ISO8601DateFormatter()
     let rows = db.operations.map { o in
       [
@@ -1026,7 +1039,7 @@ struct More: View {
         }
       }
       FinamiMenuGroup("Банки") {
-        NavigationLink { FinamiImportHub() } label: { FinamiMenuLabel(title: "Центр імпорту та перевірки", icon: "tray.full.fill", color: .indigo) }.accessibilityIdentifier("qa.smart.hub")
+        NavigationLink { FinamiImportHub() } label: { FinamiMenuLabel(title: "Імпорт, експорт та перевірка", icon: "tray.full.fill", color: .indigo) }.accessibilityIdentifier("qa.smart.hub")
         NavigationLink { FinamiReconciliation() } label: { FinamiMenuLabel(title: "Розумна звірка рахунків", icon: "checkmark.circle.trianglebadge.exclamationmark", color: .cyan) }
         NavigationLink { AutomationCenter() } label: { FinamiMenuLabel(title: "Автоматизація · Apple Pay / SMS (\(s.capturePending.count))", icon: "bolt.fill", color: .orange) }
       }
@@ -1176,6 +1189,7 @@ struct ObligationEditor: View {
   @State var log = false
   @State var account = cash
   @State var confirm = false
+  @State private var undoRecord: String?
   init(original: Obligation) {
     _o = State(initialValue: original)
     _target = State(initialValue: amountText(original.target))
@@ -1223,9 +1237,11 @@ struct ObligationEditor: View {
           }
         }
         if !(s.db.paidRecords ?? []).filter({$0.paymentID == o.id}).isEmpty {
-          Section("Історія оплат") { ForEach((s.db.paidRecords ?? []).filter{$0.paymentID==o.id}.sorted{$0.paidDate>$1.paidDate}) { record in LabeledContent(record.paidDate.formatted(date:.abbreviated,time:.omitted) + " · " + (record.accountID.map{s.accountName($0)} ?? "Без списання"),value:s.visibleMoney(record.amount,record.currency)) } }
+          Section("Історія оплат") { ForEach((s.db.paidRecords ?? []).filter{$0.paymentID==o.id}.sorted{$0.paidDate>$1.paidDate}) { record in VStack(alignment:.leading) { LabeledContent(record.paidDate.formatted(date:.abbreviated,time:.omitted) + " · " + (record.accountID.map{s.accountName($0)} ?? "Без списання"),value:s.visibleMoney(record.amount,record.currency)); if s.canUndoObligationPayment(record.id) { Button("Скасувати зв’язок оплати",role:.destructive) { undoRecord=record.id }.font(.caption) } } } }
         }
-        Section("Додати платіж або накопичення") {
+        if o.kind == .installment, s.db.obligations.contains(where: { $0.id == o.id }) {
+          Section("Оплата") { Text("Для часткової або дострокової оплати відкрий розстрочку та натисни «Сплатив з картки / рахунку».").font(.caption) }
+        } else { Section("Додати платіж або накопичення") {
           FinamiField("Сума", text: $payment, keyboard: .decimalPad)
           if o.kind != .goal {
             Toggle("Також записати операцію", isOn: $log)
@@ -1239,6 +1255,7 @@ struct ObligationEditor: View {
             "Для цілей прогрес не змінює залишків рахунків. Для боргів і розстрочок облік платежу в операціях — за вибором."
           ).font(.caption)
         }
+        }
         if s.db.obligations.contains(where: { $0.id == o.id }) {
           Button("Видалити", role: .destructive) { confirm = true }
         }
@@ -1250,6 +1267,7 @@ struct ObligationEditor: View {
               return
             }
             let extra = cents(payment) ?? 0
+            if o.target != t || o.paid != p || o.monthly != m || extra > 0 || s.db.obligations.first(where:{$0.id==o.id})?.due != o.due { o.currentDuePaid = nil }
             o.target = t
             o.paid = p + extra
             o.monthly = m
@@ -1273,7 +1291,8 @@ struct ObligationEditor: View {
             }
           }.disabled(!valid)
         }
-      }.confirmationDialog("Видалити запис?", isPresented: $confirm) {
+      }.confirmationDialog("Скасувати лише зв’язок? Банківська операція залишиться в обліку.",isPresented:Binding(get:{undoRecord != nil},set:{if !$0 {undoRecord=nil}})) { Button("Відновити графік",role:.destructive) { if let id=undoRecord, s.undoObligationPayment(id) { dismiss() };undoRecord=nil } }
+      .confirmationDialog("Видалити запис?", isPresented: $confirm) {
         Button("Видалити", role: .destructive) {
           let linked=(s.db.reminders ?? []).filter{$0.linkedID==o.id}
         if s.change({d in d.obligations.removeAll{$0.id==o.id};d.reminders?.removeAll{$0.linkedID==o.id}}) {linked.forEach{ReminderScheduler.cancel($0)};dismiss()}
@@ -1429,6 +1448,7 @@ struct Settings: View {
         ).font(.caption)
       }
       Section("Резервні копії") {
+        NavigationLink("PDF, Excel, CSV, календар") { FinamiExportView() }
         NavigationLink("Зашифровані резервні копії") { FinamiSecureBackupView() }
         NavigationLink("Локальні попередні копії") { SnapshotView() }
         Text("Зберігай експорт JSON у «Файли» / iCloud Drive. Автоматична хмарна синхронізація ще не підключена.").font(.caption)

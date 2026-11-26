@@ -43,6 +43,8 @@ struct FinamiImportHub: View {
                 Button("Голосовий запис") { voice = true }
                 NavigationLink("Автоматизація") { AutomationCenter() }
             }
+            Section("Експорт і резервні копії") { NavigationLink("PDF, Excel, CSV, календар") { FinamiExportView() }; NavigationLink("JSON та відновлення") { Settings() } }
+            Section("Якість обліку") { NavigationLink("Аудит фінансової бази") { FinamiAuditView() }; NavigationLink("Правила категоризації") { FinamiRulesView() } }
             Section("Вхідні · \(s.capturePending.count)") {
                 if s.capturePending.isEmpty { Text("Немає нових повідомлень").foregroundStyle(.secondary) }
                 ForEach(s.capturePending) { e in
@@ -60,7 +62,7 @@ struct FinamiImportHub: View {
                 NavigationLink("Історія та скасування імпорту") { BankImportHistory() }
                 NavigationLink("Локальні попередні копії") { SnapshotView() }
             }
-        }.navigationTitle("Центр імпорту").onAppear { s.refreshCaptures(auto: false) }
+        }.navigationTitle("Імпорт та експорт").onAppear { s.refreshCaptures(auto: false) }
         .sheet(isPresented: $voice) { FinamiVoice() }
         .sheet(item: $event) { CaptureReview(event: $0) }
         .sheet(item: $operation) { OpEditor(original: $0) }

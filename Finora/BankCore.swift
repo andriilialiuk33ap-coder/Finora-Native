@@ -19,7 +19,7 @@ struct BankRow: Codable, Identifiable, Hashable {
     var operationType: String? = nil
     var key: String { reference.map { source + ":" + $0 } ?? [source, String(Int64(date.timeIntervalSince1970)), String(signed), note.lowercased().split(whereSeparator: \.isWhitespace).joined(separator: " "), String(fee)].joined(separator: "|") }
 }
-struct BankBatch { var rows: [BankRow] = []; var rejected = 0; var reconciliation: String? = nil }
+struct BankBatch { var rows: [BankRow] = []; var rejected = 0; var reconciliation: String? = nil; var statementLastFour: String? = nil }
 func bankReconcile(_ batch: BankBatch, debit: Int64?, credit: Int64?) -> String {
     guard let debit, let credit else {return "Підсумки банку не розпізнано. Звірте виписку вручну."}
     let out = batch.rows.filter{$0.signed<0}.reduce(Int64(0)){$0-$1.signed}
@@ -160,7 +160,7 @@ func bankKind(signed: Int64, note: String, mcc: Int?, operationType: String?, cr
         if has(["повернення покупки", "повернення товару", "refund", "reversal"]) || t == "повернення" { return "refund" }
         if has(["погашення кредиту", "погашення заборгованості", "repayment", "погашення кредитної"]) { return creditAccount ? "creditRepaymentIncoming" : "unclassifiedCredit" }
         if has(["видача кредиту", "отримання кредиту", "кредитні кошти", "loan disbursement"]) { return "creditDraw" }
-        if !transfer && (t == "дохід" || has(["зарплата", "заробітна плата", "salary", "кешбек", "cashback", "виплата винагороди", "нарахування відсотків", "пенсія"])) { return "income" }
+        if !transfer && (t == "дохід" || has(["зарплата", "заробітна плата", "salary", "кешбек", "cashback", "виплата винагороди", "нагороди з пумб", "нарахування відсотків", "пенсія"])) { return "income" }
         if transfer { return "unclassifiedCredit" }
         return "unclassifiedCredit"
     }
@@ -170,4 +170,20 @@ func bankKind(signed: Int64, note: String, mcc: Int?, operationType: String?, cr
     if t.contains("покупка") || mccCategory(mcc,incoming:false) != nil || has(["комісія", "відсотки за кредит", "fee", "uklon", "bolt.eu", "apteka", "thrash", "torba"]) { return "expense" }
     if let mcc, (mcc >= 3000 && mcc < 9000) && ![4829,6010,6011,6012,6051,6536,6537,6538,6540].contains(mcc) { return "expense" }
     return "unclassifiedDebit"
+}
+
+// Only a uniquely labelled masked card in the statement header is trusted.
+func bankStatementLastFour(_ header: String) -> String? {
+    let pattern = #"(?im)(?:номер\s+картки|номер\s+карти|картка|card\s+number)\s*[:№]?\s*(?:[0-9*•xX]{4}[ \t-]*){2,3}([0-9]{4})(?![0-9])"#
+    guard let regex=try? NSRegularExpression(pattern:pattern) else{return nil}
+    let matches=Set(regex.matches(in:header,range:NSRange(header.startIndex...,in:header)).compactMap{match -> String? in guard let full=Range(match.range,in:header),header[full].contains(where:{"*•xX".contains($0)}),let capture=Range(match.range(at:1),in:header) else{return nil};return String(header[capture])})
+    return matches.count == 1 ? matches.first : nil
+}
+func bankCanonicalName(_ raw:String) -> String {
+    let value=raw.lowercased().filter{$0.isLetter || $0.isNumber}
+    if ["пумб","pumb"].contains(value){return "pumb"}
+    if ["абанк","abank","акцентбанк"].contains(value){return "abank"}
+    if ["отп","otp","otpbank","отпбанк"].contains(value){return "otp"}
+    if ["monobank","mono","монобанк"].contains(value){return "mono"}
+    return value
 }

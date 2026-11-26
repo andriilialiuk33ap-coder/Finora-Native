@@ -3,11 +3,15 @@ import Foundation
 // Conservative merchant normalization. Never infer a transfer or income from a vendor name.
 func finamiMerchantKey(_ raw: String) -> String {
     var text = raw.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "uk_UA")).lowercased()
-    text = text.replacingOccurrences(of: #"\b(?:kyiv|kiev|київ|ukraine|україна|ua)\b"#, with: " ", options: .regularExpression)
+    text = text.replacingOccurrences(of: #"\b(?:kyiv|kiev|київ|vinnytsia|vinnytsya|vinnitsa|вінниця|ukraine|україна|uaua|ua|tallinn|eeee)\b"#, with: " ", options: .regularExpression)
     text = text.replacingOccurrences(of: #"[^\p{L}\p{N}]+"#, with: " ", options: .regularExpression)
+    text = text.replacingOccurrences(of: #"\bbolt[ ._/]*eu[ ._/]*o?[ ._/]*[0-9]+\b"#, with: "bolt", options: .regularExpression)
+    text = text.replacingOccurrences(of: #"\bplaton[0-9]* +uklon(?: +[mv])?\b"#, with: "uklon", options: .regularExpression)
     let tokens = text.split(separator: " ").map(String.init)
     let canonical = tokens.filter { !["easypay", "purchase", "оплата", "купівля"].contains($0) }
-    return canonical.joined(separator: " ")
+    let key = canonical.joined(separator: " ")
+    let variants = ["бадді":"baddi","бадди":"baddi","чил тайм":"chill time","чіл тайм":"chill time","чіл таим":"chill time","чил таим":"chill time","для своїх":"dlyasvoyih","для своіх":"dlyasvoyih","dlya svoyih":"dlyasvoyih","dlia svoikh":"dlyasvoyih","окраса":"okrasa","наше пиво":"nashe pivo","bolt eu":"bolt","уклон":"uklon"]
+    return variants[key] ?? key
 }
 func finamiIntelligentCategory(_ note: String, kind: Kind, allowed: [String], learned: [String: String]) -> String {
     let prefix = kind.rawValue + ":"
@@ -24,9 +28,9 @@ func finamiIntelligentCategory(_ note: String, kind: Kind, allowed: [String], le
     let tokens = Set(normalized.split(separator: " ").map(String.init))
     let rules: [([String], String)]
     if kind == .income {
-        rules = [(["зарплата", "заробітна плата", "salary"], "💼 Зарплата"), (["кешбек", "cashback"], "💵 Кешбек"), (["відсотки", "interest"], "📈 Відсотки")]
+        rules = [(["зарплата", "заробітна плата", "salary"], "💼 Зарплата"), (["кешбек", "cashback", "нагороди з пумб", "виплата винагороди"], "💵 Кешбек"), (["відсотки", "interest"], "📈 Відсотки")]
     } else if kind == .expense {
-        rules = [(["uklon", "bolt", "1taxi"], "🚕 Таксі"), (["atb", "атб", "atб", "silpo", "сільпо", "thrash", "torba", "novus", "varus", "фора"], "🛒 Продукти"), (["lifecell", "київстар", "kyivstar", "vodafone"], "📱 Зв’язок"), (["apteka", "аптека", "tabletki"], "💊 Здоров’я"), (["netflix", "spotify", "youtube premium", "apple music", "icloud"], "📺 Підписки"), (["utility", "комунальні"], "🧾 Комунальні"), (["kavy ta chaiu", "coffee", "кава"], "☕ Кава"), (["wog", "okko", "upg"], "⛽ Паливо"), (["нова пошта", "nova poshta", "ukrposhta", "укрпошта"], "📦 Доставка")]
+        rules = [(["uklon", "bolt", "1taxi"], "🚕 Таксі"), (["atb", "атб", "atб", "silpo", "сільпо", "thrash", "torba", "novus", "varus", "фора"], "🛒 Продукти"), (["lifecell", "київстар", "kyivstar", "vodafone"], "📱 Зв’язок"), (["apteka", "аптека", "tabletki"], "💊 Здоров’я"), (["netflix", "spotify", "youtube premium", "apple music", "icloud"], "📺 Підписки"), (["utility", "комунальні"], "🧾 Комунальні"), (["kavy ta chaiu", "coffee", "кава"], "☕ Кава"), (["wog", "okko", "upg"], "⛽ Паливо"), (["нова пошта", "nova poshta", "ukrposhta", "укрпошта"], "📦 Доставка"), (["barnomertri", "bar bulvar", "smachna pica z soboiu", "dyadya doner", "catcafe", "kafelvivskikruasani"], "🍽️ Ресторани"), (["avrora"], "🏠 Дім"), (["zoosalon", "limpopo"], "🐾 Тварини"), (["vinntravel"], "🚗 Транспорт"), (["roshen", "magazinprodukti", "mahazyn tor"], "🛒 Продукти")]
     } else { return "Без категорії" }
     let found = Set(rules.filter { aliases, category in
         allowed.contains(category) && aliases.contains { alias in
@@ -67,6 +71,7 @@ func finamiRecurringCandidates(operations: [Operation], accounts: [Account], now
         let monthly = days.allSatisfy { (25...35).contains($0) }
         let weekly = recent.allSatisfy { $0.category.localizedCaseInsensitiveContains("Підписки") } && days.allSatisfy { (6...8).contains($0) }
         guard monthly || weekly else { return nil }
+        guard recent.allSatisfy({ $0.category == "Без категорії" || $0.category == "Інше" || $0.category.localizedCaseInsensitiveContains("Підписки") || $0.category.localizedCaseInsensitiveContains("Зв’язок") || $0.category.localizedCaseInsensitiveContains("Комунальні") }) else { return nil }
         let previous = recent[1].sourceMinor ?? recent[1].amount
         let first = recent[0].sourceMinor ?? recent[0].amount
         let amount = last.sourceMinor ?? last.amount
@@ -98,13 +103,14 @@ struct FinamiPlannedOccurrence: Identifiable, Equatable {
     let amount: Int64
     let projected: Bool
 }
-func finamiPlannedOccurrences(id: String, start: Date, amount: Int64, remaining: Int64?, component: Calendar.Component, step: Int, interval: DateInterval, calendar: Calendar = .current) -> [FinamiPlannedOccurrence] {
+func finamiPlannedOccurrences(id: String, start: Date, amount: Int64, remaining: Int64?, subsequentAmount: Int64? = nil, component: Calendar.Component, step: Int, interval: DateInterval, calendar: Calendar = .current) -> [FinamiPlannedOccurrence] {
     guard amount > 0, step > 0 else { return [] }
     var result: [FinamiPlannedOccurrence] = [], date = start, left = remaining
     // Bounded loop protects against malformed legacy dates and infinite schedules.
     for index in 0..<2400 {
         guard date < interval.end else { break }
-        let charge = min(amount, left ?? amount)
+        let planned = index == 0 ? amount : (subsequentAmount ?? amount)
+        let charge = min(planned, left ?? planned)
         guard charge > 0 else { break }
         if date >= interval.start { result.append(.init(id: id + "|" + String(date.timeIntervalSinceReferenceDate), paymentID: id, date: date, amount: charge, projected: index > 0)) }
         if let value = left { left = value - charge }
@@ -112,4 +118,12 @@ func finamiPlannedOccurrences(id: String, start: Date, amount: Int64, remaining:
         date = next
     }
     return result
+}
+
+// Display only. Raw statement text stays intact for matching and audit.
+func finamiMerchantDisplay(_ raw:String) -> String {
+    let key=finamiMerchantKey(raw)
+    let aliases:[String:String] = ["bolt":"Bolt","uklon":"Uklon","platon uklon":"Uklon","1taxi838":"1Taxi","lifecell":"lifecell","thrash":"THRASH!","torba":"TORBA","avrora":"Аврора","roshen":"ROSHEN","baddi":"Baddi","okrasa":"Okrasa","chill time":"Chill Time","dlyasvoyih":"Для Своїх","nashe pivo":"Наше пиво","barnomertri":"Бар №3","bar bulvar":"Bar Bulvar","smachna pica z soboiu":"Смачна піца з собою","dyadya doner":"Дядя Донер","zoosalon limpopo":"Зоосалон Лімпопо"]
+    if let value=aliases[key] {return value}
+    return raw
 }

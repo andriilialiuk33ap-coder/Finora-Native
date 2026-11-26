@@ -20,6 +20,24 @@ import Foundation
 @main struct Harness {
     static func check(_ test: @autoclosure () -> Bool, _ label: String) { precondition(test(),label); print("PASS: " + label) }
     @MainActor static func main() throws {
+        let partialDate = Date().addingTimeInterval(-3600)
+        let partialAccount=Account(id:"partial",name:"Test",opening:100000)
+        let partialStore=Store();partialStore.db.accounts=[partialAccount]
+        let partialLoan=Obligation(kind:.installment,name:"Test",target:30000,monthly:10000,due:partialDate)
+        partialStore.db.obligations=[partialLoan]
+        let original=partialStore.upcomingPayments[0]
+        check(partialStore.confirmPayment(original,mode:.newOperation,accountID:partialAccount.id,operationID:"",paidDate:partialDate,kind:.creditRepayment,actualAmount:3000),"partial payment commits once")
+        let nextPartial=partialStore.upcomingPayments[0]
+        check(nextPartial.date==partialDate && nextPartial.amount==7000 && nextPartial.remaining==27000 && nextPartial.recurringAmount==10000,"partial next charge and unchanged date")
+        check(!partialStore.confirmPayment(original,mode:.newOperation,accountID:partialAccount.id,operationID:"",paidDate:partialDate,kind:.creditRepayment,actualAmount:3000),"stale partial request cannot repeat")
+        check(partialStore.confirmPayment(nextPartial,mode:.markOnly,accountID:"",operationID:"",paidDate:partialDate,kind:.creditRepayment,actualAmount:12000),"early principal payment")
+        check(partialStore.upcomingPayments[0].amount==10000 && partialStore.upcomingPayments[0].remaining==15000 && partialStore.upcomingPayments[0].date>partialDate,"next full payment preserved after early payment")
+        let last=partialStore.db.paidRecords!.last!
+        check(partialStore.canUndoObligationPayment(last.id) && partialStore.undoObligationPayment(last.id),"safe last payment unlink restores schedule")
+        check(partialStore.upcomingPayments[0].amount==7000 && partialStore.db.operations.count==1,"undo leaves actual ledger unchanged")
+        let previous=partialStore.db.paidRecords!.last!
+        check(partialStore.undoObligationPayment(previous.id) && partialStore.upcomingPayments[0].amount==10000 && partialStore.db.operations.count==1,"undo recorded debit restores original schedule without deleting statement")
+        check(FinamiLedgerIndex(operations:partialStore.db.operations).balance(partialAccount)==97000,"unlink keeps account balance")
         let date = Date().addingTimeInterval(-86400)
         let account = Account(id:"pumb",name:"PUMB",opening:100_000)
         let otp = Account(id:"otp",name:"OTP",opening:10_000)
