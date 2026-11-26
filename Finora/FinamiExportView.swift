@@ -62,37 +62,86 @@ struct FinamiExportView: View {
         }.disabled(busy).navigationTitle("Експорт звітів").fileExporter(isPresented:$exporting,document:document,contentType:format.type,defaultFilename:"Finami-report.\(format.ext)") { result in if case .failure(let error)=result {status=error.localizedDescription}; document=nil }
     }
     private func make() {
-        let rows=filtered, db=s.db, names=includeNames, amounts=includeAmounts, notes=includeNotes, selected=account
-        let text: (String)->FinamiExportCell = { FinamiExportCell($0) }
-        let moneyCell: (Int64)->FinamiExportCell = { amounts ? FinamiExportCell(minor:$0) : FinamiExportCell("—") }
-        let accounts=Dictionary(db.accounts.enumerated().map { ($0.element.id,names ? $0.element.name : "Рахунок \($0.offset+1)") },uniquingKeysWith:{a,_ in a})
-        let date=ISO8601DateFormatter(); var totals=FinamiReportTotals()
-        for o in rows { totals.add(o,account:selected == "all" ? nil : selected) }
-        var sheets=[FinamiExportSheet(name:"Підсумок",rows:[[text("Показник"),text("UAH")],[text("Доходи"),moneyCell(totals.income)],[text("Надходження"),moneyCell(totals.incoming)],[text("Чисті витрати"),moneyCell(totals.expense)],[text("Чистий потік"),moneyCell(totals.net)]])]
-        let header=["Дата","Тип","Сума UAH","Категорія","Рахунок","Куди","Опис","Комісія UAH","Оригінальна сума","Оригінальна валюта","Курс"].map(text)
-        let dataRows=rows.map { o in [text(date.string(from:o.date)),text(o.kind.title),moneyCell(o.amount),text(o.category),text(accounts[o.account] ?? "—"),text(accounts[o.destination] ?? ""),text(notes ? o.note : ""),moneyCell(o.bankFee ?? 0),moneyCell(o.originalAmount ?? o.amount),text(o.originalCurrency ?? "UAH"),text(amounts ? (o.exchangeRate ?? "") : "")] }
-        sheets.append(.init(name:"Операції",rows:[header]+dataRows))
-        let expenses=Dictionary(grouping:rows.filter{$0.kind == .expense},by:\.category).map { key,ops in [text(key),moneyCell(ops.reduce(0){$0+$1.amount})] }.sorted{$0[0].text<$1[0].text}
-        sheets.append(.init(name:"Категорії",rows:[[text("Категорія"),text("Витрати UAH (брутто)")]]+expenses))
-        sheets.append(.init(name:"Доходи",rows:[header]+zip(rows,dataRows).filter{$0.0.kind == .income}.map{$0.1}))
-        sheets.append(.init(name:"Витрати",rows:[header]+zip(rows,dataRows).filter{$0.0.kind == .expense || $0.0.kind == .refund}.map{$0.1}))
-        let month=DateFormatter();month.locale=Locale(identifier:"uk_UA");month.dateFormat="yyyy-MM"
-        let monthly=Dictionary(grouping:rows){month.string(from:$0.date)}.map { pair -> [FinamiExportCell] in var total=FinamiReportTotals();for o in pair.value {total.add(o,account:selected == "all" ? nil:selected)};return [text(pair.key),moneyCell(total.income),moneyCell(total.incoming),moneyCell(total.expense),moneyCell(total.net)] }.sorted{$0[0].text<$1[0].text}
-        sheets.append(.init(name:"Місяці",rows:[[text("Місяць"),text("Доходи UAH"),text("Надходження UAH"),text("Витрати UAH"),text("Чистий потік UAH")]]+monthly))
-        if selected == "all" && category == "all" {
-            sheets.append(.init(name:"Рахунки зараз",rows:[[text("Рахунок"),text("Валюта"),text("Баланс")]]+db.accounts.map{[text(accounts[$0.id] ?? "—"),text($0.code),moneyCell(s.nativeBalance($0))]}))
-            sheets.append(.init(name:"Зобов’язання зараз",rows:[[text("Назва"),text("Тип"),text("Залишок UAH")]]+db.obligations.filter{[.installment,.owe,.recurring].contains($0.kind)}.map{[text(names ? $0.name : $0.kind.title),text($0.kind.title),moneyCell($0.remaining)]}))
-            sheets.append(.init(name:"Підписки зараз",rows:[[text("Назва"),text("Валюта"),text("Сума")]]+(db.subscriptions ?? []).filter(\.active).map{[text(names ? $0.name : "Підписка"),text($0.currency),moneyCell($0.amount)]}))
-        }
-        let chosen=format
-        if chosen == .pdf {document=DataFile(data:finamiPDF(sheets));exporting=true;return}
-        if chosen == .csv {let content=([header]+dataRows).map{$0.map{ $0.numeric ? $0.text : finamiCSVText($0.text) }.joined(separator:";")}.joined(separator:"\r\n");document=DataFile(data:Data(("\u{FEFF}"+content).utf8));exporting=true;return}
+        let chosen = format
         if chosen == .calendar {
-            let cal=Calendar.current, interval=DateInterval(start:cal.startOfDay(for:start),end:cal.date(byAdding:.day,value:1,to:cal.startOfDay(for:end)) ?? end)
-            let events=s.upcomingPayments.flatMap { p -> [FinamiCalendarExportEvent] in let period=db.subscriptions?.first{$0.id==p.id}?.period; return finamiPlannedOccurrences(id:p.id,start:p.date,amount:p.amount,remaining:p.remaining,subsequentAmount:p.recurringAmount,component:period?.component ?? .month,step:period?.step ?? 1,interval:interval).map{.init(id:$0.id,date:$0.date,title:names ? p.name : p.kind,detail:amounts ? NSDecimalNumber(decimal:Decimal($0.amount)/100).stringValue+" "+p.currency : "Finami · плановий платіж")} }
-            document=DataFile(data:finamiCalendarData(events));exporting=true;return
+            document = DataFile(data: calendarData())
+            exporting = true
+            return
         }
-        busy=true; let prepared=sheets
-        Task { @MainActor in defer {busy=false}; do {let data=try await Task.detached(priority:.userInitiated){try finamiZipWorkbook(prepared)}.value;document=DataFile(data:data);exporting=true} catch {status=error.localizedDescription} }
+        let db = s.db
+        var names: [String: String] = [:]
+        for (index, item) in db.accounts.enumerated() where names[item.id] == nil {
+            names[item.id] = includeNames ? item.name : "Рахунок \(index + 1)"
+        }
+        let selectedAccount: String? = account == "all" ? nil : account
+        let report = FinamiExportReport(operations: filtered, account: selectedAccount, accountNames: names, includeAmounts: includeAmounts, includeNotes: includeNotes)
+        if chosen == .csv {
+            document = DataFile(data: report.csvData)
+            exporting = true
+            return
+        }
+        var sheets = report.sheets
+        if account == "all" && category == "all" {
+            sheets.append(contentsOf: currentSheets(accountNames: names))
+        }
+        if chosen == .pdf {
+            document = DataFile(data: finamiPDF(sheets))
+            exporting = true
+            return
+        }
+        busy = true
+        let prepared = sheets
+        Task { @MainActor in
+            defer { busy = false }
+            do {
+                let data = try await Task.detached(priority: .userInitiated) {
+                    try finamiZipWorkbook(prepared)
+                }.value
+                document = DataFile(data: data)
+                exporting = true
+            } catch { status = error.localizedDescription }
+        }
+    }
+
+    private func currentSheets(accountNames: [String: String]) -> [FinamiExportSheet] {
+        func text(_ value: String) -> FinamiExportCell { FinamiExportCell(value) }
+        func moneyCell(_ value: Int64) -> FinamiExportCell {
+            includeAmounts ? FinamiExportCell(minor: value) : FinamiExportCell("—")
+        }
+        var accounts = [[text("Рахунок"), text("Валюта"), text("Баланс")]]
+        for item in s.db.accounts {
+            accounts.append([text(accountNames[item.id] ?? "—"), text(item.code), moneyCell(s.nativeBalance(item))])
+        }
+        var obligations = [[text("Назва"), text("Тип"), text("Залишок UAH")]]
+        for item in s.db.obligations {
+            guard item.kind == .installment || item.kind == .owe || item.kind == .recurring else { continue }
+            obligations.append([text(includeNames ? item.name : item.kind.title), text(item.kind.title), moneyCell(item.remaining)])
+        }
+        var subscriptions = [[text("Назва"), text("Валюта"), text("Сума")]]
+        for item in s.db.subscriptions ?? [] where item.active {
+            subscriptions.append([text(includeNames ? item.name : "Підписка"), text(item.currency), moneyCell(item.amount)])
+        }
+        return [FinamiExportSheet(name: "Рахунки зараз", rows: accounts),
+                FinamiExportSheet(name: "Зобов’язання зараз", rows: obligations),
+                FinamiExportSheet(name: "Підписки зараз", rows: subscriptions)]
+    }
+
+    private func calendarData() -> Data {
+        let cal = Calendar.current
+        let lower = cal.startOfDay(for: start)
+        let upper = cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: end)) ?? end
+        let interval = DateInterval(start: lower, end: upper)
+        var events: [FinamiCalendarExportEvent] = []
+        for p in s.upcomingPayments {
+            let period = s.db.subscriptions?.first { $0.id == p.id }?.period
+            let occurrences = finamiPlannedOccurrences(id: p.id, start: p.date, amount: p.amount, remaining: p.remaining, subsequentAmount: p.recurringAmount, component: period?.component ?? .month, step: period?.step ?? 1, interval: interval)
+            for occurrence in occurrences {
+                let title = includeNames ? p.name : p.kind
+                let value = NSDecimalNumber(decimal: Decimal(occurrence.amount) / 100).stringValue
+                let detail = includeAmounts ? value + " " + p.currency : "Finami · плановий платіж"
+                events.append(FinamiCalendarExportEvent(id: occurrence.id, date: occurrence.date, title: title, detail: detail))
+            }
+        }
+        return finamiCalendarData(events)
     }
 }

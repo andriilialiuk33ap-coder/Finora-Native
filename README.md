@@ -404,3 +404,7 @@ WidgetKit-віджети, App Intents/Команди Wallet та SMS, автом
 ## Finami 5.3 — Intelligence & Export (Build 30)
 
 Деталі, обмеження та інструкції: [FINAMI-5.3-UK.md](FINAMI-5.3-UK.md). Нові фінансові функції й експорт потребують підтвердження Xcode / iOS Simulator.
+
+## Finami 5.3.1 — Export Build Hotfix (Build 31)
+
+Fixed the Xcode 16.4 type-check timeout in FinamiExportView.swift by moving the report preparation to a Foundation-only module and using explicit row construction. PDF/XLSX/CSV/ICS options and financial semantics are unchanged. `Tests/check-export-report.sh` compiles the actual report builder and exercises totals, privacy, workbook and CSV. iOS compilation still requires GitHub Actions.
