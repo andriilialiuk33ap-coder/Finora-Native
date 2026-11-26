@@ -136,6 +136,7 @@ struct Operation: Codable, Identifiable, Equatable {
   var captureSource: String? = nil
   var scanFingerprint: String? = nil
   var scanImageID: String? = nil
+  var tags: [String]? = nil
   var signedNative: Int64 { kind.incoming ? (sourceMinor ?? amount) : -(sourceMinor ?? amount) }
   // Only count an embedded fee separately when it is demonstrably part of a non-expense debit.
   var neutralFee: Int64 {
@@ -277,6 +278,26 @@ struct FinamiObligationUndo: Codable {
   var priorReminders: [PersonalReminder]
   var renewedReminders: [PersonalReminder]
 }
+struct FinamiExchangeRecord: Codable, Identifiable, Equatable {
+  var id = UUID().uuidString
+  var kind = "income"
+  var date = Date()
+  var units: Int64 = 0
+  var fee: Int64 = 0
+  var feeIncluded = true
+  var orderUAH: Int64 = 0
+  var receivedUAH: Int64 = 0
+  var rate = ""
+  var note = ""
+  var linkedReceiptIDs: [String]? = nil
+}
+struct FinamiPartnerGroup: Codable, Identifiable, Equatable {
+  var id = UUID().uuidString
+  var name = ""
+  var limit: Int64 = 0
+  var prepaid: Int64 = 0
+  var obligationIDs: [String] = []
+}
 struct Database: Codable {
   var accounts = [Account(id: cash, name: "Готівка")]
   var operations: [Operation] = []
@@ -305,6 +326,8 @@ struct Database: Codable {
   var paidRecords: [FinamiPaidRecord]? = nil
   var scanImages: [String: Data]? = nil
   var reconciliationUndo: Data? = nil
+  var exchangeDiary: [FinamiExchangeRecord]? = nil
+  var partnerGroups: [FinamiPartnerGroup]? = nil
 }
 struct Legacy: Decodable {
   struct Entry: Decodable {
@@ -333,7 +356,7 @@ struct DataFile: FileDocument {
     didSet {
       mutationVersion &+= 1
       if oldValue.operations != db.operations { ledgerIndex = nil; reportCache.removeAll(); comparisonCache.removeAll(); activityCache.removeAll(); historyCache.removeAll() }
-      if oldValue.accounts.map(\.id) != db.accounts.map(\.id) || oldValue.accounts.map(\.name) != db.accounts.map(\.name) { historyCache.removeAll() }
+      if oldValue.accounts.map(\.id) != db.accounts.map(\.id) || oldValue.accounts.map(\.name) != db.accounts.map(\.name) || oldValue.accounts.map(\.hideAmounts) != db.accounts.map(\.hideAmounts) { historyCache.removeAll() }
       if oldValue.accounts.map(\.reconciliationDate) != db.accounts.map(\.reconciliationDate) || oldValue.accounts.map(\.id) != db.accounts.map(\.id) {ledgerIndex=nil}
     }
   }
@@ -346,7 +369,8 @@ struct DataFile: FileDocument {
     if let cached = historyCache[query] { return cached }
     let source = query.account == "all" ? db.operations : historyForAccount(query.account)
     let names = Dictionary(db.accounts.map{($0.id,$0.name)},uniquingKeysWith:{first,_ in first})
-    let results = query.apply(to:source, names:names)
+    let masked = Set(db.accounts.filter { $0.hideAmounts == true }.map { $0.id })
+    let results = query.apply(to:source, names:names, maskedAccounts:masked)
     if historyCache.count >= 4 { historyCache.removeAll(keepingCapacity:true) }
     historyCache[query] = results
     return results
@@ -519,7 +543,10 @@ struct DataFile: FileDocument {
         let folder = url.deletingLastPathComponent().appendingPathComponent("IzanamiSnapshots", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let snapshot = folder.appendingPathComponent(UUID().uuidString + ".json")
-        try FileManager.default.copyItem(at: url, to: snapshot)
+        // The live in-memory database includes the current appearance sidecar.
+        if FileManager.default.fileExists(atPath:appearanceURL.path) {
+          try JSONEncoder().encode(db).write(to:snapshot,options:[.atomic,.completeFileProtectionUntilFirstUserAuthentication])
+        } else { try FileManager.default.copyItem(at:url,to:snapshot) }
         try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication, .creationDate: Date()], ofItemAtPath: snapshot.path)
         let files = snapshotURLs()
         for old in files.dropFirst(12) { try? FileManager.default.removeItem(at: old) }
@@ -576,6 +603,8 @@ struct DataFile: FileDocument {
         decoded.accounts.allSatisfy({ ["UAH","USD"].contains($0.code) && $0.opening >= -1_000_000_000_000 && $0.opening <= 1_000_000_000_000 && ($0.creditLimit ?? 0) >= 0 && ($0.creditLimit ?? 0) <= 1_000_000_000_000 && ($0.reconciliationNet.map{$0 >= -1_000_000_000_000 && $0 <= 1_000_000_000_000} ?? true) && (($0.reconciliationDate == nil) == ($0.reconciliationNet == nil)) }),
         (!decoded.accounts.contains(where:{$0.code=="USD"}) || fxRate(decoded.currencyPreferences?.usdRate ?? "") != nil),
         Set(decoded.operations.map(\.id)).count == decoded.operations.count,
+        finamiExchangeBalance(decoded.exchangeDiary ?? []) != nil,
+        finamiValidPartnerGroups(decoded.partnerGroups ?? []),
         decoded.obligations.allSatisfy({ o in (o.importedSchedule ?? []).allSatisfy { $0.amount > 0 && $0.amount <= 1_000_000_000_000 } && (o.currentDuePaid.map { $0 >= 0 && $0 < o.monthly && $0 <= o.paid } ?? true) }),
         (decoded.balanceObservations ?? [:]).values.allSatisfy({ $0.available >= 0 && $0.available <= 1_000_000_000_000 && ["UAH","USD"].contains($0.currency) }),
         decoded.operations.allSatisfy({ o in
@@ -672,7 +701,7 @@ struct DataFile: FileDocument {
         if store.loading { VStack(spacing:16) { Image(systemName:"wallet.pass.fill").font(.system(size:48)).foregroundStyle(finoraAccent); Text("Finami").font(.largeTitle.bold()); ProgressView("Завантаження фінансів…") }.frame(maxWidth:.infinity,maxHeight:.infinity).task { await store.loadDatabase() } }
         else { IzanamiShell().environmentObject(store) }
       }.onOpenURL { url in
-          guard url.scheme == "finami-widget", let host = url.host, ["balance","payments","quick"].contains(host) else { return }
+          guard url.scheme == "finami-widget", let host = url.host, ["balance","payments","quick","planning"].contains(host) else { return }
           store.widgetRoute = host
       }
     }
@@ -682,18 +711,21 @@ struct Root: View {
   @EnvironmentObject var store: Store
   @Environment(\.scenePhase) var phase
   @AppStorage("lockEnabled") var lockEnabled = false
+  @AppStorage("finami.hideAppSwitcher") private var hideAppSwitcher = true
   @State private var unlocked = false
   @State private var authError = ""
   @AppStorage("finami.widgets.shareAmounts") private var widgetShare = false
   @State private var tab = 0
   @State private var widgetAdd = false
   @State private var widgetCalendar = false
+  @State private var widgetPlanning = false
   private func routeWidget() {
     guard !lockEnabled || unlocked, let action = store.widgetRoute else { return }
     store.widgetRoute = nil
     if action == "balance" { tab = 2 }
     if action == "quick" { tab = 0; widgetAdd = true }
     if action == "payments" { tab = 0; widgetCalendar = true }
+    if action == "planning" { tab = 0; widgetPlanning = true }
   }
   private func updateWidgets() { FinamiWidgetBridge.update(store:store,enabled:widgetShare,locked:lockEnabled) }
   var body: some View {
@@ -724,6 +756,10 @@ struct Root: View {
           }
         }
       }
+    }.overlay {
+      if phase != .active && (hideAppSwitcher || lockEnabled) {
+        ZStack { Color(uiColor:.systemBackground).ignoresSafeArea(); VStack(spacing:12){Image(systemName:"lock.shield.fill").font(.largeTitle);Text("Finami").font(.title.bold())} }.accessibilityHidden(true)
+      }
     }.onAppear { updateWidgets(); routeWidget() }
       .onChange(of: store.databaseVersion) { _ in updateWidgets() }
       .onChange(of: widgetShare) { _ in updateWidgets() }
@@ -732,7 +768,8 @@ struct Root: View {
       .onChange(of: store.widgetRoute) { _ in routeWidget() }
       .sheet(isPresented: $widgetAdd) { OpEditor(original: Operation(category: "Без категорії", account: store.db.accounts.first?.id ?? cash)).environmentObject(store) }
       .sheet(isPresented: $widgetCalendar) { NavigationStack { CalendarView().toolbar { ToolbarItem(placement:.cancellationAction) { Button("Готово") { widgetCalendar = false } } } }.environmentObject(store) }
-      .onChange(of: phase) { p in if p == .background && lockEnabled { unlocked = false; widgetAdd = false; widgetCalendar = false }; if p == .active { updateWidgets() } }.alert(
+      .sheet(isPresented: $widgetPlanning) { NavigationStack { FinamiPlanningView().toolbar { ToolbarItem(placement:.cancellationAction) { Button("Готово") { widgetPlanning=false } } } }.environmentObject(store) }
+      .onChange(of: phase) { p in if p == .background && lockEnabled { unlocked = false; widgetAdd = false; widgetCalendar = false; widgetPlanning = false }; if p == .active { updateWidgets() } }.alert(
       "Finami",
       isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.error = nil } })
     ) {
@@ -886,7 +923,13 @@ struct Accounts: View {
       Button { reorder = true } label: { Label("Змінити порядок рахунків", systemImage: "arrow.up.arrow.down").font(.subheadline.weight(.medium)).frame(maxWidth: .infinity, alignment: .leading).padding(12) }.buttonStyle(.plain).background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14))
       Picker("Розділ",selection:Binding(get:{mode},set:{v in update{$0.accountsMode=v}})){Text("Власні").tag("own");Text("Кредитні").tag("credit");Text("Усі").tag("all")}.pickerStyle(.segmented)
       if mode != "own" { FinamiCreditSummary(showLimit:prefs.accountsShowLimit ?? true,showUsed:prefs.accountsShowUsed ?? true,showAvailable:prefs.accountsShowAvailable ?? true).environment(\.finamiMask, prefs.accountsHideCredit == true) }
+      if !dynamicTypeSize.isAccessibilitySize {
+        Button { update{$0.modernAccountGrid = !(prefs.modernAccountGrid ?? false)} } label: { Label(prefs.modernAccountGrid == true ? "Докладні картки" : "Компактна сітка",systemImage:prefs.modernAccountGrid == true ? "list.bullet" : "square.grid.2x2").font(.subheadline).frame(maxWidth:.infinity,alignment:.leading).padding(.vertical,6) }.buttonStyle(.bordered)
+      }
       if shown.isEmpty { FinamiEmptyCard(title: "Немає рахунків", detail: "Додай рахунок або зміни режим відображення.", icon: "wallet.pass") }
+      if prefs.modernAccountGrid == true && !dynamicTypeSize.isAccessibilitySize {
+        FinamiCompactAccountsGrid(accounts:finamiOrderedAccounts(shown),mode:mode,date:Date())
+      } else {
       ForEach(finamiOrderedAccounts(shown)) { a in
         VStack(alignment: .leading, spacing: 5) {
           FinamiHomeAccountCard(accountID: a.id, date: Date(), fallbackTint: .teal, mode: mode, onAccountsScreen: true)
@@ -894,6 +937,7 @@ struct Accounts: View {
           if a.excludedFromTotals == true { Text("Не враховується в загальних сумах").font(.caption).foregroundStyle(.secondary) }
           if s.nativeBalance(a) < 0 && !a.isCredit { Text("Чистий залишок: " + (a.hideAmounts == true ? "••••" : s.visibleMoney(s.nativeBalance(a), a.code))).font(.caption).foregroundStyle(.secondary) }
         }
+      }
       }
       Button {edit=Account(name:"",accountType:"debit")} label:{Label("Додати рахунок",systemImage:"plus.circle.fill").frame(maxWidth:.infinity).padding(8)}.buttonStyle(.borderedProminent)
       NavigationLink { FinamiScanView(initialMode: .balance) } label: { Label("Звірити зі скриншота", systemImage: "doc.viewfinder") }
@@ -961,10 +1005,14 @@ struct AccountEditor: View {
     let net: Int64
     if a.isCredit && actualMode == "components" { guard let n=enteredCardNet else{return nil}; net=n }
     else { guard let actual=bankMinor(actualText), actualMode != "available" || actual>=0 else{return nil}; net=actualMode == "available" && a.isCredit ? actual-(bankMinor(limitText) ?? 0) : actual }
-    let old=s.db.accounts.first{$0.id==a.id}
-    let history=old.map{ old in var unanchored=old;unanchored.reconciliationDate=nil;unanchored.reconciliationNet=nil;return s.nativeBalance(unanchored)-unanchored.opening} ?? 0
-    let result=net-history
-    return abs(result)<=1_000_000_000_000 ? result : nil
+    var history: Int64 = 0
+    if var unanchored = s.db.accounts.first(where: { $0.id == a.id }) {
+      unanchored.reconciliationDate = nil
+      unanchored.reconciliationNet = nil
+      history = s.nativeBalance(unanchored) - unanchored.opening
+    }
+    let (result, overflow) = net.subtractingReportingOverflow(history)
+    return !overflow && result >= -1_000_000_000_000 && result <= 1_000_000_000_000 ? result : nil
   }
   var enteredCardNet: Int64? {
     guard let own=bankMinor(ownText), let used=bankMinor(usedText) else {return nil}
@@ -1081,13 +1129,22 @@ struct More: View {
         Text("Finami").font(.system(size: 40, weight: .bold, design: .rounded))
         Text("Особисті фінанси.").font(.subheadline).foregroundStyle(.secondary)
       }.frame(maxWidth: .infinity, alignment: .leading).padding(18).modifier(FinamiCardStyle(tint: .teal))
+      NavigationLink { FinamiGlobalSearch() } label: { FinamiMenuLabel(title:"Пошук Finami",icon:"magnifyingglass",color:.teal) }.buttonStyle(.plain)
+      FinamiMenuGroup("Finami Next") {
+        NavigationLink { FinamiNextReviewView() } label: { FinamiMenuLabel(title:"Центр перевірки операцій",icon:"checkmark.shield",color:.orange) }.accessibilityIdentifier("qa.next.review")
+        NavigationLink { FinamiNextInsightsView() } label: { FinamiMenuLabel(title:"Фінансові підсумки",icon:"chart.bar.xaxis",color:.teal) }.accessibilityIdentifier("qa.next.insights")
+        NavigationLink { FinamiExchangeDiaryView() } label: { FinamiMenuLabel(title:"Журнал USDT",icon:"arrow.left.arrow.right",color:.green) }.accessibilityIdentifier("qa.next.usdt")
+        NavigationLink { FinamiPartnerCalculatorView() } label: { FinamiMenuLabel(title:"Партнерські кредитні ліміти",icon:"creditcard",color:.purple) }.accessibilityIdentifier("qa.next.partners")
+      }
       FinamiMenuGroup("Планування") {
+        NavigationLink { FinamiPlanningView() } label: { FinamiMenuLabel(title: "Розумне планування", icon: "chart.line.uptrend.xyaxis", color: .teal) }.accessibilityIdentifier("qa.planning.open")
+        NavigationLink { FinamiCreditCenter() } label: { FinamiMenuLabel(title: "Кредитний центр", icon: "creditcard.fill", color: .orange) }
+        NavigationLink { FinamiEnvelopesView() } label: { FinamiMenuLabel(title: "Віртуальні конверти", icon: "envelope.fill", color: .green) }
         NavigationLink { SubscriptionsView() } label: { FinamiMenuLabel(title: "Підписки", icon: "repeat", color: .purple) }
         NavigationLink { FinamiRecurringSuggestionsView() } label: { FinamiMenuLabel(title: "Виявлення підписок", icon: "sparkles", color: .purple) }.accessibilityIdentifier("qa.recurring.open")
         NavigationLink { ReminderList() } label: { FinamiMenuLabel(title: "Нагадування", icon: "bell.badge.fill", color: .red) }
         NavigationLink { CurrencySettings() } label: { FinamiMenuLabel(title: "Валюти та курси", icon: "dollarsign.circle.fill", color: .green) }
         NavigationLink { CurrencyCalculator() } label: { FinamiMenuLabel(title: "Конвертер валют", icon: "dollarsign.arrow.circlepath", color: .cyan) }
-        NavigationLink { ForecastView() } label: { FinamiMenuLabel(title: "Фінансовий прогноз", icon: "chart.line.uptrend.xyaxis", color: .green) }
         NavigationLink {
           Budgets()
         } label: {
@@ -1134,7 +1191,7 @@ struct More: View {
         }
       }
       VStack(alignment: .leading) {
-        Text("Finami · 5.2 Intelligence\nБез реклами, серверів та платних API.").font(.footnote)
+        Text("Finami · " + FinamiBuildInfo.version + " · " + FinamiBuildInfo.edition + "\nБез реклами, серверів та платних API.").font(.footnote)
           .foregroundStyle(.secondary)
       }
     }.padding() }.background(Color(uiColor: .systemGroupedBackground)).navigationTitle("Ще").toolbar{Button{menuSettings=true} label:{Image(systemName:"slider.horizontal.3")}.accessibilityLabel("Налаштування меню")}.sheet(isPresented:$menuSettings){NavigationStack{Form{Toggle("Компактні ілюстрації",isOn:Binding(get:{s.db.preferences?.menuCompact ?? false},set:{v in s.changeAppearance { p in p.menuCompact=v }}));NavigationLink("Студія дизайну"){AppearanceView()};NavigationLink("Блоки головної"){DashboardSettings()};NavigationLink("Рахунки"){FinamiAccountSettings()}}.navigationTitle("Налаштування меню").toolbar{Button("Готово"){menuSettings=false}}}}
@@ -1505,6 +1562,7 @@ struct Insights: View {
 struct Settings: View {
   @EnvironmentObject var s: Store
   @AppStorage("lockEnabled") var lock = false
+  @AppStorage("finami.hideAppSwitcher") private var hideAppSwitcher = true
   @State private var exporting = false
   @State private var importing = false
   @State private var legacy = false
@@ -1513,10 +1571,13 @@ struct Settings: View {
   @State private var fileName = "Finami-backup"
   @State private var confirm = false
   @State private var pending: Data?
+  @State private var restoreSummary = ""
   var body: some View {
     List {
       Section("Безпека") {
         Toggle("Face ID / код-пароль", isOn: $lock)
+        Toggle("Приховувати огляд у перемикачі застосунків",isOn:$hideAppSwitcher)
+        Text("Захисний екран при згортанні; момент системного знімка залежить від iOS.").font(.caption)
         Text(
           "Дані зберігаються у локальному сховищі застосунку. Видалення програми видалить і базу, тому роби резервні копії."
         ).font(.caption)
@@ -1563,6 +1624,9 @@ struct Settings: View {
         if legacy {
           s.importLegacy(data)
         } else {
+          let preview = try JSONDecoder().decode(Database.self,from:data)
+          guard !preview.accounts.isEmpty, finamiExchangeBalance(preview.exchangeDiary ?? []) != nil else { throw CocoaError(.fileReadCorruptFile) }
+          restoreSummary = "Рахунків: \(preview.accounts.count), операцій: \(preview.operations.count), договорів: \(preview.obligations.count), записів USDT: \((preview.exchangeDiary ?? []).count). Поточні дані буде замінено; остаточна перевірка перед записом."
           pending = data
           confirm = true
         }
@@ -1576,6 +1640,6 @@ struct Settings: View {
         pending = nil
       }
       Button("Скасувати", role: .cancel) { pending = nil }
-    }
+    } message: { Text(restoreSummary) }
   }
 }

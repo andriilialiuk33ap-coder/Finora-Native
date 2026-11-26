@@ -9,12 +9,49 @@ private struct FinamiMaskKey: EnvironmentKey { static let defaultValue = false }
 extension EnvironmentValues { var finamiMask: Bool { get { self[FinamiMaskKey.self] } set { self[FinamiMaskKey.self]=newValue } } }
 enum FinamiDesign: String, CaseIterable, Identifiable {
     case signature = "Signature", pure = "Pure", aurora = "Aurora", canvas = "Canvas", obsidian = "Obsidian", pulse = "Pulse", nord = "Nord", rose = "Rose", graphite = "Graphite", ocean = "Ocean"
+    case darkClassic = "Dark Classic", graphiteGlass = "Graphite Glass", premiumNeon = "Premium Neon", cleanLight = "Clean Light"
+    static let featured: [Self] = [.darkClassic,.graphiteGlass,.premiumNeon,.cleanLight]
     var id: String { rawValue }
-    var tint: Color { switch self { case .signature: return Color(red:0.13,green:0.57,blue:0.40); case .pure: return .blue; case .aurora: return .indigo; case .canvas: return Color(red:0.72,green:0.38,blue:0.23); case .obsidian: return Color(red:0.75,green:0.58,blue:0.25); case .pulse: return .blue; case .nord:return .teal;case .rose:return .pink;case .graphite:return .gray;case .ocean:return .cyan } }
-    var corner: CGFloat { switch self { case .pure: return 14; case .canvas: return 30; case .pulse: return 19;case .nord:return 10;case .rose:return 28;case .graphite:return 8;case .ocean:return 26; default: return 24 } }
-    var font: Font.Design { self == .canvas || self == .rose ? .rounded : self == .obsidian ? .serif : self == .graphite ? .monospaced : .default }
-    var scheme: ColorScheme? { switch self { case .signature,.aurora,.obsidian,.graphite,.ocean:return .dark; case .pure,.canvas,.pulse,.nord,.rose:return .light } }
-    var description: String { switch self { case .signature:return "Смарагдовий · м’які картки"; case .pure:return "Світлий · чиста типографіка"; case .aurora:return "Скло · багатошарові фони"; case .canvas:return "Теплі ілюстрації · округлі форми"; case .obsidian:return "Темний · золоті акценти"; case .pulse:return "Банківський · виразні акценти";case .nord:return "Скандинавський · лаконічні плитки";case .rose:return "Пастель · м’які акценти";case .graphite:return "Монохром · компактна типографіка";case .ocean:return "Океан · глибокі градієнти" } }
+    var tint: Color {
+        switch self {
+        case .signature: return Color(red:0.20,green:0.69,blue:0.50)
+        case .pure,.pulse: return .blue
+        case .aurora: return .indigo
+        case .canvas: return Color(red:0.64,green:0.32,blue:0.20)
+        case .obsidian,.darkClassic: return Color(red:0.82,green:0.66,blue:0.34)
+        case .nord:return .teal
+        case .rose:return .pink
+        case .graphite:return .gray
+        case .ocean:return .cyan
+        case .graphiteGlass:return Color(red:0.49,green:0.69,blue:0.88)
+        case .premiumNeon:return Color(red:0.30,green:0.82,blue:0.69)
+        case .cleanLight:return Color(red:0.12,green:0.36,blue:0.70)
+        }
+    }
+    var corner: CGFloat {
+        switch self { case .pure,.cleanLight: return 16; case .canvas,.rose: return 24; case .pulse,.nord,.graphite: return 14; case .obsidian,.darkClassic: return 18; case .graphiteGlass: return 22; case .premiumNeon: return 20; default: return 20 }
+    }
+    var font: Font.Design { self == .canvas || self == .rose ? .rounded : .default }
+    var scheme: ColorScheme? { switch self { case .signature,.aurora,.obsidian,.graphite,.ocean,.darkClassic,.graphiteGlass,.premiumNeon:return .dark; default:return .light } }
+    var description: String {
+        switch self {
+        case .darkClassic:return "Чорний · матове золото · стримані платежі"
+        case .graphiteGlass:return "Графіт · скло за бажанням · прохолодний акцент"
+        case .premiumNeon:return "Темний · тонкі м’ятні контури · фінансові статуси"
+        case .cleanLight:return "Світлий · чисті поверхні · контрастна типографіка"
+        case .signature:return "Смарагдовий · м’які картки"
+        case .pure:return "Світлий · чиста типографіка"
+        case .aurora:return "Скло · багатошарові фони"
+        case .canvas:return "Теплі ілюстрації · округлі форми"
+        case .obsidian:return "Темний · золоті акценти"
+        case .pulse:return "Банківський · виразні акценти"
+        case .nord:return "Скандинавський · лаконічні плитки"
+        case .rose:return "Пастель · м’які акценти"
+        case .graphite:return "Монохром · компактна типографіка"
+        case .ocean:return "Океан · глибокі градієнти"
+        }
+    }
+    var monochrome: Bool { self == .darkClassic || self == .obsidian || self == .graphite }
 }
 enum FinamiCardTemplate: String, CaseIterable, Identifiable {
     case automatic = "За дизайном", gradient = "Gradient", minimal = "Minimal", glass = "Glass", soft = "Soft", bank = "Bank", neon = "Neon", stripe = "Stripe", compact = "Compact", illustrated = "Illustrated", premium = "Premium"
@@ -22,21 +59,29 @@ enum FinamiCardTemplate: String, CaseIterable, Identifiable {
 }
 struct FinamiCardStyle: ViewModifier {
     @EnvironmentObject var s: Store
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     var tint: Color
     var template: String? = nil
     func body(content: Content) -> some View {
-        let design = FinamiDesign(rawValue:s.db.preferences?.design ?? "Signature") ?? .signature
+        let design = FinamiDesign(rawValue:s.db.preferences?.design ?? "Dark Classic") ?? .darkClassic
         let style = FinamiCardTemplate(rawValue:template ?? s.db.preferences?.cardTemplate ?? "За дизайном") ?? .automatic
-        let radius = style == .minimal || style == .compact ? 12 : design.corner
+        let radius: CGFloat = style == .minimal || style == .compact ? 12 : design.corner
+        let accent = design.monochrome && style == .automatic ? design.tint : tint
+        let base = scheme == .dark && design.monochrome ? Color(red:0.105,green:0.105,blue:0.115) : Color(uiColor:.secondarySystemGroupedBackground)
+        let glass = style == .glass || (style == .automatic && [.aurora,.graphiteGlass].contains(design))
+        let gradient = [.gradient,.premium,.bank,.illustrated].contains(style) || (style == .automatic && [.signature,.pulse,.ocean,.graphiteGlass].contains(design))
+        let neon = style == .neon || (style == .automatic && design == .premiumNeon)
         content.background {
             ZStack(alignment:.leading) {
-                RoundedRectangle(cornerRadius:radius).fill(Color(uiColor:.secondarySystemGroupedBackground))
-                if style == .glass || (style == .automatic && design == .aurora) { RoundedRectangle(cornerRadius:radius).fill(.regularMaterial); RoundedRectangle(cornerRadius:radius).fill(tint.opacity(0.12)) }
-                else if [.gradient,.premium,.bank,.illustrated].contains(style) || (style == .automatic && [.signature,.pulse,.obsidian,.ocean].contains(design)) { RoundedRectangle(cornerRadius:radius).fill(LinearGradient(colors:[tint.opacity(0.24),tint.opacity(0.035)],startPoint:.topLeading,endPoint:.bottomTrailing)) }
-                else if style == .soft || (style == .automatic && [.canvas,.rose,.nord].contains(design)) { RoundedRectangle(cornerRadius:radius).fill(tint.opacity(0.12)) }
-                if style == .stripe { Capsule().fill(tint).frame(width:4).padding(.vertical,12) }
+                RoundedRectangle(cornerRadius:radius).fill(base)
+                if glass && !reduceTransparency && style == .glass { RoundedRectangle(cornerRadius:radius).fill(.regularMaterial) }
+                if gradient || glass { RoundedRectangle(cornerRadius:radius).fill(LinearGradient(colors:[accent.opacity(0.12),accent.opacity(0.015)],startPoint:.topLeading,endPoint:.bottomTrailing)) }
+                else if style == .soft || (style == .automatic && [.canvas,.rose,.nord].contains(design)) { RoundedRectangle(cornerRadius:radius).fill(accent.opacity(0.07)) }
+                if style == .stripe { Capsule().fill(accent).frame(width:3).padding(.vertical,10) }
             }
-        }.clipShape(RoundedRectangle(cornerRadius:radius)).overlay { if style == .neon { RoundedRectangle(cornerRadius:radius).stroke(tint.opacity(0.6),lineWidth:1) } }.shadow(color:style == .premium ? tint.opacity(0.14) : .clear,radius:12,y:5)
+        }.clipShape(RoundedRectangle(cornerRadius:radius))
+         .overlay { RoundedRectangle(cornerRadius:radius).strokeBorder(neon ? accent.opacity(0.55) : (design.monochrome ? accent.opacity(0.16) : Color.primary.opacity(0.07)),lineWidth:1) }
     }
 }
 // Original local vector illustrations, not remote images. No network required.
@@ -45,10 +90,10 @@ struct FinamiArt: View {
     var body:some View {
         ZStack {
             Circle().fill(tint.opacity(0.09)).frame(width:size,height:size)
-            Circle().fill(tint.opacity(0.18)).frame(width:size*0.76,height:size*0.76).offset(x:-size*0.08,y:size*0.04)
+            RoundedRectangle(cornerRadius:size*0.26).fill(tint.opacity(0.08)).frame(width:size*0.76,height:size*0.76)
             RoundedRectangle(cornerRadius:size*0.22).fill(LinearGradient(colors:[tint.opacity(0.44),tint.opacity(0.12)],startPoint:.topLeading,endPoint:.bottomTrailing)).frame(width:size*0.67,height:size*0.67).rotationEffect(.degrees(-13))
-            Image(systemName:icon).font(.system(size:size*0.36,weight:.semibold)).foregroundStyle(tint).shadow(color:tint.opacity(0.25),radius:4,y:3)
-            Circle().fill(tint.opacity(0.45)).frame(width:size*0.11,height:size*0.11).offset(x:size*0.37,y:-size*0.29)
+            Image(systemName:icon).font(.system(size:size*0.36,weight:.semibold)).foregroundStyle(tint)
+            
         }.frame(width:size,height:size).accessibilityHidden(true)
     }
 }
@@ -87,13 +132,13 @@ struct FinamiPrivacyNotice: View {
 struct FinamiDesignPreview: View {
     var design:FinamiDesign
     var foreground:Color { design.scheme == .dark ? .white : Color(red:0.12,green:0.15,blue:0.19) }
-    var background:Color { design.scheme == .dark ? Color(red:0.08,green:0.10,blue:0.13) : Color(red:0.97,green:0.97,blue:0.97) }
+    var background:Color { design.scheme == .dark ? (design.monochrome ? Color(red:0.035,green:0.035,blue:0.045) : Color(red:0.08,green:0.10,blue:0.13)) : Color(red:0.97,green:0.97,blue:0.97) }
     var body:some View {
         VStack(alignment:.leading,spacing:10) {
             HStack {Text("finami.").font(.headline);Spacer();Image(systemName:"eye").foregroundStyle(design.tint)}
-            if [.pure,.graphite,.nord].contains(design) { metric }
+            if [.pure,.graphite,.nord,.cleanLight,.darkClassic].contains(design) { metric }
             else { HStack(alignment:.center){metric;Spacer(minLength:4);FinamiArt(icon:design == .canvas || design == .rose ? "leaf.fill" : "wallet.pass.fill",tint:design.tint,size:48)} }
-            if [.pulse,.nord,.graphite].contains(design) {
+            if [.pulse,.nord,.graphite,.cleanLight,.darkClassic,.premiumNeon].contains(design) {
                 HStack(spacing:8){ mini("Власні", "32 450 ₴", "wallet.pass.fill");mini("Кредитні", "65 000 ₴", "creditcard.fill") }
             } else {
                 HStack{Image(systemName:"creditcard.fill").foregroundStyle(design.tint);Text("Мої рахунки");Spacer();Image(systemName:"chevron.right")}.font(.caption).padding(10).background(design.tint.opacity(0.09),in:RoundedRectangle(cornerRadius:design.corner/2))

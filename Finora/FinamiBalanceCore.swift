@@ -99,6 +99,7 @@ func finamiGroupedTransfersPreserved(before:[Operation],after:[Operation])->Bool
     return grouped.allSatisfy { old in
         guard var new=lookup[old.id] else{return false}
         new.note=old.note
+        new.tags=old.tags
         return old==new
     }
 }

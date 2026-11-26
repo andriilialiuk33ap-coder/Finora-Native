@@ -1,3 +1,13 @@
+# Finami 6.0 — Next Preview (Build 37)
+
+Передрелізний інтегрований зріз після 5.4. Нові можливості, інструкції та відомі обмеження: [FINAMI-6.0-PREVIEW-UK.md](FINAMI-6.0-PREVIEW-UK.md). Не є підтвердженим стабільним релізом.
+
+---
+
+# Finami 5.4 — Design Edition (Build 35)
+
+[Нововведення, інструкції та обмеження](FINAMI-5.4-UK.md). Для перевірки використовуйте **Test Finami on iOS Simulator**. Нижче історія попередніх релізів.
+
 # Finami 5.2 — Intelligence (Build 29)
 
 Див. [нововведення, обмеження та віджети](FINAMI-5.2-UK.md). Нижче попередня документація та історія версій.
@@ -411,3 +421,6 @@ Fixed the Xcode 16.4 type-check timeout in FinamiExportView.swift by moving the 
 
 ## Finami 5.3.2 — Smart Balance (build 32)
 Див. [FINAMI-5.3.2-UK.md](FINAMI-5.3.2-UK.md): груповий обмін, прив’язка виписки за IBAN, контрольний баланс на дату, звірка повернень та нові тести. Старі записи не виправляються без підтвердження. Це перший етап погодженого плану 5.3.2–5.6.
+
+## Finami 5.3.3 — Smart Balance Build Hotfix (build 33)
+Виправлено помилку компіляції AccountEditor.newOpening (Int64/Int) з журналу 5.3.2. Додано шість перевірок безпосередньо розрахунку редактора. Формат бази не змінено.

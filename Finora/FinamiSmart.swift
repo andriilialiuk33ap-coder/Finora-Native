@@ -74,6 +74,8 @@ struct FinamiDiagnostics: View {
     @State private var scheduled = 0
     @State private var checked = false
     @State private var parser = "Не перевірено"
+    @State private var diagnosticDocument:DataFile?
+    @State private var exportingDiagnostics=false
     @AppStorage("finami.lastShortcutCheck") private var lastCheck: Double = 0
     @AppStorage("finami.lastWalletCapture") private var lastWallet: Double = 0
     @AppStorage("finami.lastBankNotification") private var lastBank: Double = 0
@@ -84,6 +86,10 @@ struct FinamiDiagnostics: View {
     private func stamp(_ t: Double) -> String { t > 0 ? Date(timeIntervalSince1970: t).formatted(date: .abbreviated, time: .shortened) : "Ще не отримано" }
     var body: some View {
         List {
+            Section("Версія застосунку") {
+                LabeledContent("Версія / Build",value:FinamiBuildInfo.version)
+                LabeledContent("Оформлення",value:FinamiBuildInfo.edition)
+            }
             Section("Локальні дані") {
                 LabeledContent("Сховище", value: s.storageHealthy ? "База читається" : "Запис заблоковано")
                 LabeledContent("Рахунки", value: String(s.db.accounts.count))
@@ -109,6 +115,14 @@ struct FinamiDiagnostics: View {
                 Text("Це зафіксовані виклики, а не перевірка стану системної автоматизації. Правильний формат посилання не гарантує існування команди.").font(.caption)
                 NavigationLink("Налаштувати автоматизацію") { AutomationCenter() }
             }
+            Section("Знеособлений звіт") {
+                Text("Містить лише версію, версію iOS, чисельність записів і статуси перевірок. Без назв рахунків, сум, нотаток, реквізитів, посилань на команди чи резервної копії.").font(.caption)
+                Button("Експорт діагностики JSON") {
+                    let report:[String:String] = ["version":FinamiBuildInfo.version,"edition":FinamiBuildInfo.edition,"ios":UIDevice.current.systemVersion,"storageHealthy":String(s.storageHealthy),"accounts":String(s.db.accounts.count),"operations":String(s.db.operations.count),"contracts":String(s.db.obligations.count),"snapshots":String(s.snapshotURLs().count),"parserSelfTest":String(finamiNotificationSelfTest()),"exchangeValid":String(finamiExchangeBalance(s.db.exchangeDiary ?? []) != nil),"partnerGroupsValid":String(finamiValidPartnerGroups(s.db.partnerGroups ?? []))]
+                    do {let encoder=JSONEncoder();encoder.outputFormatting=[.prettyPrinted,.sortedKeys];diagnosticDocument=DataFile(data:try encoder.encode(report));exportingDiagnostics=true}
+                    catch {s.error="Не вдалося створити діагностичний звіт."}
+                }
+            }
             Section("Безпечні локальні перевірки") {
                 Text("Парсер: " + parser)
                     .foregroundStyle(parser == "Тест не пройдено" ? Color.orange : Color.primary)
@@ -119,7 +133,7 @@ struct FinamiDiagnostics: View {
                 }.accessibilityIdentifier("qa.diagnostics.run")
                 Text("Тест не додає операцій і не змінює баланс.").font(.caption)
             }
-        }.navigationTitle("Діагностика").task { await refresh() }
+        }.navigationTitle("Діагностика").task { await refresh() }.fileExporter(isPresented:$exportingDiagnostics,document:diagnosticDocument,contentType:.json,defaultFilename:"Finami-diagnostics") { result in if case .failure(let e)=result {s.error=e.localizedDescription} }
     }
     @MainActor private func refresh() async {
         let center = UNUserNotificationCenter.current()

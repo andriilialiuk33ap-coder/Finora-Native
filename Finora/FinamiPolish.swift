@@ -2,22 +2,26 @@ import SwiftUI
 
 // Local, semantic colours keep the components legible in all ten presets.
 struct FinamiIconTile: View {
+    @Environment(\.colorScheme) private var scheme
     var icon: String
     var tint: Color
     var side: CGFloat = 44
     var body: some View {
-        RoundedRectangle(cornerRadius: side * 0.27)
-            .fill(LinearGradient(colors: [tint.opacity(0.19), tint.opacity(0.06)], startPoint: .topLeading, endPoint: .bottomTrailing))
-            .overlay { Image(systemName: icon).font(.system(size: side * 0.40, weight: .semibold)).foregroundStyle(tint) }
-            .frame(width: side, height: side).accessibilityHidden(true)
+        RoundedRectangle(cornerRadius: side * 0.26)
+            .fill(scheme == .dark ? Color(red:0.045,green:0.045,blue:0.055) : tint.opacity(0.10))
+            .overlay { RoundedRectangle(cornerRadius:side*0.26).strokeBorder(tint.opacity(scheme == .dark ? 0.24 : 0.10),lineWidth:1) }
+            .overlay { Image(systemName:icon).font(.system(size:side*0.40,weight:.semibold)).foregroundStyle(tint) }
+            .frame(width:side,height:side).accessibilityHidden(true)
     }
 }
 struct FinamiAccountSurface: View {
+    @Environment(\.colorScheme) private var scheme
     var tint: Color
     var radius: CGFloat
     var body: some View {
-        RoundedRectangle(cornerRadius: radius).fill(Color(uiColor: .secondarySystemGroupedBackground))
-            .overlay { RoundedRectangle(cornerRadius: radius).fill(LinearGradient(colors: [tint.opacity(0.17), tint.opacity(0.025)], startPoint: .topLeading, endPoint: .bottomTrailing)) }
+        RoundedRectangle(cornerRadius:radius).fill(Color(uiColor:.secondarySystemGroupedBackground))
+            .overlay { RoundedRectangle(cornerRadius:radius).fill(LinearGradient(colors:[tint.opacity(scheme == .dark ? 0.13 : 0.08),tint.opacity(0.015)],startPoint:.topLeading,endPoint:.bottomTrailing)) }
+            .overlay { RoundedRectangle(cornerRadius:radius).strokeBorder(tint.opacity(0.16),lineWidth:1) }
     }
 }
 struct FinamiDashboardSurface: ViewModifier {
@@ -77,9 +81,10 @@ struct FinamiMenuGroup<Content: View>: View {
     init(_ title: String, @ViewBuilder content: @escaping () -> Content) { self.title = title; self.content = content }
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(title).font(.headline).foregroundStyle(.secondary).padding(.leading, 4)
-            VStack(alignment: .leading, spacing: 10) { content() }
-                .padding(12).background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20))
+            Text(title.uppercased()).font(.caption.weight(.semibold)).tracking(0.7).foregroundStyle(.secondary).padding(.leading, 4)
+            VStack(alignment: .leading, spacing: 6) { content() }
+                .padding(12).background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 18))
+                .overlay{RoundedRectangle(cornerRadius:18).strokeBorder(Color.primary.opacity(0.07),lineWidth:1)}
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
 }

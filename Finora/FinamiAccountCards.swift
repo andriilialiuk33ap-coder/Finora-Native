@@ -427,3 +427,42 @@ private struct HomeAccountHistory: View {
         }.navigationTitle("Операції рахунку").toolbar { ToolbarItem(placement: .confirmationAction) { Button("Готово") { dismiss() } } }.sheet(item: $edit) { OpEditor(original: $0) }
     }
 }
+
+struct FinamiCompactAccountsGrid: View {
+    @EnvironmentObject private var s: Store
+    @Environment(\.finamiMask) private var masked
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    var accounts: [Account]
+    var mode: String
+    var date: Date
+    @State private var history: Account?
+    @State private var edit: Account?
+    private func text(_ amount:Int64,_ a:Account)->String { masked || s.privateAmounts || a.hideAmounts == true ? "••••" : s.visibleMoney(amount,a.code) }
+    var body: some View {
+        LazyVGrid(columns:Array(repeating:GridItem(.flexible(),spacing:10),count:dynamicTypeSize.isAccessibilitySize ? 1 : 2),spacing:10) {
+            ForEach(accounts) { a in
+                let tint=accountTint(a,fallback:.teal)
+                let fields=Set(a.cardOptions?.fields ?? s.db.preferences?.homeAccountFields ?? HomeAccountField.defaults)
+                VStack(alignment:.leading,spacing:7) {
+                    HStack { FinamiIconTile(icon:accountArtIcon(a),tint:tint,side:32);Spacer(minLength:2); if a.cardOptions?.pinned == true { Image(systemName:"pin.fill").font(.caption).foregroundStyle(.secondary) } }
+                    Text(a.name).font(.subheadline.weight(.semibold)).fixedSize(horizontal:false,vertical:true)
+                    if fields.contains("currency") || fields.contains("type") { Text([fields.contains("type") ? a.typeName : nil,fields.contains("currency") ? a.code : nil].compactMap{$0}.joined(separator:" · ")).font(.caption2).foregroundStyle(.secondary) }
+                    if mode != "credit" && fields.contains("own") { metric("Власні",s.ownFunds(a),a) }
+                    if a.isCredit && mode != "own" {
+                        if fields.contains("available") { metric("Кредит доступний",max(0,a.limit-s.debt(a)),a) }
+                        if fields.contains("used") { metric("Використано",s.debt(a),a) }
+                        if fields.contains("limit") { metric("Ліміт",a.limit,a) }
+                    }
+                    if a.excludedFromTotals == true { Text("Поза підсумками").font(.caption2).foregroundStyle(.secondary) }
+                    if a.hiddenInAccounts == true { Image(systemName:"eye.slash").font(.caption).accessibilityLabel("Прихований рахунок") }
+                    Button { history=a } label: { Label("Історія",systemImage:"clock").font(.caption.weight(.medium)).frame(maxWidth:.infinity,minHeight:36,alignment:.leading) }.buttonStyle(.plain)
+                }.padding(12).frame(maxWidth:.infinity,alignment:.leading).modifier(FinamiCardStyle(tint:tint))
+                    .contextMenu { Button("Історія"){history=a};Button("Редагувати"){edit=a} }
+            }
+        }.sheet(item:$history) { a in NavigationStack { HomeAccountHistory(accountID:a.id,blockMasked:masked) } }
+         .sheet(item:$edit) { AccountEditor(a:$0) }
+    }
+    private func metric(_ name:String,_ value:Int64,_ a:Account)->some View {
+        VStack(alignment:.leading,spacing:2) { Text(name).font(.caption2).foregroundStyle(.secondary);Text(text(value,a)).font(.subheadline.weight(.semibold)).monospacedDigit().fixedSize(horizontal:false,vertical:true) }
+    }
+}

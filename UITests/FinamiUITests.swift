@@ -20,6 +20,15 @@ final class FinamiUITests: XCTestCase {
     private func capture(_ name: String) {
         let attachment = XCTAttachment(screenshot: app.screenshot()); attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
     }
+    func testNextScreensOpen() {
+        app.tabBars.buttons["Ще"].tap()
+        for (identifier,title) in [("qa.next.review","Перевірка операцій"),("qa.next.insights","Фінансові підсумки"),("qa.next.usdt","Журнал USDT"),("qa.next.partners","Спільні кредитні ліміти")] {
+            let item=app.descendants(matching:.any).matching(identifier:identifier).firstMatch
+            for _ in 0..<8 {if item.exists && item.isHittable {break};app.swipeUp()}
+            visible(item);item.tap();visible(app.navigationBars[title]);capture(identifier)
+            app.navigationBars.buttons.firstMatch.tap()
+        }
+    }
     func testAllFiveTabsOpen() {
         for title in ["Головна", "Операції", "Рахунки", "Звіти", "Ще"] {
             let tab = app.tabBars.buttons[title]; visible(tab); tab.tap()

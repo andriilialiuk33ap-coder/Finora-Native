@@ -4,19 +4,19 @@ struct OperationRow: View {
   @EnvironmentObject var s: Store
   @Environment(\.finamiMask) private var masked
   var o: Operation
+  private var amountsMasked:Bool { s.privateAmounts || masked || s.db.accounts.contains {a in a.hideAmounts == true && (a.id==o.account || (o.kind == .transfer && a.id==o.destination))} }
   var body: some View {
     HStack {
       FinamiIconTile(icon: finamiOperationIcon(o), tint: o.kind == .income ? .green : o.kind == .expense ? .orange : .blue, side: 42)
       VStack(alignment: .leading) {
-        Text(o.note.isEmpty ? (o.kind == .transfer ? "Переказ" : o.category) : finamiMerchantDisplay(o.note)).font(
-          .subheadline.bold())
+        Text(o.note.isEmpty ? (o.kind == .transfer ? "Переказ" : o.category) : finamiMerchantDisplay(o.note)).font(.subheadline.weight(.semibold)).lineLimit(2)
         Text("\(o.kind.title) · \(s.accountName(o.account)) · \(o.date.formatted(.dateTime.day().month(.abbreviated).year().locale(Locale(identifier: "uk_UA"))))")
           .font(.caption).foregroundStyle(.secondary)
       }
       Spacer()
       VStack(alignment:.trailing) {
-        Text((s.privateAmounts || masked) ? "••••" : (o.kind == .transfer ? "" : o.kind.incoming ? "+" : "−") + money(o.amount)).font(.subheadline.bold()).foregroundStyle(o.kind == .income ? Color.green : Color.primary)
-        if let n=o.originalAmount, let code=o.originalCurrency, code != "UAH" { Text(masked ? "••••" : s.visibleMoney(n,code)).font(.caption).foregroundStyle(.secondary) }
+        Text(amountsMasked ? "••••" : (o.kind == .transfer ? "" : o.kind.incoming ? "+" : "−") + money(o.amount)).font(.subheadline.weight(.semibold)).monospacedDigit().foregroundStyle(o.kind == .income ? Color.green : Color.primary)
+        if let n=o.originalAmount, let code=o.originalCurrency, code != "UAH" { Text(amountsMasked ? "••••" : s.visibleMoney(n,code)).font(.caption).foregroundStyle(.secondary) }
       }
     }
   }
@@ -35,8 +35,17 @@ struct Operations: View {
   @State private var accountFilter = "all"
   @State private var categoryFilter = "all"
   @State private var pageSize = 150
+  @State private var usePeriod = false
+  @State private var dateFrom = Calendar.current.date(byAdding:.month,value:-1,to:Date()) ?? Date()
+  @State private var dateTo = Date()
+  @State private var minimum = ""
+  @State private var maximum = ""
+  @State private var reviewOnly = false
+  @State private var bankFilter = "all"
   var filtered: [Operation] {
-    s.queryHistory(.init(kind:filter,account:accountFilter,category:categoryFilter,search:search,sort:sort,hideAmounts:s.privateAmounts))
+    let from = usePeriod ? Calendar.current.startOfDay(for:min(dateFrom,dateTo)) : nil
+    let end = usePeriod ? Calendar.current.date(byAdding:.day,value:1,to:Calendar.current.startOfDay(for:max(dateFrom,dateTo))) : nil
+    return s.queryHistory(.init(kind:filter,account:accountFilter,category:categoryFilter,search:search,sort:sort,hideAmounts:s.privateAmounts,from:from,until:end,minimum:bankMinor(minimum),maximum:bankMinor(maximum),reviewOnly:reviewOnly,sourceBank:bankFilter == "all" ? nil : bankFilter))
   }
   var chronological: Bool { sort == .newest || sort == .oldest }
 
@@ -103,9 +112,14 @@ struct Operations: View {
           Picker("Тип", selection: filterBinding) { Text("Усі").tag("all"); ForEach(Kind.allCases) { Text($0.title).tag($0.rawValue) } }
           Picker("Рахунок", selection: $accountFilter) { Text("Усі").tag("all"); ForEach(s.db.accounts) { Text($0.name).tag($0.id) } }
           Picker("Категорія", selection: $categoryFilter) { Text("Усі").tag("all"); ForEach(Array(Set(s.db.operations.map(\.category))).sorted(), id: \.self) { Text($0).tag($0) } }
+          Toggle("Потребують уточнення",isOn:$reviewOnly)
+          Picker("Банк джерела",selection:$bankFilter){Text("Усі").tag("all");ForEach(Array(Set(s.db.operations.compactMap(\.sourceBank))).sorted(),id:\.self){Text($0).tag($0)}}
+          Toggle("Обмежити період",isOn:$usePeriod)
+          if usePeriod { DatePicker("Від",selection:$dateFrom,displayedComponents:.date);DatePicker("До",selection:$dateTo,displayedComponents:.date) }
+          if !s.privateAmounts { FinamiField("Сума від, ₴",text:$minimum,keyboard:.decimalPad);FinamiField("Сума до, ₴",text:$maximum,keyboard:.decimalPad) }
           Picker("Сортування", selection: sortBinding) { ForEach(OperationSort.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
-          Button("Скинути фільтри") { filterBinding.wrappedValue = "all"; sortBinding.wrappedValue = .newest; accountFilter = "all"; categoryFilter = "all"; search = "" }
-        }.navigationTitle("Фільтри операцій").toolbar { Button("Готово") { operationSettings = false } } }
+          Button("Скинути фільтри") { filterBinding.wrappedValue = "all"; sortBinding.wrappedValue = .newest; accountFilter = "all"; categoryFilter = "all"; search = "";usePeriod=false;minimum="";maximum="";reviewOnly=false;bankFilter="all" }
+        }.navigationTitle("Фільтри операцій").toolbar { Button("Готово") { pageSize=150;operationSettings = false } } }
       }
   }
 }
@@ -121,6 +135,7 @@ struct OpEditor: View {
   @State private var exactReceived = ""
   @State private var linkedPaymentID = ""
   @State private var separatePayment = false
+  @State private var tagsText = ""
   private var linkedRecord: FinamiPaidRecord? { (s.db.paidRecords ?? []).first { $0.operationID == o.id } }
   private var financialLocked: Bool {linkedRecord != nil || o.groupedBankParts != nil}
   private var savedOperation: Bool { s.db.operations.contains { $0.id == o.id } }
@@ -141,6 +156,7 @@ struct OpEditor: View {
   }
   init(original: Operation) {
     _o = State(initialValue: original)
+    _tagsText = State(initialValue: (original.tags ?? []).joined(separator:", "))
     let input = original.entryCurrency == "USD" ? (original.originalAmount ?? original.sourceMinor ?? original.amount) : original.amount
     _amount = State(initialValue: input == 0 ? "" : amountText(input))
     _entryCurrency = State(initialValue: original.entryCurrency ?? "UAH")
@@ -225,7 +241,9 @@ struct OpEditor: View {
             }
           }
         }
-        TextField("Магазин / примітка / теги", text: $o.note)
+        TextField("Магазин / примітка", text: $o.note)
+        TextField("Теги через кому", text:$tagsText).onChange(of:tagsText) { value in o.tags=finamiCleanTags(value) }
+        if !(o.tags ?? []).isEmpty {Text((o.tags ?? []).map{"#"+$0}.joined(separator:"  ")).font(.caption).foregroundStyle(.secondary)}
         if let bank = o.sourceBank { LabeledContent("Джерело", value: bank) }
         if let suffix=o.creditContractSuffix {LabeledContent("Договір",value:"••"+suffix)}
         if o.bankPostingKnown == true {LabeledContent("Дата постінгу",value:o.bankPostingDate?.formatted(date:.abbreviated,time:.omitted) ?? "Невідомо — звірити з банком")}
@@ -245,7 +263,7 @@ struct OpEditor: View {
         ToolbarItem(placement: .cancellationAction) { Button("Скасувати") { dismiss() } }
         ToolbarItem(placement: .confirmationAction) {
           Button("Зберегти") {
-            if o.groupedBankParts != nil { if s.change({d in if let i=d.operations.firstIndex(where:{$0.id==o.id}) {d.operations[i].note=o.note}}) {dismiss()};return }
+            if o.groupedBankParts != nil { if s.change({d in if let i=d.operations.firstIndex(where:{$0.id==o.id}) {d.operations[i].note=o.note;d.operations[i].tags=o.tags}}) {dismiss()};return }
             guard let n=converted, let entered=bankMinor(amount), valid else {return}
             o.amount=n
             if o.sourceBank != nil {o.classificationReviewed=true}

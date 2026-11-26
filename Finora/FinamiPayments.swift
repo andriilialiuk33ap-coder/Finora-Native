@@ -111,7 +111,12 @@ struct FinamiPaymentCard:View {
     var showImage = true
     var dashboardSize: DashboardSize? = nil
     var body:some View { VStack(alignment:.leading,spacing:dashboardSize == .small ? 5 : dashboardSize == .large ? 16 : 10) {
-        HStack(alignment:.top) { VStack(alignment:.leading,spacing:5) { Text(payment.kind).font(.caption).foregroundStyle(.secondary);Text(payment.name).font(.headline).fixedSize(horizontal:false,vertical:true) };Spacer(minLength:8);if showImage && dashboardSize != .small { if let data=s.db.paymentPhotos?[payment.id],let image=FinamiImageCache.shared.image(data) {Image(uiImage:image).resizable().scaledToFill().frame(width:62,height:62).clipShape(RoundedRectangle(cornerRadius:14)).accessibilityHidden(true)}else{FinamiArt(icon:payment.subscription ? "repeat" : "calendar.badge.clock",tint:.indigo,size:62)} } }
+        HStack(alignment:.top) { VStack(alignment:.leading,spacing:5) { Text(payment.kind).font(.caption).foregroundStyle(.secondary);Text(payment.name).font(.headline).fixedSize(horizontal:false,vertical:true) };Spacer(minLength:8);if showImage && dashboardSize != .small { if let data=s.db.paymentPhotos?[payment.id],let image=FinamiImageCache.shared.image(data) {Image(uiImage:image).resizable().scaledToFill().frame(width:62,height:62).clipShape(RoundedRectangle(cornerRadius:14)).accessibilityHidden(true)}else{FinamiPaymentGlyph(icon:payment.subscription ? "repeat" : "creditcard.fill",side:62)} } }
+        if let loan=s.db.obligations.first(where:{$0.id==payment.id}) {
+            if s.db.preferences?.modernPaymentTotal != false { LabeledContent("Загальна сума",value:masked ? "••••" : s.visibleMoney(loan.target,payment.currency)).font(.caption) }
+            if s.db.preferences?.modernPaymentMonthly != false && loan.monthly > 0 { LabeledContent("Щомісячний платіж",value:masked ? "••••" : s.visibleMoney(loan.monthly,payment.currency)).font(.caption) }
+        }
+        Text("До сплати").font(.caption).foregroundStyle(.secondary)
         Text(masked ? "••••" : s.visibleMoney(payment.amount,payment.currency)).font(dashboardSize == .small ? .title3.bold() : dashboardSize == .medium ? .title.bold() : .largeTitle.bold()).monospacedDigit().fixedSize(horizontal:false,vertical:true)
         if showDate { Label(payment.date.formatted(.dateTime.day().month(.wide).locale(Locale(identifier:"uk_UA"))),systemImage:"calendar").foregroundStyle(payment.overdue ? Color.orange : Color.secondary) }
         if payment.overdue {Label("Прострочено",systemImage:"exclamationmark.circle").font(.caption).foregroundStyle(.orange)}

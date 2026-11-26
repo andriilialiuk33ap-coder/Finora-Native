@@ -1,3 +1,7 @@
+# Finami 5.4 — Design Edition (Build 35)
+
+[Нововведення, інструкції та обмеження](FINAMI-5.4-UK.md). Для перевірки використовуйте **Test Finami on iOS Simulator**. Нижче історія попередніх релізів.
+
 # Finami 5.2 — Intelligence (Build 29)
 
 Див. [нововведення, обмеження та віджети](FINAMI-5.2-UK.md). Нижче попередня документація та історія версій.
@@ -27,3 +31,6 @@ Build 28. SHA і номер версії записуються у toolchain.txt
 
 ### 5.3.2, build 32
 Новий `Tests/check-532.sh` включено в регресійний сценарій. Запусти новий Test Finami on iOS Simulator після commit/push. PDFKit та SwiftUI перевіряються лише на macOS/iOS. Не додавай приватні виписки у GitHub.
+
+### 5.3.3, build 33
+Виправлено Finora.swift:965 — Int64/Int. Тест check-532.sh компілює фактичну властивість newOpening з мінімальним тестовим Store. Запустити новий workflow на новому коміті; Xcode-збірка hotfix ще не підтверджена.

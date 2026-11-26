@@ -3,6 +3,25 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 { echo 'import Foundation'; echo 'let cash="cash"'; sed -n '/^enum Kind:/,/^struct AccountActivity/p' Finora/Finora.swift | sed '$d'; } > "$tmp/Models.swift"
+# Compile the actual AccountEditor calculation without SwiftUI, using a minimal store.
+{
+cat <<'SWIFT'
+import Foundation
+struct TestAccountDB { var accounts:[Account] }
+struct TestAccountStore {
+    var db:TestAccountDB
+    var operations:[Operation]
+    func nativeBalance(_ a:Account)->Int64 { FinamiLedgerIndex(operations:operations,accounts:db.accounts).balance(a) }
+}
+struct AccountEditorCalculation {
+    var s:TestAccountStore
+    var a:Account
+    var opening="0", limitText="0", actualText="0", actualMode="net", ownText="0", usedText="0"
+    var correctBalance=false
+SWIFT
+sed -n '/^  var newOpening: Int64? {/,/^  var existingAccount:/p' Finora/Finora.swift | sed '$d'
+echo '}'
+} > "$tmp/AccountEditorCalculation.swift"
 cat > "$tmp/main.swift" <<'SWIFT'
 import Foundation
 func check(_ b:@autoclosure ()->Bool,_ title:String){precondition(b(),title);print("PASS: "+title)}
@@ -52,6 +71,22 @@ check(move.filter{$0.kind != .transfer}.allSatisfy{$0.account==debit.id} && move
 check(finamiMoveStatementRows(before,ids:[ops[0].id],to:debit,accounts:[usd,debit,credit],protected:[ops[0].id])==nil,"protected payment move rejected")
 let undo=FinamiBalanceUndo(before:before,after:[merged]);check(undo.restore(current:[merged])==before && undo.restore(current:[merged,ops[0]])==nil,"undo rejects intervening ledger edits")
 check(!finamiGroupedTransfersPreserved(before:[merged],after:[]) && finamiGroupedTransfersPreserved(before:[merged],after:[merged]),"grouped transfer protected from deletion")
+// Exercise the exact calculation compiled into AccountEditor, not a rewritten copy.
+var editor=AccountEditorCalculation(s:TestAccountStore(db:TestAccountDB(accounts:[debit]),operations:[Operation(kind:.income,amount:30000,date:date,account:debit.id)]),a:debit)
+editor.correctBalance=true;editor.actualText="500"
+check(editor.newOpening==20000,"AccountEditor correction uses Int64 movement")
+var anchoredEditor=debit;anchoredEditor.opening=7000;anchoredEditor.reconciliationDate=date;anchoredEditor.reconciliationNet=90000
+editor.s.db.accounts=[anchoredEditor];editor.a=anchoredEditor
+check(editor.newOpening==20000,"AccountEditor correction ignores old anchor and uses complete recorded movement")
+editor.s.db.accounts=[]
+check(editor.newOpening==50000,"AccountEditor new account has zero movement")
+var creditEditor=credit;creditEditor.accountType="credit";creditEditor.creditLimit=1000000
+editor.a=creditEditor;editor.s.db.accounts=[creditEditor];editor.actualMode="available";editor.limitText="10000";editor.actualText="8500"
+check(editor.newOpening == -150000,"AccountEditor available credit converted to net debt")
+editor.actualMode="components";editor.ownText="0";editor.usedText="1500"
+check(editor.newOpening == -150000,"AccountEditor component correction retains negative net debt")
+editor.correctBalance=false;editor.opening="-100.50"
+check(editor.newOpening == -10050,"AccountEditor normal opening edit preserves native minor units")
 let anchor=finamiOpeningForAnchor(account:debit,operations:ops,net:2000000,at:date.addingTimeInterval(9))!
 var anchored=debit;anchored.opening=anchor
 check(FinamiLedgerIndex(operations:ops.filter{$0.date<=date.addingTimeInterval(9)}).balance(anchored)==2000000,"dated anchor retains historical rows")
@@ -99,5 +134,5 @@ check(update.count==1 && update.operations[0].bankPostingDate==date && update.op
 check(finamiEnrichStatementMetadata(metaBatch,operations:update.operations,account:debit.id).count==0,"metadata update is idempotent")
 let persisted=try JSONDecoder().decode(Operation.self,from:JSONEncoder().encode(merged));check(persisted==merged,"group metadata roundtrip")
 SWIFT
-swiftc -swift-version 5 -warnings-as-errors "$tmp/Models.swift" Finora/BankCore.swift Finora/MoneyCore.swift Finora/FinamiStatementMatch.swift Finora/FinamiBalanceCore.swift "$tmp/main.swift" -o "$tmp/test"
+swiftc -swift-version 5 -warnings-as-errors "$tmp/Models.swift" "$tmp/AccountEditorCalculation.swift" Finora/BankCore.swift Finora/MoneyCore.swift Finora/FinamiStatementMatch.swift Finora/FinamiBalanceCore.swift "$tmp/main.swift" -o "$tmp/test"
 "$tmp/test" "$@"

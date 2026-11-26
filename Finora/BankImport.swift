@@ -12,6 +12,9 @@ private enum StatementPDF {
         guard let doc = PDFDocument(url: url), !doc.isLocked, doc.pageCount <= 500, let first = doc.page(at: 0)?.string else { throw BankFailure.format }
         let pumb = first.localizedCaseInsensitiveContains("ПУМБ") && first.localizedCaseInsensitiveContains("Інформація про рух коштів")
         let abank = first.localizedCaseInsensitiveContains("АКЦЕНТ-БАНК") && first.localizedCaseInsensitiveContains("Виписка по картці")
+        if first.localizedCaseInsensitiveContains("ПриватБанк") && first.localizedCaseInsensitiveContains("Виписка по картці") {
+            return try readPrivat(doc,header:first)
+        }
         guard pumb || abank else { throw BankFailure.unsupported }
         let cols: [(CGFloat,CGFloat)] = pumb ? [(27,79),(80,149),(202,259),(260,317),(318,391),(392,520),(521,582)] : [(35,103),(104,184),(185,369),(370,405),(406,476),(477,548),(549,595),(596,637),(638,696)]
         let width: CGFloat = pumb ? 595.304 : 841.889
@@ -71,6 +74,24 @@ private enum StatementPDF {
         result.reconciliation = bankReconcile(result,debit:bankSummary(summary,label:pumb ? "Всього списань за період" : "Сума витрат за період"),credit:bankSummary(summary,label:pumb ? "Всього зарахувань за період" : "Сума зарахувань за період"))
         guard !result.rows.isEmpty else { throw BankFailure.empty }
         return result
+    }
+    private static func readPrivat(_ doc:PDFDocument,header:String) throws -> BankBatch {
+        let ranges:[(CGFloat,CGFloat)]=[(30,78),(198,324),(326,369),(371,418),(420,456),(458,494),(495,563)]
+        var pages:[FinamiPrivatPage]=[]
+        for i in 0..<doc.pageCount {
+            guard let page=doc.page(at:i) else{throw BankFailure.format}
+            let bounds=page.bounds(for:.mediaBox),scale=bounds.width/595
+            guard page.rotation==0,abs(scale-1)<0.15 else{throw BankFailure.unsupported}
+            let columns=ranges.map { range -> [FinamiPrivatLine] in
+                let rect=CGRect(x:bounds.minX+range.0*scale,y:bounds.minY,width:(range.1-range.0)*scale,height:bounds.height)
+                return (page.selection(for:rect)?.selectionsByLine() ?? []).compactMap { line in
+                    guard let text=line.string,!bankClean(text).isEmpty else{return nil}
+                    return FinamiPrivatLine(y:Double((bounds.maxY-line.bounds(for:page).midY)/scale),text:text)
+                }
+            }
+            pages.append(.init(columns:columns))
+        }
+        return try privatStatementBatch(header:header,pages:pages)
     }
 }
 private func readOTP(_ url: URL) throws -> BankBatch {
@@ -149,7 +170,7 @@ struct BankCenter: View {
                 IzanamiLabel(title: "Імпортувати PDF / XLSX", icon: "doc.badge.plus", color: .red)
             }
             .disabled(busy)
-            Text("ПУМБ PDF, А-БАНК PDF, ОТП XLSX. Лише гривневі рахунки; оригінальні суми в іншій валюті зберігаються. Приват24 і PDF monobank потребують шаблону.")
+            Text("ПУМБ, А-БАНК, ПриватБанк PDF та ОТП XLSX. Лише гривневі рахунки; оригінальні суми в іншій валюті зберігаються. PDF monobank потребує шаблону.")
                 .font(.caption)
             NavigationLink { AutomationCenter() } label: { IzanamiLabel(title: "Apple Pay / SMS — налаштування", icon: "bolt.fill", color: .orange) }
             NavigationLink { BankImportHistory() } label: {
@@ -347,6 +368,7 @@ struct BankReview: View {
         let byName = suggestedCategory(row.note,kind:k,database:s.db)
         if byName != "Без категорії" {return byName}
         let allowed = k == .income ? s.db.incomeCategories.filter { !(s.db.hiddenIncomeCategories ?? []).contains($0) } : s.db.expenseCategories.filter { !(s.db.hiddenExpenseCategories ?? []).contains($0) }
+        if let c = row.categoryHint, allowed.contains(c) {return c}
         if let c = mccCategory(row.mcc,incoming:row.signed>0),allowed.contains(c) {return c}
         return "Без категорії"
     }

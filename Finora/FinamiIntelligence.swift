@@ -157,10 +157,7 @@ struct FinamiCalendarGrid: View {
         }.sheet(item: $payment) { FinamiPaymentDetails(payment: $0) }.accessibilityIdentifier("qa.calendar.grid")
     }
     private func eventRow(_ e: FinamiCalendarEvent) -> some View {
-        HStack(alignment: .top) {
-            Image(systemName: e.paid ? "checkmark.circle.fill" : "calendar").foregroundStyle(e.tint)
-            VStack(alignment: .leading, spacing: 3) { Text(e.name).font(.subheadline); Text(e.kind + " · " + (e.paid ? "Сплачено" : e.projected ? "Прогноз" : "Очікує оплати")).font(.caption2).foregroundStyle(.secondary) }
-            Spacer(minLength: 4); Text(show(e.amount,e.currency)).font(.subheadline.weight(.semibold)).monospacedDigit()
-        }
+        let loan = s.db.obligations.first { $0.id == e.paymentID }
+        return FinamiModernPaymentRow(name:e.name,kind:e.kind,date:e.date,currency:e.currency,due:e.amount,total:loan?.target,monthly:loan?.monthly,remaining:loan?.remaining,status:e.paid ? "Сплачено" : e.projected ? "Прогноз" : "Очікує оплати",masked:masked)
     }
 }

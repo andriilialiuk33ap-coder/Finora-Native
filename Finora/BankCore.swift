@@ -21,6 +21,7 @@ struct BankRow: Codable, Identifiable, Hashable {
     var postingKnown: Bool? = nil
     var cardLastFour: String? = nil
     var creditContractSuffix: String? = nil
+    var categoryHint: String? = nil
     var key: String { reference.map { source + ":" + $0 } ?? [source, String(Int64(date.timeIntervalSince1970)), String(signed), note.lowercased().split(whereSeparator: \.isWhitespace).joined(separator: " "), String(fee)].joined(separator: "|") }
 }
 struct BankBatch { var rows: [BankRow] = []; var rejected = 0; var reconciliation: String? = nil; var statementLastFour: String? = nil; var statementIBAN: String? = nil; var opening: Int64? = nil; var closing: Int64? = nil; var statementMasks: [String] = [] }
@@ -36,12 +37,13 @@ func bankSummary(_ text:String,label:String)->Int64? {
     let match=String(clean[range]);let suffix=String(match.dropFirst(label.count)).trimmingCharacters(in:CharacterSet(charactersIn:": "));return bankMinor(suffix)
 }
 enum BankFailure: LocalizedError {
-    case format, unsupported, empty, network(Int), rate, invalidToken
+    case format, unsupported, empty, network(Int), rate, invalidToken, statementMismatch
     var errorDescription: String? {
         switch self {
         case .format: return "Не вдалося прочитати формат. Перевірте файл."
         case .unsupported: return "Формат або валюта рахунку поки не підтримуються."
         case .empty: return "Не знайдено операцій. Перевірте банк, формат і період."
+        case .statementMismatch: return "Рядки або залишки виписки не збігаються. Імпорт зупинено без зміни бази."
         case .network(let code): return "Банк повернув помилку HTTP \(code)."
         case .rate: return "Ліміт API: повторіть запит через 60 секунд."
         case .invalidToken: return "Вкажіть персональний токен monobank."
@@ -189,6 +191,7 @@ func bankCanonicalName(_ raw:String) -> String {
     if ["абанк","abank","акцентбанк"].contains(value){return "abank"}
     if ["отп","otp","otpbank","отпбанк"].contains(value){return "otp"}
     if ["monobank","mono","монобанк"].contains(value){return "mono"}
+    if ["приватбанк","приват24","приват","privatbank","privat24"].contains(value){return "privat"}
     return value
 }
 

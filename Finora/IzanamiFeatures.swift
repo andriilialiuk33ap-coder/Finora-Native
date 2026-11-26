@@ -45,6 +45,12 @@ struct AppearancePreferences: Codable {
     var reportsCategoryLimit: Int? = nil
     // Missing account key preserves the original detailed report. Empty array hides every row.
     var reportsAccountFields: [String: [String]]? = nil
+    var modernAccountGrid: Bool? = nil
+    var modernCompactSpacing: Bool? = nil
+    var modernPaymentIcons: String? = nil
+    var modernPaymentTotal: Bool? = nil
+    var modernPaymentMonthly: Bool? = nil
+    var modernPaymentRemaining: Bool? = nil
 }
 struct IzanamiTheme: Identifiable {
     var id: String { name }
@@ -63,8 +69,8 @@ struct IzanamiTheme: Identifiable {
 struct IzanamiShell: View {
     @EnvironmentObject var s: Store
     var p: AppearancePreferences { s.db.preferences ?? .init() }
-    var preset: FinamiDesign { FinamiDesign(rawValue: p.design ?? "Signature") ?? .signature }
-    var accent: Color { p.design != nil && p.theme == "Preset" ? preset.tint : IzanamiTheme.all.first(where: { $0.name == p.theme })?.color ?? preset.tint }
+    var preset: FinamiDesign { FinamiDesign(rawValue: p.design ?? "Dark Classic") ?? .darkClassic }
+    var accent: Color { (p.design == nil && p.theme == "Crimson") || p.theme == "Preset" ? preset.tint : IzanamiTheme.all.first(where: { $0.name == p.theme })?.color ?? preset.tint }
     var scheme: ColorScheme? { p.mode == "dark" ? .dark : p.mode == "light" ? .light : p.mode == "preset" ? preset.scheme : nil }
     var design: Font.Design { p.font == "rounded" ? .rounded : p.font == "serif" ? .serif : p.font == "monospaced" ? .monospaced : p.font == "preset" ? preset.font : .default }
     var body: some View {
@@ -108,10 +114,31 @@ struct AppearanceView: View {
         })
     }
     @State private var preview: FinamiDesign?
+    private func designRow(_ preset:FinamiDesign)->some View {
+        Button { preview=preset } label: {
+            HStack(alignment:.center,spacing:12) {
+                RoundedRectangle(cornerRadius:12).fill(preset.scheme == .dark ? Color(red:0.12,green:0.13,blue:0.15) : Color(red:0.94,green:0.95,blue:0.97)).overlay { Image(systemName:"creditcard.fill").foregroundStyle(preset.tint) }.frame(width:54,height:48)
+                VStack(alignment:.leading,spacing:4) { Text(preset.rawValue).font(.headline);Text(preset.description).font(.caption).foregroundStyle(.secondary) }
+                Spacer(minLength:4)
+                Image(systemName:s.db.preferences?.design == preset.rawValue ? "checkmark.circle.fill" : "chevron.right").foregroundStyle(.tint)
+            }.frame(minHeight:54)
+        }.buttonStyle(.plain)
+    }
     var body: some View {
         Form {
-            Section("Десять дизайнів · натисни для перегляду") {
-                ForEach(FinamiDesign.allCases) { preset in Button { preview=preset } label: { VStack(alignment:.leading,spacing:8) { FinamiDesignPreview(design:preset); Text(preset.rawValue).font(.headline);Text(preset.description).font(.caption).foregroundStyle(.secondary) } }.buttonStyle(.plain) }
+            Section("Finami Design · нові стилі") {
+                ForEach(FinamiDesign.featured) { preset in designRow(preset) }
+            }
+            Section("Щільність та платежі") {
+                Toggle("Компактна сітка рахунків",isOn:Binding(get:{s.db.preferences?.modernAccountGrid ?? false},set:{binding(\.modernAccountGrid).wrappedValue=$0}))
+                Toggle("Щільніші відступи",isOn:Binding(get:{s.db.preferences?.modernCompactSpacing ?? true},set:{binding(\.modernCompactSpacing).wrappedValue=$0}))
+                Picker("Іконки платежів",selection:Binding(get:{s.db.preferences?.modernPaymentIcons ?? "black"},set:{binding(\.modernPaymentIcons).wrappedValue=$0})) { Text("Чорні · золото").tag("black"); Text("Кольорові").tag("color") }
+                Toggle("Загальна сума кредиту",isOn:Binding(get:{s.db.preferences?.modernPaymentTotal ?? true},set:{binding(\.modernPaymentTotal).wrappedValue=$0}))
+                Toggle("Щомісячний платіж",isOn:Binding(get:{s.db.preferences?.modernPaymentMonthly ?? true},set:{binding(\.modernPaymentMonthly).wrappedValue=$0}))
+                Toggle("Залишок боргу в платежах",isOn:Binding(get:{s.db.preferences?.modernPaymentRemaining ?? false},set:{binding(\.modernPaymentRemaining).wrappedValue=$0}))
+            }
+            Section("Попередні 10 стилів · оновлені") {
+                ForEach(FinamiDesign.allCases.filter{!FinamiDesign.featured.contains($0)}) { preset in designRow(preset) }
             }
             Section("Картки та приватність") {
                 Picker("Шаблон карток",selection:Binding(get:{s.db.preferences?.cardTemplate ?? "За дизайном"},set:{binding(\.cardTemplate).wrappedValue=$0})) {ForEach(FinamiCardTemplate.allCases){Text($0.rawValue).tag($0.rawValue)}}
@@ -296,7 +323,7 @@ struct CustomDashboard: View {
     }
     var body: some View {
         ScrollView {
-            VStack(spacing: 14) {
+            LazyVStack(spacing: s.db.preferences?.modernCompactSpacing != false ? 10 : 16) {
                 MonthControl(date: $date)
                 if items.isEmpty { Panel { Text("Немає видимих блоків"); Button("Налаштувати огляд") { configure = true } } }
                 ForEach(Array(rows.enumerated()), id: \.offset) { entry in
@@ -427,8 +454,10 @@ struct DashboardTile: View {
     @ViewBuilder var accounts: some View {
         let shown = finamiOrderedAccounts(s.db.accounts).filter { $0.hiddenInOverview != true }
         if shown.isEmpty { detail("Немає рахунків. Додай рахунок у вкладці «Рахунки» або увімкни його в налаштуваннях блоку.") }
-        ForEach(shown) { a in
-            FinamiHomeAccountCard(accountID: a.id, date: date, fallbackTint: color, dashboardSize: item.size)
+        if s.db.preferences?.modernAccountGrid == true && !dynamicTypeSize.isAccessibilitySize {
+            FinamiCompactAccountsGrid(accounts:shown,mode:"all",date:date)
+        } else {
+            ForEach(shown) { a in FinamiHomeAccountCard(accountID:a.id,date:date,fallbackTint:color,dashboardSize:item.size) }
         }
     }
     @ViewBuilder var content: some View {
@@ -462,7 +491,16 @@ struct DashboardTile: View {
             else {detail("Немає запланованих платежів")}
         case .subscriptions: paymentSummary(s.upcomingPayments.filter(\.subscription), showRemaining: false)
         case .reminders: value(String((s.db.reminders ?? []).filter{$0.enabled && $0.date > Date()}.count)); detail("Майбутніх нагадувань")
-        case .forecast: if let f = s.db.forecast { amount(s.totalOwnFunds + f.expected - f.reserve - f.planned); detail("Прогнозований залишок") } else { detail("За бажанням") }
+        case .forecast:
+            if let f=s.db.forecast {
+                let snapshot=s.planningSnapshot(f)
+                if let projection=snapshot.projection {
+                    amount(projection.closing); detail("Прогнозований залишок · \(f.days) днів")
+                    if snapshot.unknown > 0 { detail("Прогноз неповний: немає курсу") }
+                    else { metric("Орієнтир на день",projection.safeDaily,.teal) }
+                } else { detail("Перевір параметри прогнозу") }
+            } else { detail("За бажанням") }
+            NavigationLink("Налаштувати прогноз") { FinamiPlanningView() }
         case .uncategorized: value(String(ops.filter{$0.category == "Без категорії"}.count)); detail("Операцій без категорії")
         case .goals: obligationSummary([.goal])
         case .debt: metric("Мені винні", s.db.obligations.filter{$0.kind == .owed}.reduce(0){$0+$1.remaining}, .green); metric("Я винен", s.db.obligations.filter{$0.kind == .owe}.reduce(0){$0+$1.remaining}, .orange)
@@ -497,14 +535,8 @@ struct DashboardTile: View {
             if item.showPaymentNames != false {
                 ForEach(Array(payments.prefix(max(1, min(20, item.categoryCount ?? (compact ? 1 : detailed ? 6 : 3)))))) { p in
                     Button { paymentDetails = p } label: {
-                        HStack(alignment: .firstTextBaseline) {
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(p.name).font(.subheadline).lineLimit(2)
-                                if item.showPaymentDate != false { Text(p.date.formatted(.dateTime.day().month(.wide).locale(Locale(identifier: "uk_UA")))).font(.caption).foregroundStyle(.secondary) }
-                            }
-                            Spacer(minLength: 4)
-                            Text(visible(remainingMode ? (p.remaining ?? p.amount) : p.amount, p.currency)).font(.subheadline.weight(.semibold)).monospacedDigit()
-                        }
+                        let loan = s.db.obligations.first { $0.id == p.id }
+                        FinamiModernPaymentRow(name:p.name,kind:p.kind,date:p.date,currency:p.currency,due:p.amount,total:loan?.target,monthly:loan?.monthly,remaining:p.remaining,status:p.overdue ? "Прострочено" : "Очікує оплати",showDate:item.showPaymentDate != false,showImage:item.showPaymentImage != false,showRemaining:remainingMode,masked:masked)
                     }.buttonStyle(.plain)
                 }
                 if payments.count > (item.categoryCount ?? (compact ? 1 : detailed ? 6 : 3)) { detail("Усього: \(payments.count)") }
@@ -533,33 +565,8 @@ struct DashboardCategoryLine: View {
     }
 }
 
-struct ForecastPreferences: Codable { var expected: Int64 = 0; var planned: Int64 = 0; var reserve: Int64 = 0; var days: Int = 30 }
-struct ForecastView: View {
-    @EnvironmentObject var s: Store
-    @State private var expected = ""; @State private var planned = ""; @State private var reserve = ""; @State private var days = 30
-    var total: Int64 { s.totalOwnFunds }
-    var available: Int64 { total + (cents(expected) ?? 0) - (cents(planned) ?? 0) - (cents(reserve) ?? 0) }
-    var valid: Bool { [expected,planned,reserve].allSatisfy { $0.isEmpty || (cents($0) ?? -1) >= 0 } }
-    var body: some View {
-        Form {
-            Section("Необов’язково") {
-                Text("Заповни тільки потрібні поля. Прогноз не створює фактичних операцій.").font(.caption)
-                FinamiField("Очікуваний дохід, ₴", text: $expected, keyboard: .decimalPad)
-                FinamiField("Майбутні платежі, ₴", text: $planned, keyboard: .decimalPad)
-                FinamiField("Недоторканний резерв, ₴", text: $reserve, keyboard: .decimalPad)
-                Stepper("Горизонт: \(days) днів", value: $days, in: 1...365)
-            }
-            Section("Прогноз") {
-                LabeledContent("Поточний баланс", value: s.visibleMoney(total))
-                LabeledContent("Вільний залишок", value: s.visibleMoney(available))
-                LabeledContent("Бюджет на день", value: s.visibleMoney(max(0,available)/Int64(days)))
-                Text("Оцінка залежить від введених майбутніх доходів та витрат.").font(.caption)
-            }
-            Button("Зберегти прогноз") { s.change { $0.forecast = .init(expected: cents(expected) ?? 0, planned: cents(planned) ?? 0, reserve: cents(reserve) ?? 0, days: days) } }.disabled(!valid)
-            Button("Очистити прогноз", role: .destructive) { s.change { $0.forecast = nil }; expected = ""; planned = ""; reserve = ""; days = 30 }
-        }.navigationTitle("Фінансовий прогноз").onAppear { if let f = s.db.forecast { expected = amountText(f.expected); planned = amountText(f.planned); reserve = amountText(f.reserve); days = f.days } }
-    }
-}
+struct ForecastPreferences: Codable { var expected: Int64 = 0; var planned: Int64 = 0; var reserve: Int64 = 0; var days: Int = 30; var daily: Int64? = nil; var incomeDate: Date? = nil; var includeSchedule: Bool? = nil }
+struct ForecastView: View { var body: some View { FinamiPlanningView() } }
 enum ReminderRepeat: String, Codable, CaseIterable { case once = "Один раз", daily = "Щодня", weekly = "Щотижня", monthly = "Щомісяця", yearly = "Щороку" }
 struct PersonalReminder: Codable, Identifiable {
     var id = UUID().uuidString
