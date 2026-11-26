@@ -1,6 +1,10 @@
 name: Test Finami on iOS Simulator
 on:
   workflow_dispatch:
+  push:
+    paths: ["Finora/**", "Tests/**", "UITests/**", "project.yml", ".github/workflows/simulator.yml"]
+  pull_request:
+    paths: ["Finora/**", "Tests/**", "UITests/**", "project.yml", ".github/workflows/simulator.yml"]
 permissions:
   contents: read
 jobs:
@@ -9,6 +13,8 @@ jobs:
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
+      - name: Test encrypted backup on Apple platform
+        run: bash Tests/check-encryption-macos.sh
       - name: Generate project
         run: |
           command -v xcodegen || brew install xcodegen
@@ -33,6 +39,10 @@ jobs:
           xcrun simctl launch "$SIM_DEVICE" ua.finora.personal | tee simulator-results/launch.txt
           sleep 5
           xcrun simctl io "$SIM_DEVICE" screenshot simulator-results/home.png
+      - name: Execute interaction and OCR regression tests
+        run: |
+          set -o pipefail
+          xcodebuild test -project Finora.xcodeproj -scheme Finora -configuration Debug -destination "id=$SIM_DEVICE" -derivedDataPath simulator-build -parallel-testing-enabled NO -resultBundlePath simulator-results/FinamiQA.xcresult CODE_SIGNING_ALLOWED=NO | tee simulator-results/ui-tests.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
