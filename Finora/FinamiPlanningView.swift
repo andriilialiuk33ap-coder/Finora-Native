@@ -45,7 +45,10 @@ struct FinamiPlanSnapshot {
 // Uses actual own funds, never available credit, and existing schedule projections.
 struct FinamiPlanningView: View {
     @EnvironmentObject private var s: Store
-    @State private var expected = "", planned = "", reserve = "", daily = ""
+    @State private var expected = ""
+    @State private var planned = ""
+    @State private var reserve = ""
+    @State private var daily = ""
     @State private var days = 30
     @State private var payday = Date()
     @State private var usePayday = false

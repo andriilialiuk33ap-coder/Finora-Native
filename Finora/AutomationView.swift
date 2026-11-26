@@ -186,7 +186,7 @@ struct AutomationCenter: View {
             }
         }
     }
-    private var connectionSection: some View {
+    @ViewBuilder private var connectionSection: some View {
         Section("Швидкий доступ до планування") {
             Text("У Командах створи дію «Відкрити URL» з адресою finami-widget://planning. Вона відкриває прогноз після розблокування Finami.").font(.caption)
             Button("Копіювати адресу") {UIPasteboard.general.string="finami-widget://planning"}
