@@ -53,6 +53,7 @@ struct AppearancePreferences: Codable {
     var modernPaymentRemaining: Bool? = nil
     var designLayout: String? = nil
     var designDashboard: String? = nil
+    var simpleHome: Bool? = nil
     var designAccent: String? = nil
     var designRadius: Int? = nil
     var designLowEffects: Bool? = nil
@@ -136,7 +137,13 @@ struct AppearanceView: View {
     }
     var body: some View {
         Form {
-            Section("6.1 · Design Revolution") {
+            Section("Головний екран") {
+                Picker("Компонування",selection:Binding(get:{s.db.preferences?.simpleHome == true},set:{v in s.changeAppearance{$0.simpleHome=v}})) { Text("Поточна").tag(false);Text("Спрощена").tag(true) }.pickerStyle(.segmented).accessibilityIdentifier("qa.home.layout")
+                Text("Поточні блоки та їх порядок збережено. Перемикання не змінює фінанси.").font(.caption).foregroundStyle(.secondary)
+                NavigationLink("Налаштувати поточні блоки") { DashboardSettings() }
+            }
+            Section("6.2 · Finami Design") {
+                ForEach(FinamiDesign.simplicity) { preset in designRow(preset) }
                 ForEach(FinamiDesign.revolution) { preset in designRow(preset) }
                 NavigationLink("Design Lab · власні стилі") { FinamiDesignLab() }
             }
@@ -152,7 +159,7 @@ struct AppearanceView: View {
                 Toggle("Залишок боргу в платежах",isOn:Binding(get:{s.db.preferences?.modernPaymentRemaining ?? false},set:{binding(\.modernPaymentRemaining).wrappedValue=$0}))
             }
             Section("Попередні 10 стилів") {
-                ForEach(FinamiDesign.allCases.filter{!FinamiDesign.featured.contains($0) && !FinamiDesign.revolution.contains($0)}) { preset in designRow(preset) }
+                ForEach(FinamiDesign.allCases.filter{!FinamiDesign.featured.contains($0) && !FinamiDesign.revolution.contains($0) && !FinamiDesign.simplicity.contains($0)}) { preset in designRow(preset) }
             }
             Section("Картки та приватність") {
                 Picker("Шаблон карток",selection:Binding(get:{s.db.preferences?.cardTemplate ?? "За дизайном"},set:{binding(\.cardTemplate).wrappedValue=$0})) {ForEach(FinamiCardTemplate.allCases){Text($0.rawValue).tag($0.rawValue)}}
@@ -173,7 +180,7 @@ struct AppearanceView: View {
             Toggle("Великі іконки", isOn: binding(\.largeIcons))
             Toggle("Яскраве підсвічування", isOn: binding(\.glow))
             Toggle("Кольорові акценти", isOn: Binding(get:{s.db.preferences?.colorfulDashboard ?? true},set:{binding(\.colorfulDashboard).wrappedValue=$0}))
-        }.navigationTitle("Студія дизайну").sheet(item:$preview) { selected in NavigationStack { VStack(spacing:18) { FinamiDesignPreview(design:selected); Text(selected.description).foregroundStyle(.secondary); Button("Застосувати дизайн") { s.changeAppearance { p in p.applyFinamiDesign(selected.rawValue) };preview=nil }.buttonStyle(.borderedProminent);Spacer() }.padding().navigationTitle(selected.rawValue).toolbar{Button("Скасувати"){preview=nil}} } }
+        }.navigationTitle("Finami Design").sheet(item:$preview) { selected in NavigationStack { VStack(spacing:18) { FinamiDesignPreview(design:selected); Text(selected.description).foregroundStyle(.secondary); Button("Застосувати дизайн") { s.changeAppearance { p in p.applyFinamiDesign(selected.rawValue) };preview=nil }.buttonStyle(.borderedProminent);Spacer() }.padding().navigationTitle(selected.rawValue).toolbar{Button("Скасувати"){preview=nil}} } }
     }
 }
 enum OperationSort: String, CaseIterable {
@@ -364,7 +371,7 @@ struct CustomDashboard: View {
                 }
             }.padding()
         }.background(finamiScreenBackground(s.db.preferences)).navigationTitle(s.db.preferences?.homeTitle ?? "Головна")
-            .toolbar { Button { s.changeAppearance { p in p.hideAmounts = !(p.hideAmounts ?? false) } } label: { Image(systemName:s.privateAmounts ? "eye.slash" : "eye") }.accessibilityLabel("Приховати або показати суми"); Button { reorder = true } label: { Image(systemName: "arrow.up.arrow.down") }.accessibilityLabel("Змінити порядок блоків"); Button { configure = true } label: { Image(systemName: "slider.horizontal.3").font(.title2) }.accessibilityLabel("Налаштувати блоки") }
+            .toolbar { NavigationLink { FinamiGlobalSearch() } label: { Image(systemName:"magnifyingglass") }.accessibilityLabel("Пошук Finami"); Button { s.changeAppearance { p in p.hideAmounts = !(p.hideAmounts ?? false) } } label: { Image(systemName:s.privateAmounts ? "eye.slash" : "eye") }.accessibilityLabel("Приховати або показати суми"); Button { reorder = true } label: { Image(systemName: "arrow.up.arrow.down") }.accessibilityLabel("Змінити порядок блоків"); Button { configure = true } label: { Image(systemName: "slider.horizontal.3").font(.title2) }.accessibilityLabel("Налаштувати блоки") }
             .safeAreaInset(edge: .bottom) {
                 HStack { Button { add = true } label: { Label("Додати операцію", systemImage: "plus.circle.fill").font(.headline).frame(maxWidth: .infinity).padding(.vertical, 5).frame(minHeight:44) }.buttonStyle(.borderedProminent); Button { voice=true } label:{Image(systemName:"mic.fill").frame(minWidth:44,minHeight:44)}.buttonStyle(.bordered).accessibilityLabel("Голосовий запис"); Button { scan = true } label: { Image(systemName: "doc.viewfinder").frame(minWidth:44,minHeight:44) }.buttonStyle(.bordered).accessibilityLabel("Імпорт зі скриншота") }.padding(.horizontal).padding(.vertical,7).background(Color(uiColor:.systemGroupedBackground))
             }.sheet(isPresented: $add) { OpEditor(original: Operation(category: "Без категорії", account: s.db.accounts.first?.id ?? cash)) }

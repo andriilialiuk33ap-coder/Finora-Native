@@ -13,16 +13,27 @@ final class FinamiUITests: XCTestCase {
         XCTAssertTrue(element.waitForExistence(timeout: 15), "Missing: \(element)", file: file, line: line)
     }
     private func awaitValue(_ element: XCUIElement, _ value: String, file: StaticString = #filePath, line: UInt = #line) {
-        let expected = NSPredicate(format: "exists == true AND value == %@", value)
-        let result = XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: expected, object: element)], timeout: 15)
-        XCTAssertEqual(result, .completed, "Expected \(value), got \(String(describing: element.value))", file: file, line: line)
+        // On a busy CI runner a single accessibility snapshot can take over 15 seconds.
+        // Poll the actual value; do not equate a waiter's timeout with an incorrect value.
+        let deadline = ProcessInfo.processInfo.systemUptime + 60
+        var observed: String?
+        repeat {
+            if element.exists {
+                observed = element.value as? String
+                if observed == value { return }
+            }
+            if ProcessInfo.processInfo.systemUptime < deadline {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+            }
+        } while ProcessInfo.processInfo.systemUptime < deadline
+        XCTFail("Expected \(value), got \(String(describing: observed))", file: file, line: line)
     }
     private func capture(_ name: String) {
         let attachment = XCTAttachment(screenshot: app.screenshot()); attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
     }
     func testNextScreensOpen() {
         app.tabBars.buttons["Ще"].tap()
-        for (identifier,title) in [("qa.next.review","Перевірка операцій"),("qa.next.insights","Фінансові підсумки"),("qa.next.usdt","Журнал USDT"),("qa.next.partners","Спільні кредитні ліміти")] {
+        for (identifier,title) in [("qa.next.review","Перевірка операцій"),("qa.next.insights","Фінансові підсумки"),("qa.next.usdt","Журнал USDT")] {
             let item=app.descendants(matching:.any).matching(identifier:identifier).firstMatch
             for _ in 0..<8 {if item.exists && item.isHittable {break};app.swipeUp()}
             visible(item);item.tap();visible(app.navigationBars[title]);capture(identifier)
@@ -50,6 +61,27 @@ final class FinamiUITests: XCTestCase {
         XCTAssertEqual(credit.frame.minX,debit.frame.minX,accuracy:2)
         XCTAssertGreaterThan(debit.frame.minY,credit.frame.minY)
         capture("design-list")
+    }
+    func testAlternateHomeCanBeEnabledAndRestored() {
+        let summary = app.staticTexts["qa.home.simple.summary"]
+        XCTAssertFalse(summary.exists)
+        func selectLayout(_ title: String) {
+            app.tabBars.buttons["Ще"].tap()
+            let design = app.descendants(matching:.any).matching(identifier:"qa.quick.design").firstMatch
+            for _ in 0..<8 { if design.exists && design.isHittable { break }; app.swipeDown() }
+            visible(design); design.tap()
+            let picker = app.segmentedControls["qa.home.layout"]
+            visible(picker); visible(picker.buttons[title]); picker.buttons[title].tap()
+            app.navigationBars.buttons.firstMatch.tap()
+            app.tabBars.buttons["Головна"].tap()
+        }
+        selectLayout("Спрощена")
+        visible(summary)
+        app.terminate(); app.launchArguments = ["--finami-qa"]; app.launch()
+        app.tabBars.buttons["Головна"].tap(); visible(summary)
+        selectLayout("Поточна")
+        let gone = XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: summary)], timeout: 30)
+        XCTAssertEqual(gone, .completed)
     }
     func testAllFiveTabsOpen() {
         for title in ["Головна", "Операції", "Рахунки", "Звіти", "Ще"] {

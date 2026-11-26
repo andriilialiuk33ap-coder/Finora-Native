@@ -768,14 +768,14 @@ struct Root: View {
         }.onAppear(perform: unlock)
       } else {
         TabView(selection: $tab) {
-          NavigationStack { CustomDashboard() }.tabItem { Label(store.db.preferences?.homeTitle ?? "Головна", systemImage: "house.fill") }.tag(0)
-          NavigationStack { Operations() }.tabItem {
+          NavigationStack { if store.db.preferences?.simpleHome == true { FinamiSimpleHome() } else { CustomDashboard() } }.tabItem { Label(store.db.preferences?.homeTitle ?? "Головна", systemImage: "house.fill") }.tag(0)
+          NavigationStack { Operations().toolbar { NavigationLink { FinamiGlobalSearch() } label: { Image(systemName:"magnifyingglass") }.accessibilityLabel("Пошук Finami") } }.tabItem {
             Label("Операції", systemImage: "arrow.left.arrow.right")
           }.tag(1)
-          NavigationStack { Accounts() }.tabItem {
+          NavigationStack { Accounts().toolbar { NavigationLink { FinamiGlobalSearch() } label: { Image(systemName:"magnifyingglass") }.accessibilityLabel("Пошук Finami") } }.tabItem {
             Label("Рахунки", systemImage: "wallet.pass.fill")
           }.tag(2)
-          NavigationStack { if store.privateAmounts { FinamiPrivacyNotice() } else { Reports() } }.tabItem { Label("Звіти", systemImage: "chart.bar.xaxis") }.tag(3)
+          NavigationStack { if store.privateAmounts { FinamiPrivacyNotice() } else { Reports().toolbar { NavigationLink { FinamiGlobalSearch() } label: { Image(systemName:"magnifyingglass") }.accessibilityLabel("Пошук Finami") } } }.tabItem { Label("Звіти", systemImage: "chart.bar.xaxis") }.tag(3)
           NavigationStack { More() }.tabItem { Label("Ще", systemImage: "ellipsis.circle") }.tag(4)
         }.task(id: phase) {
           guard phase == .active else {return}
@@ -1167,12 +1167,21 @@ struct More: View {
         Text("Особисті фінанси.").font(.subheadline).foregroundStyle(.secondary)
       }.frame(maxWidth: .infinity, alignment: .leading).padding(18).modifier(FinamiCardStyle(tint: .teal))
       NavigationLink { FinamiGlobalSearch() } label: { FinamiMenuLabel(title:"Пошук Finami",icon:"magnifyingglass",color:.teal) }.buttonStyle(.plain)
+      VStack(spacing: 8) {
+        HStack(alignment:.top,spacing:8) {
+          NavigationLink { Categories() } label: { FinamiQuickMenuTile(title:"Категорії", icon:"tag.fill") }.accessibilityIdentifier("qa.quick.categories")
+          NavigationLink { AppearanceView() } label: { FinamiQuickMenuTile(title:"Finami Design", icon:"paintpalette.fill") }.accessibilityIdentifier("qa.quick.design")
+        }
+        HStack(alignment:.top,spacing:8) {
+          NavigationLink { CalendarView() } label: { FinamiQuickMenuTile(title:"Платежі", icon:"calendar") }
+          NavigationLink { FinamiBalanceView(initialMode:"anchor") } label: { FinamiQuickMenuTile(title:"Звірити баланс", icon:"checkmark.circle") }.accessibilityIdentifier("qa.quick.reconcile")
+        }
+      }.buttonStyle(.plain)
       FinamiMenuGroup("Finami Next") {
         NavigationLink { FinamiNextReviewView() } label: { FinamiMenuLabel(title:"Центр перевірки операцій",icon:"checkmark.shield",color:.orange) }.accessibilityIdentifier("qa.next.review")
         NavigationLink { FinamiNextInsightsView() } label: { FinamiMenuLabel(title:"Фінансові підсумки",icon:"chart.bar.xaxis",color:.teal) }.accessibilityIdentifier("qa.next.insights")
         NavigationLink { FinamiExchangeDiaryView() } label: { FinamiMenuLabel(title:"Журнал USDT",icon:"arrow.left.arrow.right",color:.green) }.accessibilityIdentifier("qa.next.usdt")
-        NavigationLink { FinamiPartnerCalculatorView() } label: { FinamiMenuLabel(title:"Партнерські кредитні ліміти",icon:"creditcard",color:.purple) }.accessibilityIdentifier("qa.next.partners")
-      }
+        }
       FinamiMenuGroup("Планування") {
         NavigationLink { FinamiPlanningView() } label: { FinamiMenuLabel(title: "Розумне планування", icon: "chart.line.uptrend.xyaxis", color: .teal) }.accessibilityIdentifier("qa.planning.open")
         NavigationLink { FinamiCreditCenter() } label: { FinamiMenuLabel(title: "Кредитний центр", icon: "creditcard.fill", color: .orange) }
@@ -1210,17 +1219,11 @@ struct More: View {
         NavigationLink { FinamiReconciliation() } label: { FinamiMenuLabel(title: "Розумна звірка рахунків", icon: "checkmark.circle.trianglebadge.exclamationmark", color: .cyan) }
         NavigationLink { AutomationCenter() } label: { FinamiMenuLabel(title: "Автоматизація · Apple Pay / SMS (\(s.capturePending.count))", icon: "bolt.fill", color: .orange) }
       }
-      FinamiMenuGroup("Персоналізація") {
+      FinamiMenuGroup("Система") {
         NavigationLink { FinamiWidgetsSettings() } label: { FinamiMenuLabel(title: "Віджети iPhone", icon: "square.grid.2x2", color: .teal) }
         NavigationLink { FinamiDiagnostics() } label: { FinamiMenuLabel(title: "Діагностика Finami", icon: "checkmark.shield.fill", color: .green) }.accessibilityIdentifier("qa.smart.diagnostics")
         NavigationLink { FinamiHelp() } label: { FinamiMenuLabel(title: "Допомога та інструкції", icon: "book.fill", color: .blue) }
         NavigationLink { DashboardSettings() } label: { FinamiMenuLabel(title: "Блоки огляду", icon: "square.grid.2x2.fill", color: .orange) }
-        NavigationLink { AppearanceView() } label: { FinamiMenuLabel(title: "Студія дизайну", icon: "paintpalette.fill", color: .pink) }
-        NavigationLink {
-          Categories()
-        } label: {
-          FinamiMenuLabel(title: "Категорії", icon: "tag.fill", color: .teal)
-        }
         NavigationLink {
           Settings()
         } label: {
@@ -1531,14 +1534,14 @@ struct Categories: View {
         }
       }.onMove { from,to in s.change { d in if income { d.incomeCategories.move(fromOffsets:from,toOffset:to) } else { d.expenseCategories.move(fromOffsets:from,toOffset:to) } } }
     }.navigationTitle("Категорії").toolbar { EditButton(); Button { editing=nil;name="";parent="";adding=true } label:{Image(systemName:"plus.circle.fill")} }
-      .sheet(isPresented:$adding) { NavigationStack { Form { TextField("Іконка та назва",text:$name); if !income { TextField("Група (необов’язково)",text:$parent) }; Button("Зберегти") { save() }.disabled(name.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty || (cats.contains(name.trimmingCharacters(in:.whitespacesAndNewlines)) && editing != name.trimmingCharacters(in:.whitespacesAndNewlines))) }.navigationTitle(editing == nil ? "Нова категорія" : "Редагування").toolbar { Button("Скасувати") { adding=false } } } }
+      .sheet(isPresented:$adding) { NavigationStack { Form { TextField("Іконка та назва",text:$name); NavigationLink { FinamiCategoryIconPicker(name:$name) } label: { Label("Обрати іконку",systemImage:"face.smiling") }; if !income { TextField("Група (необов’язково)",text:$parent) }; Button("Зберегти") { save() }.disabled(name.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty || (cats.contains(name.trimmingCharacters(in:.whitespacesAndNewlines)) && editing != name.trimmingCharacters(in:.whitespacesAndNewlines))) }.navigationTitle(editing == nil ? "Нова категорія" : "Редагування").toolbar { Button("Скасувати") { adding=false } } } }
       .confirmationDialog("Перенести операції перед видаленням",isPresented:Binding(get:{deleting != nil},set:{if !$0 {deleting=nil}}),titleVisibility:.visible) { ForEach(cats.filter{$0 != deleting},id:\.self) { c in Button("Перенести в «"+c+"»") { if let old=deleting { replace(old,with:c,remove:true) };deleting=nil } }; Button("Скасувати",role:.cancel){deleting=nil} } message:{Text("Операції не видаляються. Бюджет і правила категорії буде перенесено.")}
   }
   func toggle(_ c:String) { s.change { d in var list=income ? d.hiddenIncomeCategories ?? [] : d.hiddenExpenseCategories ?? []; if list.contains(c) { list.removeAll{$0==c} } else { list.append(c) }; if income {d.hiddenIncomeCategories=list} else {d.hiddenExpenseCategories=list} } }
   func save() { let c=name.trimmingCharacters(in:.whitespacesAndNewlines); guard !c.isEmpty, !cats.contains(c) || editing==c else{return}; if let old=editing,old != c { replace(old,with:c,remove:false) } else if editing==nil {s.change{d in if income{d.incomeCategories.append(c)}else{d.expenseCategories.append(c)}}}; if !income {s.change{d in var groups=d.categoryParents ?? [:];groups[c]=parent.isEmpty ? nil : parent;d.categoryParents=groups}};adding=false }
   func replace(_ old:String,with new:String,remove:Bool) { s.change { d in
-    if income { d.incomeCategories.removeAll{$0==old};if !remove{d.incomeCategories.append(new)};d.hiddenIncomeCategories?.removeAll{$0==old} }
-    else {d.expenseCategories.removeAll{$0==old};if !remove{d.expenseCategories.append(new)};d.hiddenExpenseCategories?.removeAll{$0==old};d.categoryParents?.removeValue(forKey:old);if let limit=d.limits.removeValue(forKey:old){d.limits[new,default:0]+=limit} }
+    if income { d.incomeCategories.removeAll{$0==old};if !remove{d.incomeCategories.append(new)};if !remove, d.hiddenIncomeCategories?.contains(old)==true {d.hiddenIncomeCategories?.append(new)};d.hiddenIncomeCategories?.removeAll{$0==old} }
+    else {d.expenseCategories.removeAll{$0==old};if !remove{d.expenseCategories.append(new)};if !remove, d.hiddenExpenseCategories?.contains(old)==true {d.hiddenExpenseCategories?.append(new)};d.hiddenExpenseCategories?.removeAll{$0==old};d.categoryParents?.removeValue(forKey:old);if let limit=d.limits.removeValue(forKey:old){d.limits[new,default:0]+=limit} }
     for i in d.operations.indices where d.operations[i].category==old && (income ? d.operations[i].kind == .income : [.expense,.refund].contains(d.operations[i].kind)) {d.operations[i].category=new}
     if var rules=d.merchantRules {for key in Array(rules.keys) where rules[key]==old && (income ? key.hasPrefix("income:") : key.hasPrefix("expense:")){rules[key]=new};d.merchantRules=rules}
     if !income, var items=d.dashboard {for i in items.indices {items[i].categorySelection=items[i].categorySelection?.map{$0==old ? new : $0}};d.dashboard=items}

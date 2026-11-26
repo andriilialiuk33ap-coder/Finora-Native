@@ -108,8 +108,8 @@ struct FinamiHomeAccountCard: View {
     var dashboardSize: DashboardSize? = nil
     @State private var route: Route?
     private enum Route: Identifiable {
-        case settings, history, edit(Account), operation(Operation)
-        var id: String { switch self { case .settings: return "settings"; case .history: return "history"; case .edit: return "edit"; case .operation: return "operation" } }
+        case settings, history, reconcile, edit(Account), operation(Operation)
+        var id: String { switch self { case .settings: return "settings"; case .history: return "history"; case .reconcile: return "reconcile"; case .edit: return "edit"; case .operation: return "operation" } }
     }
     var body: some View {
         if let a = s.db.accounts.first(where: { $0.id == accountID }) {
@@ -127,6 +127,7 @@ struct FinamiHomeAccountCard: View {
                     switch route {
                     case .settings: NavigationStack { FinamiHomeAccountSettings(accountID: a.id, closeButton: true) }
                     case .history: NavigationStack { HomeAccountHistory(accountID: a.id, blockMasked: blockMasked) }
+                    case .reconcile: NavigationStack { FinamiBalanceView(initialMode:"anchor",accountID:a.id).toolbar { ToolbarItem(placement:.cancellationAction) { Button("Готово") { self.route=nil } } } }
                     case .edit(let account): AccountEditor(a: account)
                     case .operation(let operation): OpEditor(original: operation)
                     }
@@ -155,6 +156,7 @@ struct FinamiHomeAccountCard: View {
             Menu {
                 Button { route = .settings } label: { Label("Оформлення картки", systemImage: "paintpalette") }
                 Button { route = .history } label: { Label("Історія операцій", systemImage: "clock") }
+                if a.code == "UAH" { Button { route = .reconcile } label: { Label("Звірити баланс",systemImage:"checkmark.circle") } }
                 Button { route = .edit(a) } label: { Label("Редагувати рахунок / залишок", systemImage: "pencil") }
                 Button { s.change { d in if let i = d.accounts.firstIndex(where: { $0.id == a.id }) { var o = d.accounts[i].cardOptions ?? .init(); o.pinned = !(o.pinned ?? false); d.accounts[i].cardOptions = o } } } label: { Label(a.cardOptions?.pinned == true ? "Відкріпити" : "Закріпити зверху", systemImage: "pin") }
                 Button { s.change { d in if let i = d.accounts.firstIndex(where: { $0.id == a.id }) { if onAccountsScreen { d.accounts[i].hiddenInAccounts = true } else { d.accounts[i].hiddenInOverview = true } } } } label: { Label(onAccountsScreen ? "Приховати у рахунках" : "Приховати на головній", systemImage: "eye.slash") }
@@ -178,6 +180,7 @@ struct FinamiHomeAccountCard: View {
                 }
             }
             if a.isCredit && mode != "own" { creditFields(a, fields: fields, right: right, style: style) }
+            if a.code == "UAH" && dashboardSize != .small { Button { route = .reconcile } label: { Label("Звірити баланс",systemImage:"checkmark.circle").font(.subheadline).frame(minHeight:44) }.buttonStyle(.plain).foregroundStyle(tint) }
             activityFields(a, fields: fields, right: right, activity: activity, style: style)
             if fields.contains("actions") && right != .actions { quickActions(a, vertical: dynamicTypeSize.isAccessibilitySize) }
         }
@@ -436,9 +439,10 @@ struct FinamiCompactAccountsGrid: View {
     var mode: String
     var date: Date
     var onAccountsScreen = false
+    var forceList = false
     @State private var selected: Account?
     private var p: AppearancePreferences { s.db.preferences ?? .init() }
-    private var list: Bool { p.finamiLayout == "list" || dynamicTypeSize.isAccessibilitySize }
+    private var list: Bool { forceList || p.finamiLayout == "list" || dynamicTypeSize.isAccessibilitySize }
     private func isHidden(_ a: Account, field: String?) -> Bool {
         masked || s.privateAmounts || a.hideAmounts == true || (onAccountsScreen && (field == "own" ? p.accountsHideOwn == true : p.accountsHideCredit == true))
     }

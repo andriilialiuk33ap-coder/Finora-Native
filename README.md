@@ -1,3 +1,7 @@
+# Finami 6.2 Next · Simplicity
+
+[Зміни 6.2 та перевірки](FINAMI-6.2-UK.md)
+
 # Finami 6.0.1 — Next Preview (Build 39)
 
 Передрелізний інтегрований зріз після 5.4. Нові можливості, інструкції та відомі обмеження: [FINAMI-6.0-PREVIEW-UK.md](FINAMI-6.0-PREVIEW-UK.md). Не є підтвердженим стабільним релізом.

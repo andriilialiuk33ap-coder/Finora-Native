@@ -11,6 +11,8 @@ enum FinamiDesign: String, CaseIterable, Identifiable {
     case signature = "Signature", pure = "Pure", aurora = "Aurora", canvas = "Canvas", obsidian = "Obsidian", pulse = "Pulse", nord = "Nord", rose = "Rose", graphite = "Graphite", ocean = "Ocean"
     case darkClassic = "Dark Classic", graphiteGlass = "Graphite Glass", premiumNeon = "Premium Neon", cleanLight = "Clean Light"
     case blackTitanium = "Black Titanium", digitalBank = "Digital Bank", compactPro = "Compact Pro", liquidGlass = "Liquid Glass", emeraldAnalytics = "Emerald Analytics", whiteStudio = "White Studio"
+    case midnightBlue = "Midnight Blue", amethyst = "Amethyst", warmSand = "Warm Sand", carbonRed = "Carbon Red", nordicWhite = "Nordic White"
+    static let simplicity: [Self] = [.midnightBlue,.amethyst,.warmSand,.carbonRed,.nordicWhite]
     static let revolution: [Self] = [.blackTitanium,.digitalBank,.compactPro,.liquidGlass,.emeraldAnalytics,.whiteStudio]
     static let featured: [Self] = [.darkClassic,.graphiteGlass,.premiumNeon,.cleanLight]
     var id: String { rawValue }
@@ -32,15 +34,25 @@ enum FinamiDesign: String, CaseIterable, Identifiable {
         case .digitalBank,.liquidGlass:return Color(red:0.49,green:0.69,blue:0.90)
         case .emeraldAnalytics:return Color(red:0.36,green:0.76,blue:0.57)
         case .whiteStudio:return Color(red:0.18,green:0.18,blue:0.20)
+        case .midnightBlue:return Color(red:0.53,green:0.69,blue:0.99)
+        case .amethyst:return Color(red:0.76,green:0.64,blue:0.96)
+        case .warmSand:return Color(red:0.48,green:0.31,blue:0.16)
+        case .carbonRed:return Color(red:0.96,green:0.46,blue:0.48)
+        case .nordicWhite:return Color(red:0.18,green:0.34,blue:0.60)
         }
     }
     var corner: CGFloat {
-        switch self { case .pure,.cleanLight,.whiteStudio: return 16; case .canvas,.rose: return 24; case .pulse,.nord,.graphite,.compactPro: return 14; case .obsidian,.darkClassic,.blackTitanium: return 18; case .graphiteGlass,.liquidGlass: return 22; case .premiumNeon: return 20; default: return 20 }
+        switch self { case .pure,.cleanLight,.whiteStudio: return 16; case .canvas,.rose: return 24; case .pulse,.nord,.graphite,.compactPro: return 14; case .obsidian,.darkClassic,.blackTitanium: return 18; case .graphiteGlass,.liquidGlass: return 22; case .premiumNeon,.midnightBlue: return 20; case .warmSand,.amethyst: return 24; case .carbonRed,.nordicWhite: return 14; default: return 20 }
     }
-    var font: Font.Design { self == .canvas || self == .rose ? .rounded : .default }
-    var scheme: ColorScheme? { switch self { case .signature,.aurora,.obsidian,.graphite,.ocean,.darkClassic,.graphiteGlass,.premiumNeon,.blackTitanium,.digitalBank,.compactPro,.liquidGlass,.emeraldAnalytics:return .dark; default:return .light } }
+    var font: Font.Design { self == .canvas || self == .rose || self == .warmSand ? .rounded : .default }
+    var scheme: ColorScheme? { switch self { case .signature,.aurora,.obsidian,.graphite,.ocean,.darkClassic,.graphiteGlass,.premiumNeon,.blackTitanium,.digitalBank,.compactPro,.liquidGlass,.emeraldAnalytics,.midnightBlue,.amethyst,.carbonRed:return .dark; default:return .light } }
     var description: String {
         switch self {
+        case .midnightBlue:return "Нічний синій · кобальтовий акцент"
+        case .amethyst:return "Фіолетові поверхні · м’які лінії"
+        case .warmSand:return "Теплий пісочний · природні відтінки"
+        case .carbonRed:return "Карбон · червоні акценти"
+        case .nordicWhite:return "Холодний білий · синя типографіка"
         case .blackTitanium:return "Матовий чорний · рівна сітка · золото"
         case .digitalBank:return "Банківські картки · розширені показники"
         case .compactPro:return "Щільний список · мінімум ефектів"
@@ -83,14 +95,14 @@ struct FinamiCardStyle: ViewModifier {
         let accent = finamiDesignAccent(s.db.preferences?.designAccent) ?? (design.monochrome && style == .automatic ? design.tint : tint)
         let base = finamiDesignSurface(design, scheme: scheme)
         let glass = style == .glass || (style == .automatic && [.aurora,.graphiteGlass,.liquidGlass].contains(design))
-        let gradient = [.gradient,.premium,.bank,.illustrated].contains(style) || (style == .automatic && [.signature,.pulse,.ocean,.graphiteGlass,.digitalBank,.emeraldAnalytics].contains(design))
+        let gradient = [.gradient,.premium,.bank,.illustrated].contains(style) || (style == .automatic && [.signature,.pulse,.ocean,.graphiteGlass,.digitalBank,.emeraldAnalytics,.midnightBlue,.amethyst].contains(design))
         let neon = style == .neon || (style == .automatic && design == .premiumNeon)
         content.background {
             ZStack(alignment:.leading) {
                 RoundedRectangle(cornerRadius:radius).fill(base)
                 if glass && !reduceTransparency && !economical && (style == .glass || design == .liquidGlass) { RoundedRectangle(cornerRadius:radius).fill(.regularMaterial) }
                 if !economical && (gradient || glass) { RoundedRectangle(cornerRadius:radius).fill(LinearGradient(colors:[accent.opacity(0.12),accent.opacity(0.015)],startPoint:.topLeading,endPoint:.bottomTrailing)) }
-                else if style == .soft || (style == .automatic && [.canvas,.rose,.nord].contains(design)) { RoundedRectangle(cornerRadius:radius).fill(accent.opacity(0.07)) }
+                else if style == .soft || (style == .automatic && [.canvas,.rose,.nord,.warmSand,.nordicWhite].contains(design)) { RoundedRectangle(cornerRadius:radius).fill(accent.opacity(0.07)) }
                 if style == .stripe { Capsule().fill(accent).frame(width:3).padding(.vertical,10) }
             }
         }.clipShape(RoundedRectangle(cornerRadius:radius))

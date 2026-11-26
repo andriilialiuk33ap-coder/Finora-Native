@@ -1,7 +1,7 @@
 import Foundation
 
 enum FinamiBuildInfo {
-    static let edition = "Next · Balance Repair"
+    static let edition = "Next · Simplicity"
     static var version: String {
         let b = Bundle.main
         let version = b.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"

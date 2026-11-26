@@ -12,8 +12,17 @@ func finamiDesignAccent(_ key: String?) -> Color? {
     }
 }
 func finamiDesignSurface(_ design: FinamiDesign, scheme: ColorScheme) -> Color {
-    guard scheme == .dark else { return Color(uiColor: .secondarySystemGroupedBackground) }
+    guard scheme == .dark else {
+        switch design {
+        case .warmSand: return Color(red:0.99,green:0.96,blue:0.91)
+        case .nordicWhite: return .white
+        default: return Color(uiColor: .secondarySystemGroupedBackground)
+        }
+    }
     switch design {
+    case .midnightBlue: return Color(red:0.09,green:0.15,blue:0.25)
+    case .amethyst: return Color(red:0.16,green:0.12,blue:0.21)
+    case .carbonRed: return Color(red:0.125,green:0.12,blue:0.13)
     case .blackTitanium,.compactPro,.darkClassic,.obsidian,.graphite: return Color(red:0.105,green:0.105,blue:0.115)
     case .liquidGlass: return Color(red:0.14,green:0.20,blue:0.29)
     case .digitalBank: return Color(red:0.12,green:0.15,blue:0.21)
@@ -28,12 +37,20 @@ struct FinamiScreenBackground: View {
         let theme = FinamiDesign(rawValue:preferences?.design ?? "Dark Classic") ?? .darkClassic
         if scheme == .dark {
             switch theme {
-            case .blackTitanium,.compactPro: Color.black
+            case .midnightBlue: Color(red:0.035,green:0.055,blue:0.105)
+            case .amethyst: Color(red:0.065,green:0.04,blue:0.10)
+            case .carbonRed,.blackTitanium,.compactPro: Color.black
             case .liquidGlass,.digitalBank: Color(red:0.055,green:0.08,blue:0.12)
             case .emeraldAnalytics: Color(red:0.04,green:0.09,blue:0.07)
             default: Color(uiColor:.systemGroupedBackground)
             }
-        } else { Color(uiColor:.systemGroupedBackground) }
+        } else {
+            switch theme {
+            case .warmSand: Color(red:0.92,green:0.89,blue:0.84)
+            case .nordicWhite: Color(red:0.94,green:0.95,blue:0.97)
+            default: Color(uiColor:.systemGroupedBackground)
+            }
+        }
     }
 }
 func finamiScreenBackground(_ preferences: AppearancePreferences?) -> some View { FinamiScreenBackground(preferences:preferences) }

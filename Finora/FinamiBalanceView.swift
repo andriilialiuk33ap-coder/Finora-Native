@@ -3,8 +3,8 @@ import SwiftUI
 struct FinamiBalanceView: View {
     @EnvironmentObject private var s:Store
     @State private var mode:String
-    init(initialMode:String="move") { _mode=State(initialValue:initialMode) }
-    @State private var destination=""
+    init(initialMode:String="move", accountID:String="") { _mode=State(initialValue:initialMode); _destination=State(initialValue:accountID) }
+    @State private var destination:String
     @State private var batch=""
     @State private var transferID=""
     @State private var selected=Set<String>()
@@ -73,10 +73,11 @@ struct FinamiBalanceView: View {
             if let data=s.db.reconciliationUndo,let undo=try? JSONDecoder().decode(FinamiBalanceUndo.self,from:data),undo.restore(current:s.db.operations) != nil {
                 Section("Скасування") {Button("Скасувати останню звірку",role:.destructive){undoLast()};Text("Доступно, доки історія операцій не змінилася.").font(.caption)}
             }
-        }.navigationTitle("Розумна звірка")
+        }.navigationTitle(mode == "anchor" ? "Звірити баланс" : "Розумна звірка")
+        .onAppear { if mode=="anchor",anchorAccount?.isCredit == true,anchorText.isEmpty,usedText.isEmpty { anchorKind="components" } }
         .onChange(of:mode){_ in selected=[];destination=""}
         .onChange(of:batch){_ in selected=[]}
-        .onChange(of:destination){_ in anchorText="";availableText="";ownText="0";usedText="";anchorKind="net";acceptEstimate=false}
+        .onChange(of:destination){_ in anchorText="";availableText="";ownText="0";usedText="";anchorKind=anchorAccount?.isCredit == true ? "components" : "net";acceptEstimate=false}
         .onChange(of:anchorKind){_ in acceptEstimate=false}
         .onChange(of:transferID){_ in selected=[];redundantAdjustment=""}
         .onChange(of:selected){_ in redundantAdjustment=""}
