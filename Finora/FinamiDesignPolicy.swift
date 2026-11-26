@@ -76,3 +76,147 @@ extension AppearancePreferences {
         homeAccountRight = values["cardRight"].flatMap { ["art","photo","expenses","credit","actions","last","count","none"].contains($0) ? $0 : nil }
     }
 }
+
+// Stable storage keys; no financial values or navigation style in this registry.
+extension FinamiDesignPolicy {
+    static let componentOptions: [String: [String]] = [
+        "operations": ["classicPremium", "compactLedger", "merchantCards", "dailyJournal"],
+        "accounts": ["original", "bankingSplit", "creditRing", "auroraCard"],
+        "installments": ["paymentTimeline", "timelineProgressPro"],
+        "upcoming": ["original", "paymentTimeline", "paymentFocus", "bankingPro"],
+        "subscriptions": ["original", "compactList", "premiumCards", "billingCycle", "subscriptionPro"],
+        "calendar": ["original", "calendarPro", "agendaTimeline", "cashFlow", "heatmap"],
+        "editor": ["original", "quickEntry", "bankingPro", "minimal", "smartEntry"],
+        "reports": ["original", "financePro", "analyticsBento", "minimalReports", "smartInsights", "bankingPremium"]
+    ]
+    static func styleTitle(_ key: String) -> String {
+        switch key {
+        case "classicPremium": return "Classic Premium"
+        case "compactLedger": return "Compact Ledger"
+        case "merchantCards": return "Merchant Cards · Preview"
+        case "dailyJournal": return "Daily Journal · Preview"
+        case "original": return "Original"
+        case "bankingSplit": return "Banking Split"
+        case "creditRing": return "Credit Ring"
+        case "auroraCard": return "Aurora Card"
+        case "paymentTimeline": return "Payment Timeline"
+        case "timelineProgressPro": return "Timeline Progress Pro"
+        case "paymentFocus": return "Payment Focus"
+        case "bankingPro": return "Banking Pro"
+        case "compactList": return "Compact List"
+        case "premiumCards": return "Premium Cards"
+        case "billingCycle": return "Billing Cycle"
+        case "subscriptionPro": return "Subscription Pro"
+        case "calendarPro": return "Calendar Pro"
+        case "agendaTimeline": return "Agenda Timeline"
+        case "cashFlow": return "Cash Flow"
+        case "quickEntry": return "Quick Entry"
+        case "smartEntry": return "Smart Entry"
+        case "financePro": return "Finance Pro"
+        case "analyticsBento": return "Analytics Bento"
+        case "minimalReports": return "Minimal Reports"
+        case "smartInsights": return "Smart Insights"
+        case "bankingPremium": return "Banking Premium"
+        default: return key.capitalized
+        }
+    }
+    // A masked or unavailable metric has no graphical representation either.
+    static func creditFraction(used: Int64, limit: Int64, masked: Bool) -> Double? {
+        guard !masked, limit > 0 else { return nil }
+        return min(1, max(0, Double(used) / Double(limit)))
+    }
+    static let componentSizes = ["S", "M", "L"]
+    static func validatedStyle(_ value: String?, component: String) -> String? {
+        guard let value, componentOptions[component]?.contains(value) == true else { return nil }
+        return value
+    }
+}
+extension AppearancePreferences {
+    func designStyle(for component: String) -> String? {
+        FinamiDesignPolicy.validatedStyle(componentStyles?[component], component: component)
+    }
+    mutating func setDesignStyle(_ value: String?, for component: String) {
+        guard FinamiDesignPolicy.componentOptions[component] != nil else { return }
+        if let value, FinamiDesignPolicy.validatedStyle(value, component: component) == nil { return }
+        var styles = componentStyles ?? [:]; styles[component] = value; componentStyles = styles
+    }
+    func designSize(for key: String) -> String {
+        let size = componentSizes?[key] ?? "M"
+        return FinamiDesignPolicy.componentSizes.contains(size) ? size : "M"
+    }
+    mutating func setDesignSize(_ value: String, for key: String) {
+        guard FinamiDesignPolicy.componentSizes.contains(value), !key.isEmpty else { return }
+        var sizes = componentSizes ?? [:]; sizes[key] = value; componentSizes = sizes
+    }
+    func designAccountStyle(for id: String) -> String? {
+        FinamiDesignPolicy.validatedStyle(individualCardStyles?[id], component: "accounts") ?? designStyle(for: "accounts")
+    }
+    mutating func setDesignAccountStyle(_ value: String?, for id: String) {
+        guard !id.isEmpty else { return }
+        if let value, FinamiDesignPolicy.validatedStyle(value, component: "accounts") == nil { return }
+        var styles = individualCardStyles ?? [:]; styles[id] = value; individualCardStyles = styles
+    }
+    func isDesignCardCollapsed(_ id: String, subscription: Bool) -> Bool {
+        (subscription ? collapsedSubscriptions : collapsedInstallments)?.contains(id) == true
+    }
+    mutating func toggleDesignCard(_ id: String, subscription: Bool) {
+        var ids = Set((subscription ? collapsedSubscriptions : collapsedInstallments) ?? [])
+        if ids.contains(id) { ids.remove(id) } else { ids.insert(id) }
+        if subscription { collapsedSubscriptions = ids.sorted() } else { collapsedInstallments = ids.sorted() }
+    }
+}
+
+extension FinamiDesignPolicy {
+    static func componentTitle(_ key: String) -> String {
+        ["installments":"Розстрочки", "upcoming":"Найближчі платежі", "subscriptions":"Підписки", "calendar":"Календар", "editor":"Редактор операцій", "reports":"Звіти"][key] ?? key
+    }
+    static let chartOptions = ["categories": ["None", "Donut", "Horizontal Bars", "Treemap"], "periods": ["None", "Bar Chart", "Area Chart", "Heatmap", "Income vs Expense"], "flow": ["None", "Cash Flow Waterfall"]]
+    static func chartBlockTitle(_ key: String) -> String { ["categories":"Категорії", "periods":"Періоди", "flow":"Потік"][key] ?? key }
+    static func safeMinor(_ value: Double) -> Int64 { guard value.isFinite else { return 0 }; return Int64(min(Double(Int64.max).nextDown, max(Double(Int64.min), value.rounded()))) }
+    static func annualFactor(_ period: String) -> Double { period == "Тиждень" ? 52 : period == "Рік" ? 1 : 12 }
+    static func fraction(_ paid: Int64, _ total: Int64, masked: Bool) -> Double? { guard !masked, total > 0 else { return nil }; return max(0, min(1, Double(paid)/Double(total))) }
+}
+extension AppearancePreferences {
+    func designChart(_ block: String) -> String { let value = designReportCharts?[block] ?? "None"; return FinamiDesignPolicy.chartOptions[block]?.contains(value) == true ? value : "None" }
+    mutating func setDesignChart(_ value: String, block: String) { guard FinamiDesignPolicy.chartOptions[block]?.contains(value) == true else { return }; var charts = designReportCharts ?? [:]; charts[block] = value; designReportCharts = charts }
+}
+
+extension FinamiDesignPolicy {
+    static let upcomingFields = ["date", "name", "amount", "kind", "days", "overdue", "month", "image"]
+    static func upcomingTitle(_ key: String) -> String { ["date":"Дата платежу", "name":"Назва", "amount":"Сума", "kind":"Тип", "days":"Днів до оплати", "overdue":"Прострочення", "month":"Підсумок місяця", "image":"Зображення"][key] ?? key }
+}
+extension AppearancePreferences {
+    func designShowsUpcoming(_ key: String) -> Bool { (designUpcomingFields ?? FinamiDesignPolicy.upcomingFields).contains(key) }
+    mutating func setDesignUpcoming(_ key: String, visible: Bool) { guard FinamiDesignPolicy.upcomingFields.contains(key) else { return }; var fields = Set(designUpcomingFields ?? FinamiDesignPolicy.upcomingFields); if visible { fields.insert(key) } else { fields.remove(key) }; designUpcomingFields = fields.sorted() }
+}
+
+extension FinamiDesignPolicy {
+    // A calculator only prepares the amount text; the existing editor validates and saves it.
+    static func calculate(_ left: String, _ right: String, operation: String) -> String? {
+        let locale = Locale(identifier: "en_US_POSIX")
+        func number(_ raw: String) -> Decimal? {
+            let normalized = raw.replacingOccurrences(of: ",", with: ".")
+            guard !normalized.isEmpty, normalized.count <= 18, normalized.allSatisfy({ $0.isNumber || $0 == "." }), normalized.filter({ $0 == "." }).count <= 1 else { return nil }
+            return Decimal(string: normalized, locale: locale)
+        }
+        guard let a = number(left), let b = number(right) else { return nil }
+        var result: Decimal
+        switch operation { case "+": result = a+b; case "−": result = a-b; case "×": result = a*b; case "÷": guard b != 0 else { return nil }; result = a/b; default: return nil }
+        guard !result.isNaN, result > 0, result < Decimal(1_000_000_000_000) else { return nil }
+        var rounded = Decimal(); NSDecimalRound(&rounded, &result, 2, .plain)
+        guard rounded > 0 else { return nil }
+        return NSDecimalNumber(decimal: rounded).stringValue.replacingOccurrences(of: ".", with: ",")
+    }
+    static let reportBlocks = ["flow", "comparison", "chart", "categories", "accounts", "months", "review"]
+    static func reportBlockTitle(_ key: String) -> String { ["flow":"Підсумок", "comparison":"Порівняння", "chart":"Динаміка", "categories":"Категорії", "accounts":"Рахунки", "months":"Періоди", "review":"Якість обліку"][key] ?? key }
+}
+extension AppearancePreferences {
+    var designOrderedReportBlocks: [String] {
+        var seen = Set<String>(); return ((designReportOrder ?? []) + FinamiDesignPolicy.reportBlocks).filter { FinamiDesignPolicy.reportBlocks.contains($0) && seen.insert($0).inserted }
+    }
+    func designReportStyle(_ block: String) -> String { FinamiDesignPolicy.validatedStyle(designReportBlockStyles?[block], component: "reports") ?? designStyle(for: "reports") ?? "original" }
+    mutating func setDesignReportStyle(_ style: String?, block: String) {
+        guard FinamiDesignPolicy.reportBlocks.contains(block) else { return }; if let style, FinamiDesignPolicy.validatedStyle(style, component: "reports") == nil { return }
+        var styles = designReportBlockStyles ?? [:]; styles[block] = style; designReportBlockStyles = styles
+    }
+}

@@ -62,6 +62,27 @@ struct AppearancePreferences: Codable {
     var hideEmptyDashboard: Bool? = nil
     var collapsedMenu: [String]? = nil
     var collapsedReports: [String]? = nil
+    // Optional, additive Design 3.0 preferences. Legacy backups decode unchanged.
+    var componentStyles: [String: String]? = nil
+    var componentSizes: [String: String]? = nil
+    var individualCardStyles: [String: String]? = nil
+    var collapsedInstallments: [String]? = nil
+    var collapsedSubscriptions: [String]? = nil
+    var designUpcomingCount: Int? = nil
+    var designUpcomingFields: [String]? = nil
+    var designSubscriptionIcons: [String: String]? = nil
+    var designSubscriptionColors: [String: String]? = nil
+    var designHiddenSubscriptions: [String]? = nil
+    var designCalendarListCollapsed: Bool? = nil
+    var designReportCharts: [String: String]? = nil
+    var designEditorKeyboard: Bool? = nil
+    var designEditorHaptics: Bool? = nil
+    var designEditorConfirm: Bool? = nil
+    var designEditorLastAccountEnabled: Bool? = nil
+    var designEditorLastAccount: String? = nil
+    var designEditorFavorites: [String]? = nil
+    var designReportOrder: [String]? = nil
+    var designReportBlockStyles: [String: String]? = nil
 }
 struct IzanamiTheme: Identifiable {
     var id: String { name }
@@ -85,7 +106,7 @@ struct IzanamiShell: View {
     var scheme: ColorScheme? { p.mode == "dark" ? .dark : p.mode == "light" ? .light : p.mode == "preset" ? preset.scheme : nil }
     var design: Font.Design { p.font == "rounded" ? .rounded : p.font == "serif" ? .serif : p.font == "monospaced" ? .monospaced : p.font == "preset" ? preset.font : .default }
     var body: some View {
-        Root().tint(accent).preferredColorScheme(scheme).environment(\.font, .system(.body, design: design)).environment(\.locale, Locale(identifier:"uk_UA"))
+        Root(navigationAccent: accent).tint(accent).preferredColorScheme(scheme).environment(\.font, .system(.body, design: design)).environment(\.locale, Locale(identifier:"uk_UA"))
     }
 }
 // A single visual vocabulary for menus and overview cards.
@@ -448,8 +469,9 @@ struct DashboardTile: View {
         default: return "Натисни, щоб розгорнути"
         }
         let next = payments.first
-        let dateText = item.showPaymentDate == false ? nil : next.map { $0.date.formatted(.dateTime.day().month(.abbreviated).locale(Locale(identifier:"uk_UA"))) }
-        let amountText = item.showPaymentTotal == false ? nil : next.map { visible($0.amount,$0.currency) }
+        let prefs = s.db.preferences ?? .init()
+        let dateText = item.showPaymentDate == false || (item.kind == .obligations && !prefs.designShowsUpcoming("date")) ? nil : next.map { $0.date.formatted(.dateTime.day().month(.abbreviated).locale(Locale(identifier:"uk_UA"))) }
+        let amountText = item.showPaymentTotal == false || (item.kind == .obligations && !prefs.designShowsUpcoming("amount")) ? nil : next.map { (prefs.designHiddenSubscriptions ?? []).contains($0.id) ? "••••" : visible($0.amount,$0.currency) }
         return FinamiDashboardPreviewPolicy.payments(count:payments.count,nextAmount:amountText,nextDate:dateText,overdue:next?.overdue == true,masked:false)
     }
     private func toggleCollapsed() { s.changeAppearance { p in var ids = Set(p.collapsedDashboard ?? []); if ids.contains(item.id) { ids.remove(item.id) } else { ids.insert(item.id) }; p.collapsedDashboard = ids.sorted() } }
@@ -553,8 +575,7 @@ struct DashboardTile: View {
                 if showCharts { ProgressView(value: max(0,min(1, Double(exp)/Double(s.db.budget)))).tint(color) }
             } else { detail("Не задано") }
         case .obligations:
-            if let next=s.upcomingPayments.first { Button { paymentDetails=next } label:{FinamiPaymentCard(payment:next,showRemaining:item.showPaymentRemaining ?? true,showDate:item.showPaymentDate ?? true,showImage:item.showPaymentImage ?? true, dashboardSize: item.size)}.buttonStyle(.plain) }
-            else {detail("Немає запланованих платежів")}
+            FinamiUpcomingDesign(item: item, open: { paymentDetails = $0 })
         case .subscriptions: paymentSummary(s.upcomingPayments.filter(\.subscription), showRemaining: false)
         case .reminders: value(String((s.db.reminders ?? []).filter{$0.enabled && $0.date > Date()}.count)); detail("Майбутніх нагадувань")
         case .forecast:
@@ -594,7 +615,7 @@ struct DashboardTile: View {
             if item.showPaymentTotal != false {
                 ForEach(Array(Set(payments.map(\.currency))).sorted(), id: \.self) { code in
                     let total = remainingMode ? payments.filter { $0.currency == code }.reduce(Int64(0)) { $0 + ($1.remaining ?? $1.amount) } : planned.filter { $0.currency == code }.reduce(Int64(0)) { $0 + $1.amount }
-                    Text(visible(total, code)).font(.title2.bold()).monospacedDigit()
+                    Text(payments.contains { (s.db.preferences?.designHiddenSubscriptions ?? []).contains($0.id) && $0.currency == code } ? "••••" : visible(total, code)).font(.title2.bold()).monospacedDigit()
                 }
                 detail(remainingMode ? "Залишок боргу" : "Неоплачене за графіком · " + monthName(date))
             }
@@ -602,7 +623,7 @@ struct DashboardTile: View {
                 ForEach(Array(payments.prefix(max(1, min(20, item.categoryCount ?? (compact ? 1 : detailed ? 6 : 3)))))) { p in
                     Button { paymentDetails = p } label: {
                         let loan = s.db.obligations.first { $0.id == p.id }
-                        FinamiModernPaymentRow(name:p.name,kind:p.kind,date:p.date,currency:p.currency,due:p.amount,total:loan?.target,monthly:loan?.monthly,remaining:p.remaining,status:p.overdue ? "Прострочено" : "Очікує оплати",showDate:item.showPaymentDate != false,showImage:item.showPaymentImage != false,showRemaining:remainingMode,masked:masked)
+                        FinamiModernPaymentRow(name:p.name,kind:p.kind,date:p.date,currency:p.currency,due:p.amount,total:loan?.target,monthly:loan?.monthly,remaining:p.remaining,status:p.overdue ? "Прострочено" : "Очікує оплати",showDate:item.showPaymentDate != false,showImage:item.showPaymentImage != false,showRemaining:remainingMode,masked:masked || (s.db.preferences?.designHiddenSubscriptions ?? []).contains(p.id))
                     }.buttonStyle(.plain)
                 }
                 if payments.count > (item.categoryCount ?? (compact ? 1 : detailed ? 6 : 3)) { detail("Усього: \(payments.count)") }
@@ -702,13 +723,30 @@ struct SubscriptionRecord: Codable, Identifiable {
 func currencyMoney(_ amount: Int64, _ currency: String) -> String { (Double(amount)/100).formatted(.currency(code: currency).locale(Locale(identifier:"uk_UA"))) }
 struct SubscriptionsView: View {
     @EnvironmentObject var s: Store; @State private var edit: SubscriptionRecord?
+    @State private var subscriptionFilter = "all"
     var list: [SubscriptionRecord] { (s.db.subscriptions ?? []).sorted{$0.next < $1.next} }
     var body: some View {
         List {
             Section { NavigationLink("Виявити підписки за операціями") { FinamiRecurringSuggestionsView() } }
-            Section("Активні") { ForEach(["UAH","USD"], id: \.self) { currency in let active = list.filter{$0.active && $0.currency == currency}; if !active.isEmpty { let total = active.reduce(0.0) { n,r in n + Double(r.amount) * (r.period == .week ? 52.0/12 : r.period == .year ? 1.0/12 : 1) }; LabeledContent("Місячна оцінка \(currency)", value: s.visibleMoney(Int64(total.rounded()),currency)) } } }
-            ForEach(list) { r in
-                Button { edit = r } label: { HStack { IzanamiLabel(title: r.name,icon:"repeat",color:.purple); Spacer(); VStack(alignment:.trailing){Text(s.visibleMoney(r.amount,r.currency)).bold(); Text(r.active ? r.next.formatted(date:.abbreviated,time:.omitted) : "Призупинено").font(.caption)} } }.buttonStyle(.plain)
+            Section("Активні") { ForEach(["UAH","USD"], id: \.self) { currency in let active = list.filter{$0.active && $0.currency == currency}; if !active.isEmpty { let total = active.reduce(0.0) { n,r in n + Double(r.amount) * (r.period == .week ? 52.0/12 : r.period == .year ? 1.0/12 : 1) }; LabeledContent("Місячна оцінка \(currency)", value: (s.db.preferences?.designHiddenSubscriptions ?? []).isEmpty ? s.visibleMoney(FinamiDesignPolicy.safeMinor(total),currency) : "••••") } } }
+            if s.db.preferences?.designStyle(for: "subscriptions") == "subscriptionPro" {
+                Section("Річна оцінка") { ForEach(["UAH", "USD"], id: \.self) { code in
+                    let active = list.filter { $0.active && $0.currency == code }
+                    if !active.isEmpty { LabeledContent(code, value: active.contains { (s.db.preferences?.designHiddenSubscriptions ?? []).contains($0.id) } ? "••••" : s.visibleMoney(FinamiDesignPolicy.safeMinor(active.reduce(0.0) { $0 + Double($1.amount) * FinamiDesignPolicy.annualFactor($1.period.rawValue) }),code)) }
+                } }
+            }
+            Picker("Стан", selection: $subscriptionFilter) { Text("Усі").tag("all"); Text("Активні").tag("active"); Text("На паузі").tag("paused") }.pickerStyle(.segmented)
+            ForEach(list.filter { subscriptionFilter == "all" || (subscriptionFilter == "active" ? $0.active : !$0.active) }) { r in
+                let collapsed = s.db.preferences?.isDesignCardCollapsed(r.id, subscription: true) ?? false
+                HStack(spacing: 4) {
+                    Button { edit = r } label: {
+                        FinamiSubscriptionDesign(record: r, collapsed: collapsed)
+                    }.buttonStyle(.plain)
+                    Button { s.changeAppearance { p in var ids = Set(p.designHiddenSubscriptions ?? []); if ids.contains(r.id) { ids.remove(r.id) } else { ids.insert(r.id) }; p.designHiddenSubscriptions = ids.sorted() } } label: { Image(systemName: (s.db.preferences?.designHiddenSubscriptions ?? []).contains(r.id) ? "eye.slash" : "eye").frame(minWidth:44,minHeight:44) }.buttonStyle(.borderless).accessibilityLabel("Видимість суми підписки")
+                    Button { s.changeAppearance { $0.toggleDesignCard(r.id, subscription: true) } } label: {
+                        Image(systemName:collapsed ? "chevron.down" : "chevron.up").frame(minWidth:44,minHeight:44)
+                    }.buttonStyle(.borderless).accessibilityLabel(collapsed ? "Розгорнути підписку" : "Згорнути підписку").accessibilityIdentifier("qa.subscription.collapse." + r.id)
+                }
             }
         }.navigationTitle("Підписки").toolbar { Button { edit = SubscriptionRecord() } label: { Image(systemName:"plus.circle.fill").font(.title2) } }.sheet(item:$edit){ SubscriptionEditor(original:$0) }
     }
@@ -728,6 +766,16 @@ struct SubscriptionEditor: View {
                 DatePicker("Наступна оплата",selection:$r.next,displayedComponents:.date)
                 Toggle("Активна",isOn:$r.active); Toggle("Автосписання в сервісі",isOn:$r.automatic)
                 TextField("Примітка",text:$r.notes)
+                Section("Оформлення") {
+                    Picker("Іконка", selection: Binding(get: { s.db.preferences?.designSubscriptionIcons?[r.id] ?? "auto" }, set: { v in s.changeAppearance { p in var values = p.designSubscriptionIcons ?? [:]; values[r.id] = v; p.designSubscriptionIcons = values } })) {
+                        Text("Автоматично").tag("auto")
+                        ForEach(["repeat", "tv", "music.note", "cloud", "play.rectangle", "gamecontroller", "book", "star"], id: \.self) { Label($0, systemImage: $0).tag($0) }
+                    }
+                    Picker("Колір", selection: Binding(get: { s.db.preferences?.designSubscriptionColors?[r.id] ?? "auto" }, set: { v in s.changeAppearance { p in var values = p.designSubscriptionColors ?? [:]; values[r.id] = v; p.designSubscriptionColors = values } })) {
+                        Text("Автоматично").tag("auto")
+                        ForEach(FinamiDesignPolicy.accents, id: \.self) { Text($0).tag($0) }
+                    }
+                }
                 Section("Історія оплат") {
                     ForEach(r.payments.sorted{$0.date > $1.date}) { p in VStack(alignment:.leading){Text(s.visibleMoney(p.amount,p.currency)).bold();Text("Сплачено: \(p.date.formatted(date:.abbreviated,time:.omitted)) · До: \(p.through.formatted(date:.abbreviated,time:.omitted))").font(.caption)} }
                     DatePicker("Дата фактичної оплати",selection:$paidDate,displayedComponents:.date)

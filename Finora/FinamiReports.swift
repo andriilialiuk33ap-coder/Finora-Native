@@ -9,6 +9,8 @@ struct Reports: View {
     private var annual: Bool { prefs.reportsPeriod != "month" }
     private var selectedAccount: String { s.db.accounts.contains(where: { $0.id == prefs.reportsAccount }) ? (prefs.reportsAccount ?? "all") : "all" }
     private var showIncome: Bool { prefs.reportsShowIncome != false }
+    private var reportStyle: String { prefs.designReportStyle("flow") }
+    private var chartsAllowed: Bool { !s.privateAmounts && prefs.noCharts == false && !s.db.accounts.contains { $0.hideAmounts == true && (selectedAccount == "all" || selectedAccount == $0.id) } }
     private func binding<T>(_ key: WritableKeyPath<AppearancePreferences, T?>, _ fallback: T) -> Binding<T> {
         Binding(get: { (s.db.preferences ?? .init())[keyPath: key] ?? fallback }, set: { value in s.changeAppearance { p in p[keyPath: key] = value } })
     }
@@ -29,15 +31,9 @@ struct Reports: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: (s.db.preferences ?? .init()).finamiSpacing) {
                 controls
-                flow(snapshot)
-                if prefs.reportsShowComparison != false { comparison(snapshot) }
-                if annual && prefs.reportsShowChart != false && prefs.noCharts == false {
-                    FinamiReportPanel(title: "Динаміка року", icon: "chart.bar.xaxis", tint: .blue, hidden: hidden("chart")) { AnnualCashFlowChart(points: chartPoints(snapshot)) }
+                ForEach(prefs.designOrderedReportBlocks, id: \.self) { key in
+                    reportBlock(key, snapshot)
                 }
-                if prefs.reportsShowCategories != false { categories(snapshot) }
-                if prefs.reportsShowAccounts != false { accounts(snapshot) }
-                if prefs.reportsShowMonths != false { timeline(snapshot) }
-                if prefs.reportsShowReview != false { review(snapshot) }
             }.padding()
         }.background(finamiScreenBackground(s.db.preferences)).navigationTitle("Звіти")
         .toolbar {
@@ -46,6 +42,24 @@ struct Reports: View {
         }.sheet(isPresented: $settings) { NavigationStack { reportSettings } }
         .sheet(item: $accountSettings) { selection in
             NavigationStack { FinamiAccountReportSettings(account: selection.id) }
+        }
+    }
+    @ViewBuilder private func reportBlock(_ key: String, _ snapshot: FinamiReportSnapshot) -> some View {
+        switch key {
+        case "flow": flow(snapshot)
+        case "comparison": if prefs.reportsShowComparison != false { comparison(snapshot) }
+        case "chart":
+            if prefs.reportsShowChart != false && chartsAllowed && (prefs.designChart("periods") != "None" || annual) {
+                FinamiReportPanel(title: annual ? "Динаміка року" : "Динаміка місяця", icon: "chart.bar.xaxis", tint: .blue, hidden: hidden("chart")) {
+                    if prefs.designChart("periods") == "None" { AnnualCashFlowChart(points: chartPoints(snapshot)) }
+                    else { FinamiDesignPeriodChart(snapshot: snapshot, style: prefs.designChart("periods"), showIncome: showIncome) }
+                }
+            }
+        case "categories": if prefs.reportsShowCategories != false { categories(snapshot) }
+        case "accounts": if prefs.reportsShowAccounts != false { accounts(snapshot) }
+        case "months": if prefs.reportsShowMonths != false { timeline(snapshot) }
+        case "review": if prefs.reportsShowReview != false { review(snapshot) }
+        default: EmptyView()
         }
     }
     private var controls: some View {
@@ -69,6 +83,7 @@ struct Reports: View {
     }
     private func flow(_ x: FinamiReportSnapshot) -> some View {
         FinamiReportPanel(title: "Підсумок", icon: "wallet.pass.fill", tint: .teal, hidden: hidden("flow")) {
+            if showIncome && chartsAllowed && prefs.designChart("flow") == "Cash Flow Waterfall" { FinamiDesignWaterfall(totals: x.totals) }
             if showIncome { FinamiMetric(title: "Чистий потік", value: s.visibleMoney(x.totals.net), tint: x.totals.net >= 0 ? .green : .orange) }
             if showIncome { metric("Доходи", x.totals.income, .green, "arrow.down.left") }
             if prefs.reportsShowIncoming == false { Button("Показати надходження") { s.changeAppearance { $0.reportsShowIncoming = true } }.font(.caption) }
@@ -82,9 +97,9 @@ struct Reports: View {
     }
     private func metric(_ title: String, _ value: Int64, _ tint: Color, _ icon: String) -> some View {
         HStack(alignment: .center, spacing: 10) {
-            FinamiIconTile(icon: icon, tint: tint, side: 34)
+            if reportStyle != "minimalReports" { FinamiIconTile(icon: icon, tint: tint, side: reportStyle == "bankingPremium" ? 44 : 34) }
             FinamiMetric(title: title, value: s.visibleMoney(value), tint: tint)
-        }.padding(10).background(tint.opacity(0.07), in: RoundedRectangle(cornerRadius: 14))
+        }.padding(reportStyle == "minimalReports" ? 4 : 10).background(tint.opacity(reportStyle == "bankingPremium" ? 0.13 : reportStyle == "minimalReports" ? 0 : 0.07), in: RoundedRectangle(cornerRadius: 14))
     }
     private func comparison(_ x: FinamiReportSnapshot) -> some View {
         let elapsed = prefs.reportsCompareElapsed != false
@@ -116,12 +131,28 @@ struct Reports: View {
             let rows = x.sortedCategories
             let limit = max(1, min(prefs.reportsCategoryLimit ?? 10, 100))
             if rows.isEmpty { Text("Немає витрат за період").font(.subheadline).foregroundStyle(.secondary) }
-            ForEach(Array(rows.prefix(limit).enumerated()), id: \.element.key) { _, row in
-                reportRow(row.key, amount: row.value, icon: finamiOperationIcon(Operation(kind: .expense, category: row.key)), tint: .orange)
+            if chartsAllowed && prefs.designChart("categories") != "None" { FinamiDesignCategoryChart(values: x.categories, style: prefs.designChart("categories")) }
+            if prefs.designReportStyle("categories") == "financePro", chartsAllowed, prefs.designChart("categories") == "None" { FinamiDesignCategoryChart(values: x.categories, style: "Donut") }
+            if prefs.designReportStyle("categories") == "smartInsights", chartsAllowed, let first = rows.first, first.value > 0 { Text("Найбільша категорія: " + first.key).font(.subheadline.weight(.medium)).foregroundStyle(.secondary) }
+            if prefs.designReportStyle("categories") == "analyticsBento" {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 135))]) {
+                    ForEach(Array(rows.prefix(limit).enumerated()), id: \.element.key) { _, row in
+                        categoryLink(row.key, amount: row.value, snapshot: x).padding(8).background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+                    }
+                }
+            } else {
+                ForEach(Array(rows.prefix(limit).enumerated()), id: \.element.key) { _, row in
+                    categoryLink(row.key, amount: row.value, snapshot: x)
+                }
             }
             if rows.count > limit { reportRow("Інші категорії", amount: rows.dropFirst(limit).reduce(0) { $0 + $1.value }, icon: "ellipsis", tint: .secondary) }
             Text("Повернення зменшують витрати відповідної категорії.").font(.caption).foregroundStyle(.secondary)
         }
+    }
+    private func categoryLink(_ category: String, amount: Int64, snapshot: FinamiReportSnapshot) -> some View {
+        NavigationLink {
+            FinamiReportCategoryOperations(category: category, interval: snapshot.interval, account: selectedAccount == "all" ? nil : selectedAccount)
+        } label: { reportRow(category, amount: amount, icon: finamiOperationIcon(Operation(kind: .expense, category: category)), tint: .orange) }.buttonStyle(.plain)
     }
     private func movementLine(_ title: String, _ amount: Int64, tint: Color = .secondary, masked: Bool = false) -> some View {
         HStack(alignment: .firstTextBaseline) {
@@ -236,6 +267,20 @@ struct Reports: View {
     }
     private var reportSettings: some View {
         Form {
+            Section("Дизайн блоків") {
+                FinamiComponentStylePicker(component: "reports", title: "Загальний стиль")
+                ForEach(prefs.designOrderedReportBlocks, id: \.self) { key in
+                    VStack(alignment: .leading) {
+                        Text(FinamiDesignPolicy.reportBlockTitle(key)).font(.headline)
+                        Picker("Стиль", selection: Binding(get: { prefs.designReportBlockStyles?[key] ?? "" }, set: { v in s.changeAppearance { $0.setDesignReportStyle(v.isEmpty ? nil : v, block: key) } })) {
+                            Text("Загальний").tag("")
+                            ForEach(FinamiDesignPolicy.componentOptions["reports"] ?? [], id: \.self) { Text(FinamiDesignPolicy.styleTitle($0)).tag($0) }
+                        }
+                        Picker("Розмір", selection: Binding(get: { prefs.designSize(for: "report." + key) }, set: { v in s.changeAppearance { $0.setDesignSize(v, for: "report." + key) } })) { ForEach(FinamiDesignPolicy.componentSizes,id: \.self) { Text($0).tag($0) } }.pickerStyle(.segmented)
+                    }
+                }.onMove { from,to in var order = prefs.designOrderedReportBlocks; order.move(fromOffsets: from,toOffset:to); s.changeAppearance { $0.designReportOrder = order } }
+                EditButton()
+            }
             Section("Показники") {
                 Toggle("Доходи та чистий потік", isOn: binding(\.reportsShowIncome, true))
                 Toggle("Усі надходження", isOn: binding(\.reportsShowIncoming, true))
@@ -336,5 +381,21 @@ private struct FinamiReportReviewList: View {
             }
         }.navigationTitle("Уточнення операцій")
             .sheet(item: $edited) { OpEditor(original: $0) }
+    }
+}
+
+private struct FinamiReportCategoryOperations: View {
+    @EnvironmentObject private var s: Store
+    let category: String
+    let interval: DateInterval
+    let account: String?
+    @State private var selected: Operation?
+    private var operations: [Operation] {
+        s.db.operations.filter { o in
+            o.date >= interval.start && o.date < interval.end && o.expenseValue != 0 && o.expenseGroup == category && (account == nil || o.account == account || (o.kind == .transfer && o.destination == account))
+        }.sorted { $0.date > $1.date }
+    }
+    var body: some View {
+        List(operations) { o in Button { selected = o } label: { OperationRow(o: o) }.buttonStyle(.plain) }.navigationTitle(category).sheet(item: $selected) { OpEditor(original: $0) }
     }
 }

@@ -113,7 +113,9 @@ struct FinamiHomeAccountCard: View {
     }
     var body: some View {
         if let a = s.db.accounts.first(where: { $0.id == accountID }) {
-            let preferredStyle = accountStyle(a.cardOptions?.style ?? s.db.preferences?.homeAccountLayout)
+            let variant = s.db.preferences?.designAccountStyle(for: a.id)
+            let legacy = accountStyle(a.cardOptions?.style ?? s.db.preferences?.homeAccountLayout)
+            let preferredStyle: HomeAccountStyle = variant == "bankingSplit" || variant == "creditRing" ? .detailed : variant == "auroraCard" ? .physical : legacy
             let style: HomeAccountStyle = dashboardSize == .small ? .compact : preferredStyle
             let selectedRight: HomeAccountRight = dashboardSize == .small ? .none : accountRight(a.cardOptions?.right ?? s.db.preferences?.homeAccountRight, style: style)
             let right: HomeAccountRight = mode == "own" && selectedRight == .credit ? .art : selectedRight
@@ -122,11 +124,11 @@ struct FinamiHomeAccountCard: View {
             let fields = dashboardSize == .small ? preferredFields.intersection(["own", "limit", "used", "available", "currency", "type"]) : preferredFields
             let activity = s.accountActivity(a, month: date)
             let tint = accountTint(a, fallback: fallbackTint)
-            card(a, style: style, right: right, fields: fields, activity: activity, tint: tint)
+            card(a, style: style, right: right, fields: fields, activity: activity, tint: tint, variant: variant)
                 .sheet(item: $route) { route in
                     switch route {
                     case .settings: NavigationStack { FinamiHomeAccountSettings(accountID: a.id, closeButton: true) }
-                    case .history: NavigationStack { HomeAccountHistory(accountID: a.id, blockMasked: blockMasked) }
+                    case .history: NavigationStack { HomeAccountHistory(accountID: a.id, blockMasked: isMasked(a)) }
                     case .reconcile: NavigationStack { FinamiBalanceView(initialMode:"anchor",accountID:a.id).toolbar { ToolbarItem(placement:.cancellationAction) { Button("Готово") { self.route=nil } } } }
                     case .edit(let account): AccountEditor(a: account)
                     case .operation(let operation): OpEditor(original: operation)
@@ -134,8 +136,15 @@ struct FinamiHomeAccountCard: View {
                 }
         }
     }
-    private func isMasked(_ a: Account) -> Bool { blockMasked || s.privateAmounts || a.hideAmounts == true }
-    private func amount(_ n: Int64, _ a: Account) -> String { isMasked(a) ? "****" : currencyMoney(n, a.code) }
+    private func baseMask(_ a: Account) -> Bool { blockMasked || s.privateAmounts || a.hideAmounts == true }
+    private func isMasked(_ a: Account, field: String? = nil) -> Bool {
+        if baseMask(a) { return true }
+        guard onAccountsScreen else { return false }
+        if field == "own" { return s.db.preferences?.accountsHideOwn == true }
+        if field == "credit" { return s.db.preferences?.accountsHideCredit == true }
+        return s.db.preferences?.accountsHideOwn == true || s.db.preferences?.accountsHideCredit == true
+    }
+    private func amount(_ n: Int64, _ a: Account, field: String? = nil) -> String { isMasked(a, field: field) ? "****" : currencyMoney(n, a.code) }
     private func start(_ kind: Kind, _ a: Account) { route = .operation(Operation(kind: kind, category: "Без категорії", account: a.id, entryCurrency: a.code)) }
     private func toggleMask(_ a: Account) {
         s.change { d in if let i = d.accounts.firstIndex(where: { $0.id == a.id }) { d.accounts[i].hideAmounts = !(d.accounts[i].hideAmounts ?? false) } }
@@ -151,7 +160,7 @@ struct FinamiHomeAccountCard: View {
                 }.frame(maxWidth: .infinity, alignment: .leading)
             }.buttonStyle(.plain).accessibilityLabel("Історія: " + a.name)
             if a.cardOptions?.pinned == true { Image(systemName: "pin.fill").font(.caption).foregroundStyle(tint).accessibilityLabel("Закріплений") }
-            Button { toggleMask(a) } label: { Image(systemName: isMasked(a) ? "eye.slash" : "eye").frame(minWidth: 44, minHeight: 44) }
+            Button { toggleMask(a) } label: { Image(systemName: baseMask(a) ? "eye.slash" : "eye").frame(minWidth: 44, minHeight: 44) }
                 .buttonStyle(.plain).disabled(blockMasked || s.privateAmounts).accessibilityLabel("Приховати або показати суми рахунку")
             Menu {
                 Button { route = .settings } label: { Label("Оформлення картки", systemImage: "paintpalette") }
@@ -163,9 +172,14 @@ struct FinamiHomeAccountCard: View {
             } label: { Image(systemName: "ellipsis").frame(minWidth: 44, minHeight: 44) }.accessibilityLabel("Дії рахунку")
         }
     }
-    private func card(_ a: Account, style: HomeAccountStyle, right: HomeAccountRight, fields: Set<String>, activity: AccountActivity, tint: Color) -> some View {
+    private func card(_ a: Account, style: HomeAccountStyle, right: HomeAccountRight, fields: Set<String>, activity: AccountActivity, tint: Color, variant: String?) -> some View {
         VStack(alignment: .leading, spacing: dashboardSize == .small ? 6 : dashboardSize == .large ? 15 : style == .compact ? 8 : 12) {
             header(a, fields: fields, tint: tint)
+            if variant == "auroraCard" && dashboardSize != .small {
+                HStack { Image(systemName: "creditcard.fill").font(.title3); Spacer(); Text(isMasked(a) ? "••••" : a.lastFour.map { "•••• " + $0 } ?? a.code).font(.caption.monospacedDigit()) }
+                    .foregroundStyle(tint).padding(10).background(tint.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+                    .accessibilityHidden(isMasked(a))
+            }
             if fields.contains("own") || right != .none {
                 if dynamicTypeSize.isAccessibilitySize || right == .none || !fields.contains("own") {
                     VStack(alignment: .leading, spacing: 12) {
@@ -180,14 +194,25 @@ struct FinamiHomeAccountCard: View {
                 }
             }
             if a.isCredit && mode != "own" { creditFields(a, fields: fields, right: right, style: style) }
-            if a.code == "UAH" && dashboardSize != .small { Button { route = .reconcile } label: { Label("Звірити баланс",systemImage:"checkmark.circle").font(.subheadline).frame(minHeight:44) }.buttonStyle(.plain).foregroundStyle(tint) }
+            if variant == "creditRing" && a.isCredit && mode != "own" && fields.contains("used") && fields.contains("limit"), let fraction = FinamiDesignPolicy.creditFraction(used: s.debt(a), limit: a.limit, masked: isMasked(a, field: "credit")) {
+                HStack(spacing: 12) {
+                    ZStack {
+                        Circle().stroke(tint.opacity(0.15), lineWidth: 7)
+                        Circle().trim(from: 0, to: CGFloat(fraction)).stroke(tint, style: StrokeStyle(lineWidth: 7, lineCap: .round)).rotationEffect(.degrees(-90))
+                        Text(Double(s.debt(a)) / Double(a.limit), format: .percent.precision(.fractionLength(0))).font(.caption.bold()).monospacedDigit()
+                    }.frame(width: 64, height: 64).accessibilityHidden(true)
+                    Text("Використання кредитного ліміту").font(.caption).foregroundStyle(.secondary)
+                }.accessibilityLabel("Використання кредитного ліміту").accessibilityValue(Text(Double(s.debt(a)) / Double(a.limit), format: .percent.precision(.fractionLength(0))))
+            }
             activityFields(a, fields: fields, right: right, activity: activity, style: style)
             if fields.contains("actions") && right != .actions { quickActions(a, vertical: dynamicTypeSize.isAccessibilitySize) }
         }
         .padding(dashboardSize == .small ? 9 : dashboardSize == .large ? 20 : style == .compact ? 12 : 16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background {
-            if style == .physical || style == .premium {
+            if variant == "auroraCard" && s.db.preferences?.designLowEffects != true {
+                FinamiAccountSurface(tint: tint, radius: 24).overlay { RoundedRectangle(cornerRadius: 24).fill(LinearGradient(colors: [tint.opacity(0.17), .clear, tint.opacity(0.09)], startPoint: .topLeading, endPoint: .bottomTrailing)) }
+            } else if style == .physical || style == .premium {
                 FinamiAccountSurface(tint: tint, radius: 24)
             } else { FinamiAccountSurface(tint: tint, radius: 16) }
         }
@@ -201,7 +226,7 @@ struct FinamiHomeAccountCard: View {
     private func own(_ a: Account) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Власні кошти").font(.caption).foregroundStyle(.secondary)
-            Text(amount(s.ownFunds(a), a)).font(.system(dashboardSize == .small ? .title3 : dashboardSize == .large ? .largeTitle : .title, design: .rounded).weight(.semibold)).monospacedDigit().lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2).minimumScaleFactor(0.72)
+            Text(amount(s.ownFunds(a), a, field: "own")).font(.system(dashboardSize == .small ? .title3 : dashboardSize == .large ? .largeTitle : .title, design: .rounded).weight(.semibold)).monospacedDigit().lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2).minimumScaleFactor(0.72)
             if a.isCredit { Text("Без кредиту").font(.caption2).foregroundStyle(.secondary) }
         }
     }
@@ -224,7 +249,7 @@ struct FinamiHomeAccountCard: View {
             } else { Button { route = .settings } label: { VStack(spacing: 4) { HomeAccountArt(account: a, tint: tint); Text("Додати фото").font(.caption2) } }.buttonStyle(.plain) }
         case .expenses: panel { metric("Витрати за місяць", amount(activity.spending, a), tint: .primary) }
         case .credit:
-            if a.isCredit { panel { metric("Кредитний ліміт", amount(a.limit, a)) } }
+            if a.isCredit { panel { metric("Кредитний ліміт", amount(a.limit, a, field: "credit")) } }
             else { HomeAccountArt(account: a, tint: tint) }
         case .actions: quickActions(a, vertical: true)
         case .last: panel { if let o = activity.history.first { metric("Остання операція", amount(activity.signed(o), a)); Text(o.note.isEmpty ? o.category : o.note).font(.caption2).foregroundStyle(.secondary).lineLimit(2) } else { Text("Немає операцій").font(.caption).foregroundStyle(.secondary) } }
@@ -238,17 +263,17 @@ struct FinamiHomeAccountCard: View {
         let showAvailable = fields.contains("available")
         if showLimit || showUsed || showAvailable {
             Divider()
-            if showLimit { metric("Кредитний ліміт", amount(a.limit, a)) }
+            if showLimit { metric("Кредитний ліміт", amount(a.limit, a, field: "credit")) }
             if showUsed || showAvailable {
                 if style == .compact || dynamicTypeSize.isAccessibilitySize || !showUsed || !showAvailable {
                     VStack(spacing: 8) {
-                        if showUsed { panel { metric("Використано кредиту", amount(s.debt(a), a), tint: .orange) } }
-                        if showAvailable { panel { metric("Доступний кредит", amount(s.unusedCredit(a), a), tint: .teal) } }
+                        if showUsed { panel { metric("Використано кредиту", amount(s.debt(a), a, field: "credit"), tint: .orange) } }
+                        if showAvailable { panel { metric("Доступний кредит", amount(s.unusedCredit(a), a, field: "credit"), tint: .teal) } }
                     }
                 } else {
                     HStack(alignment: .top, spacing: 8) {
-                        panel { metric("Використано", amount(s.debt(a), a), tint: .orange) }
-                        panel { metric("Доступний кредит", amount(s.unusedCredit(a), a), tint: .teal) }
+                        panel { metric("Використано", amount(s.debt(a), a, field: "credit"), tint: .orange) }
+                        panel { metric("Доступний кредит", amount(s.unusedCredit(a), a, field: "credit"), tint: .teal) }
                     }
                 }
             }
@@ -313,6 +338,7 @@ struct FinamiHomeAccountsSettings: View {
     var body: some View {
         List {
             Section("Загальний стиль") {
+                FinamiComponentStylePicker(component: "accounts", title: "Design 3.0")
                 Picker("Шаблон", selection: Binding(get: { accountStyle(s.db.preferences?.homeAccountLayout).rawValue }, set: { v in s.changeAppearance { p in p.homeAccountLayout = v } })) {
                     ForEach(HomeAccountStyle.allCases) { Text($0.title).tag($0.rawValue) }
                 }
@@ -371,6 +397,7 @@ struct FinamiHomeAccountSettings: View {
                     Toggle("Приховати суми", isOn: Binding(get: { account?.hideAmounts == true }, set: { v in s.change { d in if let i = d.accounts.firstIndex(where: { $0.id == accountID }) { d.accounts[i].hideAmounts = v } } }))
                 }
                 Section("Дизайн") {
+                    FinamiComponentStylePicker(component: "accounts", title: "Design 3.0", accountID: a.id)
                     Picker("Шаблон", selection: selection(\.style)) { Text("Загальний").tag(""); ForEach(HomeAccountStyle.allCases) { Text($0.title).tag($0.rawValue) } }
                     Picker("Права частина", selection: selection(\.right)) { Text("Загальна").tag(""); ForEach(HomeAccountRight.allCases) { Text($0.title).tag($0.rawValue) } }
                     Picker("Акцент", selection: selection(\.accent)) { Text("Автоматично").tag(""); ForEach(IzanamiTheme.all) { theme in Label(theme.name, systemImage: "circle.fill").foregroundStyle(theme.color).tag(theme.name) } }
@@ -387,7 +414,7 @@ struct FinamiHomeAccountSettings: View {
                     Toggle("Використовувати загальні показники", isOn: Binding(get: { options.fields == nil }, set: { v in update { $0.fields = v ? nil : (s.db.preferences?.homeAccountFields ?? HomeAccountField.defaults) } }))
                     if options.fields != nil { ForEach(HomeAccountField.allCases) { f in Toggle(f.title, isOn: field(f)) } }
                 }
-                Section { Button("Скинути індивідуальний дизайн") { update { $0.style = nil; $0.right = nil; $0.fields = nil; $0.accent = nil } } }
+                Section { Button("Скинути індивідуальний дизайн") { update { $0.style = nil; $0.right = nil; $0.fields = nil; $0.accent = nil }; s.changeAppearance { $0.setDesignAccountStyle(nil, for: accountID) } } }
             } else { Text("Рахунок не знайдено") }
         }.navigationTitle(account?.name ?? "Оформлення рахунку")
             .toolbar { if closeButton { ToolbarItem(placement: .confirmationAction) { Button("Готово") { dismiss() } } } }
@@ -491,9 +518,37 @@ struct FinamiCompactAccountsGrid: View {
             Image(systemName:"chevron.right").font(.caption).foregroundStyle(.secondary)
         }.padding(10).frame(minHeight:54)
     }
+    @ViewBuilder private func compactVariant(_ a: Account) -> some View {
+        let variant = p.designAccountStyle(for: a.id)
+        let fields = Set(a.cardOptions?.fields ?? p.homeAccountFields ?? HomeAccountField.defaults)
+        if variant == "bankingSplit" && a.isCredit && mode == "all" && fields.contains("own") && fields.contains("available") {
+            let key = FinamiDesignPolicy.primaryField(fields: fields, credit: a.isCredit, mode: mode)
+            let showOwn = key != "own"
+            HStack {
+                Text(showOwn ? "Власні кошти" : "Доступний кредит").font(.caption2).foregroundStyle(.secondary)
+                Spacer(minLength: 2)
+                Text(isHidden(a,field:showOwn ? "own" : "available") ? "••••" : s.visibleMoney(showOwn ? s.ownFunds(a) : s.unusedCredit(a),a.code)).font(.caption.monospacedDigit()).minimumScaleFactor(0.6)
+            }.padding(.horizontal, 10).padding(.bottom, 10)
+        } else if variant == "creditRing" && a.isCredit && mode != "own" && fields.contains("used") && fields.contains("limit"), let fraction = FinamiDesignPolicy.creditFraction(used:s.debt(a),limit:a.limit,masked:isHidden(a,field:"used")) {
+            let tint = accountTint(a,fallback:.teal)
+            HStack(spacing: 6) {
+                ZStack {
+                    Circle().stroke(tint.opacity(0.15), lineWidth: 4)
+                    Circle().trim(from: 0, to: CGFloat(fraction)).stroke(tint, style: StrokeStyle(lineWidth: 4, lineCap: .round)).rotationEffect(.degrees(-90))
+                }.frame(width: 26, height: 26).accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Використано кредиту").font(.caption2).foregroundStyle(.secondary)
+                    Text(Double(s.debt(a)) / Double(a.limit), format: .percent.precision(.fractionLength(0))).font(.caption.weight(.semibold)).monospacedDigit()
+                }
+                Spacer(minLength: 0)
+            }.padding(.horizontal,10).padding(.bottom,10)
+        } else if variant == "auroraCard" {
+            HStack { Image(systemName:"creditcard"); Spacer(); Text(isHidden(a,field:"own") || isHidden(a,field:"used") ? "••••" : a.lastFour.map { "•••• " + $0 } ?? a.code) }.font(.caption).foregroundStyle(.secondary).padding(.horizontal,10).padding(.bottom,10)
+        }
+    }
     private func card(_ a:Account) -> some View {
         Button { selected=a } label: {
-            Group { if list { listCard(a) } else { gridCard(a) } }
+            VStack(spacing: 0) { if list { listCard(a) } else { gridCard(a) }; compactVariant(a) }
                 .frame(maxWidth:.infinity,alignment:.topLeading).contentShape(Rectangle())
                 .modifier(FinamiCardStyle(tint:accountTint(a,fallback:.teal)))
         }.buttonStyle(.plain).accessibilityIdentifier("qa.account.compact." + a.id)
@@ -505,7 +560,7 @@ struct FinamiCompactAccountsGrid: View {
             NavigationStack {
                 ScrollView {
                     FinamiHomeAccountCard(accountID:a.id,date:date,fallbackTint:.teal,mode:mode,onAccountsScreen:onAccountsScreen)
-                        .environment(\.finamiMask,masked || (onAccountsScreen && (p.accountsHideOwn == true || p.accountsHideCredit == true)))
+                        .environment(\.finamiMask,masked)
                         .padding()
                 }.navigationTitle("Деталі рахунку").toolbar { ToolbarItem(placement:.confirmationAction) { Button("Готово") { selected=nil } } }
             }

@@ -1,4 +1,6 @@
 import Charts
+import Combine
+import UIKit
 import LocalAuthentication
 import SwiftUI
 import UniformTypeIdentifiers
@@ -744,6 +746,8 @@ struct DataFile: FileDocument {
   }
 }
 struct Root: View {
+  var navigationAccent: Color = .purple
+  @State private var keyboardVisible = false
   @EnvironmentObject var store: Store
   @Environment(\.scenePhase) var phase
   @AppStorage("lockEnabled") var lockEnabled = false
@@ -775,16 +779,24 @@ struct Root: View {
         }.onAppear(perform: unlock)
       } else {
         TabView(selection: $tab) {
-          NavigationStack { if store.db.preferences?.simpleHome == true { FinamiSimpleHome() } else { CustomDashboard() } }.tabItem { Label(store.db.preferences?.homeTitle ?? "Головна", systemImage: "house.fill") }.tag(0)
-          NavigationStack { Operations().toolbar { NavigationLink { FinamiGlobalSearch() } label: { Image(systemName:"magnifyingglass") }.accessibilityLabel("Пошук Finami") } }.tabItem {
+          NavigationStack { if store.db.preferences?.simpleHome == true { FinamiSimpleHome() } else { CustomDashboard() } }.toolbar(.hidden, for: .tabBar).tabItem { Label(store.db.preferences?.homeTitle ?? "Головна", systemImage: "house.fill") }.tag(0)
+          NavigationStack { Operations().toolbar { NavigationLink { FinamiGlobalSearch() } label: { Image(systemName:"magnifyingglass") }.accessibilityLabel("Пошук Finami") } }.toolbar(.hidden, for: .tabBar).tabItem {
             Label("Операції", systemImage: "arrow.left.arrow.right")
           }.tag(1)
-          NavigationStack { Accounts().toolbar { NavigationLink { FinamiGlobalSearch() } label: { Image(systemName:"magnifyingglass") }.accessibilityLabel("Пошук Finami") } }.tabItem {
+          NavigationStack { Accounts().toolbar { NavigationLink { FinamiGlobalSearch() } label: { Image(systemName:"magnifyingglass") }.accessibilityLabel("Пошук Finami") } }.toolbar(.hidden, for: .tabBar).tabItem {
             Label("Рахунки", systemImage: "wallet.pass.fill")
           }.tag(2)
-          NavigationStack { if store.privateAmounts { FinamiPrivacyNotice() } else { Reports().toolbar { NavigationLink { FinamiGlobalSearch() } label: { Image(systemName:"magnifyingglass") }.accessibilityLabel("Пошук Finami") } } }.tabItem { Label("Звіти", systemImage: "chart.bar.xaxis") }.tag(3)
-          NavigationStack { More() }.tabItem { Label("Ще", systemImage: "ellipsis.circle") }.tag(4)
-        }.task(id: phase) {
+          NavigationStack { if store.privateAmounts { FinamiPrivacyNotice() } else { Reports().toolbar { NavigationLink { FinamiGlobalSearch() } label: { Image(systemName:"magnifyingglass") }.accessibilityLabel("Пошук Finami") } } }.toolbar(.hidden, for: .tabBar).tabItem { Label("Звіти", systemImage: "chart.bar.xaxis") }.tag(3)
+          NavigationStack { More() }.toolbar(.hidden, for: .tabBar).tabItem { Label("Ще", systemImage: "ellipsis.circle") }.tag(4)
+        }.toolbar(.hidden, for: .tabBar)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+          if !keyboardVisible {
+            FinamiFusionCrystal(selection: $tab, homeTitle: store.db.preferences?.homeTitle ?? "Головна", accent: navigationAccent, lowEffects: store.db.preferences?.designLowEffects == true)
+          }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in keyboardVisible = true }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in keyboardVisible = false }
+        .task(id: phase) {
           guard phase == .active else {return}
           do { try await Task.sleep(nanoseconds: 350_000_000) } catch { return }
           while !Task.isCancelled {
@@ -976,7 +988,7 @@ struct Accounts: View {
           FinamiHomeAccountCard(accountID: a.id, date: Date(), fallbackTint: .teal, mode: mode, onAccountsScreen: true)
           if a.hiddenInAccounts == true { Label("Прихований рахунок", systemImage: "eye.slash").font(.caption).foregroundStyle(.secondary) }
           if a.excludedFromTotals == true { Text("Не враховується в загальних сумах").font(.caption).foregroundStyle(.secondary) }
-          if s.nativeBalance(a) < 0 && !a.isCredit { Text("Чистий залишок: " + (a.hideAmounts == true ? "••••" : s.visibleMoney(s.nativeBalance(a), a.code))).font(.caption).foregroundStyle(.secondary) }
+          if s.nativeBalance(a) < 0 && !a.isCredit { Text("Чистий залишок: " + (a.hideAmounts == true || prefs.accountsHideOwn == true ? "••••" : s.visibleMoney(s.nativeBalance(a), a.code))).font(.caption).foregroundStyle(.secondary) }
         }
       }
       }
@@ -1339,6 +1351,7 @@ struct Obligations: View {
           .font(.title.bold())
       }
       ForEach(s.db.obligations.filter { $0.kind == kind }) { o in
+        let collapsed = kind == .installment && (s.db.preferences?.isDesignCardCollapsed(o.id, subscription: false) ?? false)
         HStack(spacing: 10) {
         Button {
           if let payment = s.upcomingPayments.first(where: { $0.id == o.id && !$0.subscription }) { paymentDetails = payment }
@@ -1350,13 +1363,19 @@ struct Obligations: View {
               Spacer()
               Text(s.visibleMoney(o.remaining))
             }
-            if !s.privateAmounts { ProgressView(value: o.target > 0 ? min(1, Double(o.paid) / Double(o.target)) : 0) }
-            Text(
-              "\(s.visibleMoney(o.paid)) із \(s.visibleMoney(o.target)) · \(o.due.formatted(date:.abbreviated,time:.omitted))"
-            ).font(.caption).foregroundStyle(.secondary)
+            if !collapsed {
+              if kind == .installment { FinamiInstallmentDesign(obligation: o) }
+              else if !s.privateAmounts { ProgressView(value: o.target > 0 ? min(1, Double(o.paid) / Double(o.target)) : 0) }
+              Text(
+                "\(s.visibleMoney(o.paid)) із \(s.visibleMoney(o.target)) · \(o.due.formatted(date:.abbreviated,time:.omitted))"
+              ).font(.caption).foregroundStyle(.secondary)
+            }
           }
         }.buttonStyle(.plain)
         if kind == .installment {
+          Button { s.changeAppearance { $0.toggleDesignCard(o.id, subscription: false) } } label: {
+            Image(systemName: collapsed ? "chevron.down" : "chevron.up").frame(minWidth: 44,minHeight: 44)
+          }.buttonStyle(.borderless).accessibilityLabel(collapsed ? "Розгорнути розстрочку" : "Згорнути розстрочку").accessibilityIdentifier("qa.installment.collapse." + o.id)
           Button(role: .destructive) { remove = o } label: { Image(systemName: "trash").frame(minWidth: 44, minHeight: 44).accessibilityLabel("Видалити розстрочку") }.buttonStyle(.borderless)
         }
         }.swipeActions(edge: .trailing, allowsFullSwipe: false) {

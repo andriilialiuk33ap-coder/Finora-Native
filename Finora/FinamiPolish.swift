@@ -103,16 +103,20 @@ struct FinamiReportPanel<Content: View>: View {
     var tint: Color
     @Binding var hidden: Bool
     @ViewBuilder var content: () -> Content
+    private var block: String { ["wallet.pass.fill":"flow", "arrow.left.arrow.right":"comparison", "chart.bar.xaxis":"chart", "tag.fill":"categories", "creditcard.fill":"accounts", "calendar":"months", "checkmark.shield":"review"][icon] ?? icon }
+    private var prefs: AppearancePreferences { s.db.preferences ?? .init() }
+    private var style: String { prefs.designReportStyle(block) }
+    private var size: String { prefs.componentSizes?["report." + block] ?? prefs.designSize(for: "reports") }
     private var collapsed: Bool { (s.db.preferences?.collapsedReports ?? []).contains(icon) }
     private func toggleCollapsed() { s.changeAppearance { p in var ids=Set(p.collapsedReports ?? []);if ids.contains(icon) { ids.remove(icon) } else { ids.insert(icon) };p.collapsedReports=ids.sorted() } }
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack { FinamiIconTile(icon: icon, tint: tint, side: 36); Button { toggleCollapsed() } label: { Text(title).font(.headline).foregroundStyle(.primary).frame(minHeight:44,alignment:.leading) }.buttonStyle(.plain).accessibilityLabel((collapsed ? "Розгорнути " : "Згорнути ") + title); Spacer(minLength: 4)
+        VStack(alignment: .leading, spacing: style == "minimalReports" ? 6 : 14) {
+            HStack { if style != "minimalReports" { FinamiIconTile(icon: icon, tint: tint, side: style == "bankingPremium" ? 44 : 36) }; Button { toggleCollapsed() } label: { Text(title).font(.headline).foregroundStyle(.primary).frame(minHeight:44,alignment:.leading) }.buttonStyle(.plain).accessibilityLabel((collapsed ? "Розгорнути " : "Згорнути ") + title); Spacer(minLength: 4)
                 Button { hidden.toggle() } label: { Image(systemName: hidden ? "eye.slash" : "eye").frame(minWidth: 44, minHeight: 44) }.buttonStyle(.plain).disabled(s.privateAmounts).accessibilityLabel(hidden ? "Показати суми" : "Приховати суми")
             }
             if collapsed { Button("Розгорнути") { toggleCollapsed() }.font(.caption) }
             else if hidden { Text("••••").font(.title.bold()).accessibilityLabel("Суми приховано") } else { content() }
-        }.padding(s.db.preferences?.modernCompactSpacing == true ? 12 : 16).frame(maxWidth: .infinity, alignment: .leading).modifier(FinamiCardStyle(tint: tint))
+        }.padding(size == "S" ? 8 : size == "L" ? 20 : prefs.modernCompactSpacing == true ? 12 : 16).frame(maxWidth: .infinity, alignment: .leading).modifier(FinamiCardStyle(tint: style == "minimalReports" ? .gray : tint))
     }
 }
 struct FinamiMenuGroup<Content: View>: View {

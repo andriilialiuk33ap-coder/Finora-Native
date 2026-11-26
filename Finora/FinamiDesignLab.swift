@@ -55,6 +55,30 @@ struct FinamiScreenBackground: View {
 }
 func finamiScreenBackground(_ preferences: AppearancePreferences?) -> some View { FinamiScreenBackground(preferences:preferences) }
 
+// Reusable picker; all writes are appearance-only.
+struct FinamiComponentStylePicker: View {
+    @EnvironmentObject private var s: Store
+    var component: String
+    var title: String
+    var accountID: String? = nil
+    private var p: AppearancePreferences { s.db.preferences ?? .init() }
+    var body: some View {
+        Picker(title, selection: Binding(get: {
+            if let id = accountID { return FinamiDesignPolicy.validatedStyle(p.individualCardStyles?[id], component: component) ?? "" }
+            return p.designStyle(for: component) ?? (FinamiDesignPolicy.componentOptions[component]?.first ?? "")
+        }, set: { value in
+            s.changeAppearance { prefs in
+                if let id = accountID { prefs.setDesignAccountStyle(value.isEmpty ? nil : value, for: id) }
+                else { prefs.setDesignStyle(value.isEmpty ? nil : value, for: component) }
+            }
+        })) {
+            if accountID != nil { Text("Загальний стиль").tag("") }
+            ForEach(FinamiDesignPolicy.componentOptions[component] ?? [], id: \.self) { key in
+                Text(FinamiDesignPolicy.styleTitle(key)).tag(key)
+            }
+        }.accessibilityIdentifier("qa.design.style." + component + (accountID.map { "." + $0 } ?? ""))
+    }
+}
 struct FinamiDesignLab: View {
     @EnvironmentObject private var s: Store
     @State private var presetName = ""
@@ -92,6 +116,33 @@ struct FinamiDesignLab: View {
                 Button("Розгорнути всі блоки головної") { s.changeAppearance { $0.collapsedDashboard=[] } }
                 Button("Розгорнути всі групи меню") { s.changeAppearance { $0.collapsedMenu=[] } }
                 Button("Розгорнути всі розділи звітів") { s.changeAppearance { $0.collapsedReports=[] } }
+                Button("Розгорнути всі розстрочки") { s.changeAppearance { $0.collapsedInstallments=[] } }
+                Button("Розгорнути всі підписки") { s.changeAppearance { $0.collapsedSubscriptions=[] } }
+            }
+            Section("Design 3.0 · Компоненти") {
+                FinamiComponentStylePicker(component: "operations", title: "Операції")
+                FinamiComponentStylePicker(component: "accounts", title: "Картки рахунків")
+                Picker("Розмір операцій", selection: Binding(get: { p.designSize(for: "operations") }, set: { value in s.changeAppearance { $0.setDesignSize(value, for: "operations") } })) {
+                    ForEach(FinamiDesignPolicy.componentSizes, id: \.self) { Text($0).tag($0) }
+                }
+                ForEach(["installments", "upcoming", "subscriptions", "calendar", "editor", "reports"], id: \.self) { key in
+                    FinamiComponentStylePicker(component: key, title: FinamiDesignPolicy.componentTitle(key))
+                    if key != "editor" { FinamiDesignSizePicker(component: key) }
+                }
+                Picker("Кількість найближчих платежів", selection: binding(\.designUpcomingCount, 3)) { ForEach([1,3,5,10], id: \.self) { Text(String($0)).tag($0) } }
+                ForEach(FinamiDesignPolicy.upcomingFields, id: \.self) { key in
+                    Toggle(FinamiDesignPolicy.upcomingTitle(key), isOn: Binding(get: { p.designShowsUpcoming(key) }, set: { v in s.changeAppearance { $0.setDesignUpcoming(key, visible: v) } }))
+                }
+                Toggle("Finami Keyboard", isOn: binding(\.designEditorKeyboard, false))
+                Toggle("Вібровідгук Finami Keyboard", isOn: binding(\.designEditorHaptics, true))
+                Toggle("Підтвердження перед збереженням", isOn: binding(\.designEditorConfirm, false))
+                Toggle("Останній рахунок для нової ручної операції", isOn: binding(\.designEditorLastAccountEnabled, false))
+                ForEach(["categories", "periods", "flow"], id: \.self) { key in
+                    Picker("Діаграма · " + FinamiDesignPolicy.chartBlockTitle(key), selection: Binding(get: { p.designChart(key) }, set: { v in s.changeAppearance { $0.setDesignChart(v, block: key) } })) {
+                        ForEach(FinamiDesignPolicy.chartOptions[key] ?? [], id: \.self) { Text($0).tag($0) }
+                    }
+                }
+                Text("Індивідуальний стиль рахунку можна вибрати в меню його картки. Два нові стилі операцій позначено Preview.").font(.caption).foregroundStyle(.secondary)
             }
             Section("Кольори та картки") {
                 Picker("Акцент",selection:Binding(get:{p.designAccent ?? "preset"},set:{v in s.changeAppearance { $0.designAccent=v == "preset" ? nil : v }})) {
@@ -121,7 +172,7 @@ struct FinamiDesignLab: View {
                 }
                 Text("Пресети змінюють лише вигляд. Суми, приватність, порядок рахунків та операції не змінюються.").font(.caption).foregroundStyle(.secondary)
             }
-        }.navigationTitle("Design Lab")
+        }.navigationTitle("Design Lab 3.0")
         .confirmationDialog("Видалити пресет?",isPresented:Binding(get:{pendingDelete != nil},set:{if !$0 { pendingDelete=nil }}),titleVisibility:.visible) {
             Button("Видалити",role:.destructive) { if let name=pendingDelete { s.changeAppearance { $0.designPresets?.removeValue(forKey:name) } };pendingDelete=nil }
             Button("Скасувати",role:.cancel) { pendingDelete=nil }

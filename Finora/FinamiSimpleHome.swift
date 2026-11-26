@@ -50,7 +50,7 @@ struct FinamiSimpleHome: View {
                 }
                 Spacer(minLength:6)
                 VStack(alignment:.trailing,spacing:4) {
-                    Text(amount(item.amount,item.currency)).font(.subheadline.bold()).monospacedDigit()
+                    Text(amount(item.amount,item.currency,hide:(p.designHiddenSubscriptions ?? []).contains(item.id))).font(.subheadline.bold()).monospacedDigit()
                     Text("До сплати").font(.caption).foregroundStyle(.secondary)
                     if let monthly=item.recurringAmount,monthly != item.amount,p.modernPaymentMonthly != false { Text("Місяць: "+amount(monthly,item.currency)).font(.caption) }
                 }
@@ -65,7 +65,9 @@ struct FinamiSimpleHome: View {
             FinamiCompactAccountsGrid(accounts:accountList,mode:"all",date:Date(),onAccountsScreen:false,forceList:true).environment(\.finamiMask,masked)
             if !s.upcomingPayments.isEmpty {
                 NavigationLink { CalendarView() } label:{ HStack {Text("Найближчі платежі").font(.headline);Spacer();Image(systemName:"chevron.right")} }.buttonStyle(.plain)
-                ForEach(Array(s.upcomingPayments.prefix(5))) { item in paymentRow(item) }
+                if p.designStyle(for: "upcoming") != nil || p.componentSizes?["upcoming"] != nil || p.designUpcomingFields != nil {
+                    FinamiUpcomingDesign(item: DashboardItem.merged(s.db.dashboard).first { $0.kind == .obligations } ?? .init(kind: .obligations, enabled: true, size: .medium), open: { payment = $0 }).environment(\.finamiMask,masked)
+                } else { ForEach(Array(s.upcomingPayments.prefix(5))) { item in paymentRow(item) } }
             }
         }.padding() }.background(finamiScreenBackground(s.db.preferences)).navigationTitle(p.homeTitle ?? "Головна")
         .toolbar {
