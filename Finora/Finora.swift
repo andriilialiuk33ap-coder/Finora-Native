@@ -778,6 +778,7 @@ struct Root: View {
           Button("Розблокувати", action: unlock).buttonStyle(.borderedProminent)
         }.onAppear(perform: unlock)
       } else {
+        VStack(spacing: 0) {
         TabView(selection: $tab) {
           NavigationStack { if store.db.preferences?.simpleHome == true { FinamiSimpleHome() } else { CustomDashboard() } }.toolbar(.hidden, for: .tabBar).tabItem { Label(store.db.preferences?.homeTitle ?? "Головна", systemImage: "house.fill") }.tag(0)
           NavigationStack { Operations().toolbar { NavigationLink { FinamiGlobalSearch() } label: { Image(systemName:"magnifyingglass") }.accessibilityLabel("Пошук Finami") } }.toolbar(.hidden, for: .tabBar).tabItem {
@@ -789,7 +790,8 @@ struct Root: View {
           NavigationStack { if store.privateAmounts { FinamiPrivacyNotice() } else { Reports().toolbar { NavigationLink { FinamiGlobalSearch() } label: { Image(systemName:"magnifyingglass") }.accessibilityLabel("Пошук Finami") } } }.toolbar(.hidden, for: .tabBar).tabItem { Label("Звіти", systemImage: "chart.bar.xaxis") }.tag(3)
           NavigationStack { More() }.toolbar(.hidden, for: .tabBar).tabItem { Label("Ще", systemImage: "ellipsis.circle") }.tag(4)
         }.toolbar(.hidden, for: .tabBar)
-        .safeAreaInset(edge: .bottom, spacing: 0) {
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+          // Reserve layout space rather than overlaying a nested bottom inset.
           if !keyboardVisible {
             FinamiFusionCrystal(selection: $tab, homeTitle: store.db.preferences?.homeTitle ?? "Головна", accent: navigationAccent, lowEffects: store.db.preferences?.designLowEffects == true)
           }

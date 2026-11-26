@@ -5,8 +5,8 @@ options:
 settings:
   base:
     SWIFT_VERSION: '5.0'
-    MARKETING_VERSION: '6.4.0'
-    CURRENT_PROJECT_VERSION: '48'
+    MARKETING_VERSION: '6.4.1'
+    CURRENT_PROJECT_VERSION: '49'
     TARGETED_DEVICE_FAMILY: '1'
 packages:
   ZIPFoundation:

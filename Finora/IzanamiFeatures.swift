@@ -381,6 +381,7 @@ struct CustomDashboard: View {
         if !pair.isEmpty { result.append(pair) }; return result
     }
     var body: some View {
+        VStack(spacing: 0) {
         ScrollView {
             LazyVStack(spacing: (s.db.preferences ?? .init()).finamiSpacing) {
                 MonthControl(date: $date, dashboardStyle: true)
@@ -391,11 +392,11 @@ struct CustomDashboard: View {
                     }
                 }
             }.padding()
+        }.frame(maxWidth: .infinity, maxHeight: .infinity)
+        HStack { Button { add = true } label: { Label("Додати операцію", systemImage: "plus.circle.fill").font(.headline).frame(maxWidth: .infinity).padding(.vertical, 5).frame(minHeight:44) }.buttonStyle(.borderedProminent); Button { voice=true } label:{Image(systemName:"mic.fill").frame(minWidth:44,minHeight:44)}.buttonStyle(.bordered).accessibilityLabel("Голосовий запис"); Button { scan = true } label: { Image(systemName: "doc.viewfinder").frame(minWidth:44,minHeight:44) }.buttonStyle(.bordered).accessibilityLabel("Імпорт зі скриншота").accessibilityIdentifier("qa.home.scan") }.padding(.horizontal).padding(.vertical,7).background(Color(uiColor:.systemGroupedBackground))
         }.background(finamiScreenBackground(s.db.preferences)).navigationTitle(s.db.preferences?.homeTitle ?? "Головна")
             .toolbar { NavigationLink { FinamiGlobalSearch() } label: { Image(systemName:"magnifyingglass") }.accessibilityLabel("Пошук Finami"); Button { s.changeAppearance { p in p.hideAmounts = !(p.hideAmounts ?? false) } } label: { Image(systemName:s.privateAmounts ? "eye.slash" : "eye") }.accessibilityLabel("Приховати або показати суми"); Button { reorder = true } label: { Image(systemName: "arrow.up.arrow.down") }.accessibilityLabel("Змінити порядок блоків"); Button { configure = true } label: { Image(systemName: "slider.horizontal.3").font(.title2) }.accessibilityLabel("Налаштувати блоки") }
-            .safeAreaInset(edge: .bottom) {
-                HStack { Button { add = true } label: { Label("Додати операцію", systemImage: "plus.circle.fill").font(.headline).frame(maxWidth: .infinity).padding(.vertical, 5).frame(minHeight:44) }.buttonStyle(.borderedProminent); Button { voice=true } label:{Image(systemName:"mic.fill").frame(minWidth:44,minHeight:44)}.buttonStyle(.bordered).accessibilityLabel("Голосовий запис"); Button { scan = true } label: { Image(systemName: "doc.viewfinder").frame(minWidth:44,minHeight:44) }.buttonStyle(.bordered).accessibilityLabel("Імпорт зі скриншота") }.padding(.horizontal).padding(.vertical,7).background(Color(uiColor:.systemGroupedBackground))
-            }.sheet(isPresented: $add) { OpEditor(original: Operation(category: "Без категорії", account: s.db.accounts.first?.id ?? cash)) }
+            .sheet(isPresented: $add) { OpEditor(original: Operation(category: "Без категорії", account: s.db.accounts.first?.id ?? cash)) }
             .sheet(isPresented:$voice) { FinamiVoice() }
             .sheet(isPresented:$scan) { NavigationStack { FinamiScanView().toolbar { ToolbarItem(placement: .cancellationAction) { Button("Закрити") { scan = false } } } } }
             .sheet(isPresented: $reorder) { NavigationStack { FinamiOrderEditor(target: .dashboard) } }

@@ -83,7 +83,7 @@ struct FinamiScanView: View {
                 PhotosPicker(selection: $selections, maxSelectionCount: 10, matching: .images) { Label("Обрати скриншоти", systemImage: "photo.on.rectangle.angled") }.disabled(busy)
                 #if DEBUG && targetEnvironment(simulator)
                 if ProcessInfo.processInfo.arguments.contains("--finami-qa") {
-                    Button("QA: тестове фото розстрочки") { runQAImage() }.disabled(busy)
+                    Button("QA: тестове фото розстрочки") { runQAImage() }.disabled(busy).accessibilityIdentifier("qa.scan.fixture.installment")
                 }
                 #endif
                 if busy { ProgressView("Розпізнавання на пристрої…") }

@@ -144,8 +144,12 @@ final class FinamiUITests: XCTestCase {
         visible(app.buttons["Показати власний баланс"]); visible(app.buttons["Приховати кредитний баланс"])
     }
     func testRealVisionOCRPopulatesInstallmentFields() {
-        app.buttons["Імпорт зі скриншота"].tap()
-        let fixture = app.buttons["QA: тестове фото розстрочки"]; visible(fixture); fixture.tap()
+        let scan = app.buttons["qa.home.scan"]
+        visible(scan); XCTAssertTrue(scan.isHittable, "Home scan button must not be covered by navigation")
+        scan.tap(); visible(app.navigationBars["Finami Scan"])
+        let fixture = app.buttons["qa.scan.fixture.installment"]
+        for _ in 0..<8 { if fixture.exists && fixture.isHittable { break }; app.swipeUp() }
+        visible(fixture); XCTAssertTrue(fixture.isHittable); fixture.tap()
         let review = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", "qa.scan.review.")).firstMatch
         XCTAssertTrue(review.waitForExistence(timeout: 45)); review.tap()
         visible(app.navigationBars["Перевірка розстрочки"])
@@ -326,7 +330,10 @@ final class FinamiUITests: XCTestCase {
         let confirm = app.buttons["Застосувати"]; visible(confirm); confirm.tap()
         app.terminate(); app.launchArguments = ["--finami-qa"]; app.launch()
         visible(tabButton("Рахунки")); tabButton("Рахунки").tap()
-        let credit = app.buttons["qa.account.compact.qa-design-credit"]; visible(credit)
+        visible(app.navigationBars["Рахунки"])
+        let credit = app.buttons["qa.account.compact.qa-design-credit"]
+        for _ in 0..<10 { if credit.exists && credit.isHittable { break }; app.swipeUp() }
+        visible(credit); XCTAssertTrue(credit.isHittable)
         let expected = (750.0).formatted(.currency(code:"UAH").locale(Locale(identifier:"uk_UA")))
         XCTAssertTrue(credit.label.contains(expected) || credit.staticTexts[expected].exists, "Reconciled credit must be 750 UAH: \(credit.label)")
         capture("reconciled-credit-persisted")
