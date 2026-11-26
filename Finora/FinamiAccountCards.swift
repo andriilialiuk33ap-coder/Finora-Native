@@ -188,7 +188,7 @@ struct FinamiHomeAccountCard: View {
                 FinamiAccountSurface(tint: tint, radius: 24)
             } else { FinamiAccountSurface(tint: tint, radius: 16) }
         }
-        .clipShape(RoundedRectangle(cornerRadius: style == .compact ? 16 : 24))
+        .clipShape(RoundedRectangle(cornerRadius: s.db.preferences?.designRadius.map { CGFloat(FinamiDesignPolicy.radius($0)) } ?? (style == .physical || style == .premium ? 24 : 16)))
         .contextMenu {
             Button { route = .settings } label: { Label("Оформлення", systemImage: "paintpalette") }
             Button { route = .history } label: { Label("Історія", systemImage: "clock") }
@@ -240,12 +240,12 @@ struct FinamiHomeAccountCard: View {
                 if style == .compact || dynamicTypeSize.isAccessibilitySize || !showUsed || !showAvailable {
                     VStack(spacing: 8) {
                         if showUsed { panel { metric("Використано кредиту", amount(s.debt(a), a), tint: .orange) } }
-                        if showAvailable { panel { metric("Доступний кредит", amount(max(0, a.limit - s.debt(a)), a), tint: .teal) } }
+                        if showAvailable { panel { metric("Доступний кредит", amount(s.unusedCredit(a), a), tint: .teal) } }
                     }
                 } else {
                     HStack(alignment: .top, spacing: 8) {
                         panel { metric("Використано", amount(s.debt(a), a), tint: .orange) }
-                        panel { metric("Доступний кредит", amount(max(0, a.limit - s.debt(a)), a), tint: .teal) }
+                        panel { metric("Доступний кредит", amount(s.unusedCredit(a), a), tint: .teal) }
                     }
                 }
             }
@@ -435,34 +435,76 @@ struct FinamiCompactAccountsGrid: View {
     var accounts: [Account]
     var mode: String
     var date: Date
-    @State private var history: Account?
-    @State private var edit: Account?
-    private func text(_ amount:Int64,_ a:Account)->String { masked || s.privateAmounts || a.hideAmounts == true ? "••••" : s.visibleMoney(amount,a.code) }
-    var body: some View {
-        LazyVGrid(columns:Array(repeating:GridItem(.flexible(),spacing:10),count:dynamicTypeSize.isAccessibilitySize ? 1 : 2),spacing:10) {
-            ForEach(accounts) { a in
-                let tint=accountTint(a,fallback:.teal)
-                let fields=Set(a.cardOptions?.fields ?? s.db.preferences?.homeAccountFields ?? HomeAccountField.defaults)
-                VStack(alignment:.leading,spacing:7) {
-                    HStack { FinamiIconTile(icon:accountArtIcon(a),tint:tint,side:32);Spacer(minLength:2); if a.cardOptions?.pinned == true { Image(systemName:"pin.fill").font(.caption).foregroundStyle(.secondary) } }
-                    Text(a.name).font(.subheadline.weight(.semibold)).fixedSize(horizontal:false,vertical:true)
-                    if fields.contains("currency") || fields.contains("type") { Text([fields.contains("type") ? a.typeName : nil,fields.contains("currency") ? a.code : nil].compactMap{$0}.joined(separator:" · ")).font(.caption2).foregroundStyle(.secondary) }
-                    if mode != "credit" && fields.contains("own") { metric("Власні",s.ownFunds(a),a) }
-                    if a.isCredit && mode != "own" {
-                        if fields.contains("available") { metric("Кредит доступний",max(0,a.limit-s.debt(a)),a) }
-                        if fields.contains("used") { metric("Використано",s.debt(a),a) }
-                        if fields.contains("limit") { metric("Ліміт",a.limit,a) }
-                    }
-                    if a.excludedFromTotals == true { Text("Поза підсумками").font(.caption2).foregroundStyle(.secondary) }
-                    if a.hiddenInAccounts == true { Image(systemName:"eye.slash").font(.caption).accessibilityLabel("Прихований рахунок") }
-                    Button { history=a } label: { Label("Історія",systemImage:"clock").font(.caption.weight(.medium)).frame(maxWidth:.infinity,minHeight:36,alignment:.leading) }.buttonStyle(.plain)
-                }.padding(12).frame(maxWidth:.infinity,alignment:.leading).modifier(FinamiCardStyle(tint:tint))
-                    .contextMenu { Button("Історія"){history=a};Button("Редагувати"){edit=a} }
-            }
-        }.sheet(item:$history) { a in NavigationStack { HomeAccountHistory(accountID:a.id,blockMasked:masked) } }
-         .sheet(item:$edit) { AccountEditor(a:$0) }
+    var onAccountsScreen = false
+    @State private var selected: Account?
+    private var p: AppearancePreferences { s.db.preferences ?? .init() }
+    private var list: Bool { p.finamiLayout == "list" || dynamicTypeSize.isAccessibilitySize }
+    private func isHidden(_ a: Account, field: String?) -> Bool {
+        masked || s.privateAmounts || a.hideAmounts == true || (onAccountsScreen && (field == "own" ? p.accountsHideOwn == true : p.accountsHideCredit == true))
     }
-    private func metric(_ name:String,_ value:Int64,_ a:Account)->some View {
-        VStack(alignment:.leading,spacing:2) { Text(name).font(.caption2).foregroundStyle(.secondary);Text(text(value,a)).font(.subheadline.weight(.semibold)).monospacedDigit().fixedSize(horizontal:false,vertical:true) }
+    private func metric(_ a: Account) -> (String,String) {
+        let fields = Set(a.cardOptions?.fields ?? p.homeAccountFields ?? HomeAccountField.defaults)
+        let key = FinamiDesignPolicy.primaryField(fields:fields,credit:a.isCredit,mode:mode)
+        let label: String; let amount: Int64
+        switch key {
+        case "available": label="Доступний кредит";amount=s.unusedCredit(a)
+        case "used": label="Використано кредиту";amount=s.debt(a)
+        case "limit": label="Кредитний ліміт";amount=a.limit
+        case "own": label="Власні кошти";amount=s.ownFunds(a)
+        default: return ("Показники приховано", "—")
+        }
+        return (label,isHidden(a,field:key) ? "••••" : s.visibleMoney(amount,a.code))
+    }
+    private func icon(_ a:Account) -> some View {
+        FinamiIconTile(icon:accountArtIcon(a),tint:accountTint(a,fallback:.teal),side:32)
+    }
+    private func markers(_ a:Account) -> some View {
+        HStack(spacing:4) {
+            if a.excludedFromTotals == true { Image(systemName:"minus.circle").accessibilityLabel("Поза підсумками") }
+            if a.hiddenInAccounts == true && onAccountsScreen { Image(systemName:"eye.slash").accessibilityLabel("Прихований рахунок") }
+            if a.cardOptions?.pinned == true { Image(systemName:"pin.fill").accessibilityLabel("Закріплено") }
+        }.font(.caption2).foregroundStyle(.secondary)
+    }
+    private func gridCard(_ a:Account) -> some View {
+        let value=metric(a)
+        return VStack(alignment:.leading,spacing:5) {
+            HStack { icon(a);Spacer(minLength:2);markers(a);Image(systemName:"chevron.right").font(.caption2).foregroundStyle(.secondary) }
+            Text(a.name).font(.subheadline.weight(.semibold)).lineLimit(2,reservesSpace:true)
+            Spacer(minLength:0)
+            Text(value.0).font(.caption2).foregroundStyle(.secondary).lineLimit(2,reservesSpace:true)
+            Text(value.1).font(.headline).monospacedDigit().lineLimit(1).minimumScaleFactor(0.55).accessibilityLabel(value.1)
+        }.frame(maxWidth:.infinity,minHeight:132,alignment:.topLeading).padding(12)
+    }
+    private func listCard(_ a:Account) -> some View {
+        let value=metric(a)
+        return HStack(alignment:.center,spacing:10) {
+            icon(a)
+            VStack(alignment:.leading,spacing:4) {
+                Text(a.name).font(.subheadline.weight(.semibold)); Text(value.0).font(.caption).foregroundStyle(.secondary);markers(a)
+                if dynamicTypeSize.isAccessibilitySize { Text(value.1).font(.headline).monospacedDigit() }
+            }.frame(maxWidth:.infinity,alignment:.leading)
+            if !dynamicTypeSize.isAccessibilitySize { Text(value.1).font(.subheadline.weight(.semibold)).monospacedDigit().lineLimit(2).minimumScaleFactor(0.7) }
+            Image(systemName:"chevron.right").font(.caption).foregroundStyle(.secondary)
+        }.padding(10).frame(minHeight:54)
+    }
+    private func card(_ a:Account) -> some View {
+        Button { selected=a } label: {
+            Group { if list { listCard(a) } else { gridCard(a) } }
+                .frame(maxWidth:.infinity,alignment:.topLeading).contentShape(Rectangle())
+                .modifier(FinamiCardStyle(tint:accountTint(a,fallback:.teal)))
+        }.buttonStyle(.plain).accessibilityIdentifier("qa.account.compact." + a.id)
+    }
+    var body: some View {
+        LazyVGrid(columns:Array(repeating:GridItem(.flexible(),spacing:10,alignment:.top),count:list ? 1 : 2),alignment:.center,spacing:10) {
+            ForEach(accounts) { a in card(a) }
+        }.sheet(item:$selected) { a in
+            NavigationStack {
+                ScrollView {
+                    FinamiHomeAccountCard(accountID:a.id,date:date,fallbackTint:.teal,mode:mode,onAccountsScreen:onAccountsScreen)
+                        .environment(\.finamiMask,masked || (onAccountsScreen && (p.accountsHideOwn == true || p.accountsHideCredit == true)))
+                        .padding()
+                }.navigationTitle("Деталі рахунку").toolbar { ToolbarItem(placement:.confirmationAction) { Button("Готово") { selected=nil } } }
+            }
+        }
     }
 }

@@ -5,20 +5,32 @@ struct OperationRow: View {
   @Environment(\.finamiMask) private var masked
   var o: Operation
   private var amountsMasked:Bool { s.privateAmounts || masked || s.db.accounts.contains {a in a.hideAmounts == true && (a.id==o.account || (o.kind == .transfer && a.id==o.destination))} }
-  var body: some View {
-    HStack {
-      FinamiIconTile(icon: finamiOperationIcon(o), tint: o.kind == .income ? .green : o.kind == .expense ? .orange : .blue, side: 42)
-      VStack(alignment: .leading) {
-        Text(o.note.isEmpty ? (o.kind == .transfer ? "Переказ" : o.category) : finamiMerchantDisplay(o.note)).font(.subheadline.weight(.semibold)).lineLimit(2)
-        Text("\(o.kind.title) · \(s.accountName(o.account)) · \(o.date.formatted(.dateTime.day().month(.abbreviated).year().locale(Locale(identifier: "uk_UA"))))")
-          .font(.caption).foregroundStyle(.secondary)
-      }
-      Spacer()
-      VStack(alignment:.trailing) {
-        Text(amountsMasked ? "••••" : (o.kind == .transfer ? "" : o.kind.incoming ? "+" : "−") + money(o.amount)).font(.subheadline.weight(.semibold)).monospacedDigit().foregroundStyle(o.kind == .income ? Color.green : Color.primary)
-        if let n=o.originalAmount, let code=o.originalCurrency, code != "UAH" { Text(amountsMasked ? "••••" : s.visibleMoney(n,code)).font(.caption).foregroundStyle(.secondary) }
-      }
+  @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+  private var details: some View {
+    VStack(alignment:.leading,spacing:3) {
+      Text(o.note.isEmpty ? (o.kind == .transfer ? "Переказ" : o.category) : finamiMerchantDisplay(o.note)).font(.subheadline.weight(.semibold)).lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
+      Text("\(o.kind.title) · \(s.accountName(o.account)) · \(o.date.formatted(.dateTime.day().month(.abbreviated).year().locale(Locale(identifier: "uk_UA"))))")
+        .font(.caption).foregroundStyle(.secondary)
+      Text(o.sourceLabel).font(.caption2).foregroundStyle(.secondary)
+    }.frame(maxWidth:.infinity,alignment:.leading)
+  }
+  private var amounts: some View {
+    VStack(alignment:.trailing,spacing:2) {
+      Text(amountsMasked ? "••••" : (o.kind == .transfer ? "" : o.kind.incoming ? "+" : "−") + money(o.amount))
+        .font(.subheadline.weight(.semibold)).monospacedDigit().foregroundStyle(o.kind == .income ? Color.green : Color.primary)
+        .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2).minimumScaleFactor(0.7)
+      if let n=o.originalAmount, let code=o.originalCurrency, code != "UAH" { Text(amountsMasked ? "••••" : s.visibleMoney(n,code)).font(.caption).foregroundStyle(.secondary) }
     }
+  }
+  var body: some View {
+    HStack(alignment:.top,spacing:10) {
+      FinamiIconTile(icon:finamiOperationIcon(o),tint:o.kind == .income ? .green : o.kind == .expense ? .orange : .blue,side:s.db.preferences?.modernCompactSpacing == true ? 36 : 42)
+      if dynamicTypeSize.isAccessibilitySize {
+        VStack(alignment:.leading,spacing:8) { details;amounts.frame(maxWidth:.infinity,alignment:.leading) }
+      } else {
+        details;amounts.layoutPriority(1)
+      }
+    }.frame(minHeight:44)
   }
 }
 struct Operations: View {
@@ -57,10 +69,10 @@ struct Operations: View {
   func operationList(_ values: [Operation]) -> some View {
     LazyVStack(spacing: 0) {
       ForEach(values) { o in
-        Button { edit = o } label: { OperationRow(o: o).padding(.vertical, 12).padding(.horizontal, 12).contentShape(Rectangle()) }.buttonStyle(.plain)
+        Button { edit = o } label: { OperationRow(o: o).padding(.vertical, s.db.preferences?.modernCompactSpacing == true ? 7 : 12).padding(.horizontal, 12).contentShape(Rectangle()) }.buttonStyle(.plain)
         if o.id != values.last?.id { Divider().padding(.leading, 62) }
       }
-    }.background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 18))
+    }.modifier(FinamiCardStyle(tint:.teal))
   }
   var body: some View {
     let values = filtered
@@ -68,7 +80,7 @@ struct Operations: View {
     let grouped = Dictionary(grouping: displayedValues) { Calendar.current.startOfDay(for: $0.date) }
     let days = grouped.keys.sorted { sort == .oldest ? $0 < $1 : $0 > $1 }
     ScrollView {
-      LazyVStack(alignment: .leading, spacing: 16) {
+      LazyVStack(alignment: .leading, spacing: (s.db.preferences ?? .init()).finamiSpacing) {
         VStack(alignment: .leading, spacing: 12) {
           FinamiSectionTitle(title: "Журнал операцій", subtitle: "\(values.count) записів за вибраними фільтрами", icon: "list.bullet.rectangle.portrait", tint: .teal)
           HStack { action(.expense,"Витрата","minus",.orange); action(.income,"Дохід","plus",.green); action(.transfer,"Переказ","arrow.left.arrow.right",.blue) }
@@ -95,12 +107,19 @@ struct Operations: View {
           Button("Показати ще (\(values.count - displayedValues.count))") { pageSize += 150 }.frame(maxWidth: .infinity).buttonStyle(.bordered)
         }
       }.padding()
-    }.background(Color(uiColor: .systemGroupedBackground)).searchable(text: $search, prompt: "Магазин, категорія, сума").navigationTitle("Операції")
+    }.background(finamiScreenBackground(s.db.preferences)).searchable(text: $search, prompt: "Магазин, категорія, сума").navigationTitle("Операції")
       .onChange(of: search) { _ in pageSize = 150 }
       .onChange(of: filter) { _ in pageSize = 150 }
       .onChange(of: sort) { _ in pageSize = 150 }
       .onChange(of: accountFilter) { _ in pageSize = 150 }
       .onChange(of: categoryFilter) { _ in pageSize = 150 }
+      .onChange(of: usePeriod) { _ in pageSize = 150 }
+      .onChange(of: dateFrom) { _ in pageSize = 150 }
+      .onChange(of: dateTo) { _ in pageSize = 150 }
+      .onChange(of: minimum) { _ in pageSize = 150 }
+      .onChange(of: maximum) { _ in pageSize = 150 }
+      .onChange(of: reviewOnly) { _ in pageSize = 150 }
+      .onChange(of: bankFilter) { _ in pageSize = 150 }
       .toolbar {
         Button { operationSettings = true } label: { Image(systemName: "slider.horizontal.3") }.accessibilityLabel("Налаштування операцій")
         Button { edit = Operation(account: s.db.accounts.first?.id ?? cash) } label: { Image(systemName: "plus.circle.fill") }.accessibilityLabel("Додати операцію")
@@ -248,7 +267,7 @@ struct OpEditor: View {
         if let suffix=o.creditContractSuffix {LabeledContent("Договір",value:"••"+suffix)}
         if o.bankPostingKnown == true {LabeledContent("Дата постінгу",value:o.bankPostingDate?.formatted(date:.abbreviated,time:.omitted) ?? "Невідомо — звірити з банком")}
         if let description = o.destinationBankNote { LabeledContent("Опис другої сторони",value:description) }
-        if let capture = o.captureSource { LabeledContent("Джерело запису", value: capture) }
+        LabeledContent("Джерело запису", value: o.sourceLabel)
         if let imageID = o.scanImageID { NavigationLink("Вкладений скриншот") { FinamiScanAttachment(imageID: imageID) } }
         if let n = o.originalAmount, let c = o.originalCurrency { LabeledContent("Оригінальна сума", value: currencyMoney(n,c)) }
         if let fee = o.bankFee, fee > 0 { LabeledContent("Комісія у виписці", value: money(fee)) }

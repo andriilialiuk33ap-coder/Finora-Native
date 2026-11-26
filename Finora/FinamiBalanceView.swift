@@ -2,17 +2,23 @@ import SwiftUI
 
 struct FinamiBalanceView: View {
     @EnvironmentObject private var s:Store
-    @State private var mode="move"
+    @State private var mode:String
+    init(initialMode:String="move") { _mode=State(initialValue:initialMode) }
     @State private var destination=""
     @State private var batch=""
     @State private var transferID=""
     @State private var selected=Set<String>()
     @State private var confirm=false
+    @State private var confirmedVersion:UInt64? = nil
     @State private var anchorDate=Date()
     @State private var anchorText=""
+    @State private var anchorKind="net"
+    @State private var ownText="0"
+    @State private var usedText=""
+    @State private var acceptEstimate=false
     @State private var availableText=""
     @State private var redundantAdjustment=""
-    private var protected:Set<String> {Set((s.db.paidRecords ?? []).compactMap(\.operationID))}
+    private var protected:Set<String> {Set((s.db.paidRecords ?? []).compactMap(\.operationID) + (s.db.exchangeDiary ?? []).flatMap{$0.linkedReceiptIDs ?? []} + s.db.operations.compactMap(\.refundOriginalID))}
     private var banks:[Account] {s.db.accounts.filter{$0.code=="UAH"}}
     private var transfers:[Operation] {s.db.operations.filter{o in o.kind == .transfer && o.groupedBankParts==nil && o.bankKey==nil && o.destinationBankKey==nil && s.db.accounts.first(where:{$0.id==o.account})?.code=="USD" && s.db.accounts.first(where:{$0.id==o.destination})?.code=="UAH" && !protected.contains(o.id)}.sorted{$0.date>$1.date}}
     private var transfer:Operation? {transfers.first{$0.id==transferID}}
@@ -46,7 +52,13 @@ struct FinamiBalanceView: View {
         return difference<=max(100,expected/100) ? candidates:[]
     }
     private var anchorAccount:Account? {banks.first{$0.id==destination}}
-    private var proposedOpening:Int64? {guard let a=anchorAccount,let n=bankMinor(anchorText),anchorDate<=Date() else{return nil};return finamiOpeningForAnchor(account:a,operations:s.db.operations,net:n,at:anchorDate)}
+    private var anchorNet:Int64? {
+        guard let a=anchorAccount else{return nil}
+        if anchorKind=="components",a.isCredit,let own=bankMinor(ownText),let used=bankMinor(usedText) {return CardPosition.netFrom(own:own,used:used)}
+        if anchorKind=="estimate" {guard acceptEstimate,let amount=bankMinor(availableText) else{return nil};return finamiEstimatedNetFromAvailable(amount,limit:a.limit)}
+        guard anchorKind=="net" else{return nil};return bankMinor(anchorText)
+    }
+    private var proposedOpening:Int64? {guard let a=anchorAccount,let n=anchorNet,anchorDate<=Date() else{return nil};return finamiOpeningForAnchor(account:a,operations:s.db.operations,net:n,at:anchorDate)}
     var body:some View {
         List {
             Section("Майстер звірки") {
@@ -64,6 +76,8 @@ struct FinamiBalanceView: View {
         }.navigationTitle("Розумна звірка")
         .onChange(of:mode){_ in selected=[];destination=""}
         .onChange(of:batch){_ in selected=[]}
+        .onChange(of:destination){_ in anchorText="";availableText="";ownText="0";usedText="";anchorKind="net";acceptEstimate=false}
+        .onChange(of:anchorKind){_ in acceptEstimate=false}
         .onChange(of:transferID){_ in selected=[];redundantAdjustment=""}
         .onChange(of:selected){_ in redundantAdjustment=""}
         .confirmationDialog("Підтвердити зміни фінансової бази?",isPresented:$confirm){Button("Застосувати"){apply()}}
@@ -91,16 +105,47 @@ struct FinamiBalanceView: View {
                 Text("Вилучай ручну різницю лише якщо це та сама різниця, вже врахована у фактичному зарахуванні, а не окрема комісія біржі.").font(.caption)
             }
         }
-        Button("Підтвердити звірку"){confirm=true}
+        Button("Підтвердити звірку"){confirmedVersion=s.databaseVersion;confirm=true}
     }}}
-    private var anchorSection:some View {Section("Чистий баланс банку на дату") {
-        DatePicker("Дата і час",selection:$anchorDate,in:...Date());FinamiField("Чистий залишок, UAH",text:$anchorText,keyboard:.numbersAndPunctuation)
-        FinamiField("Доступно за даними банку (необов’язково)",text:$availableText,keyboard:.decimalPad)
-        if let net=bankMinor(anchorText),let available=bankMinor(availableText),let a=anchorAccount,available>=0 {LabeledContent("Різниця з розрахунковим доступним",value:s.visibleMoney(available-CardPosition(net:net,limit:a.limit).available))}
-        if let a=anchorAccount,let n=proposedOpening {LabeledContent("Попередня база балансу",value:s.visibleMoney(a.opening));LabeledContent("Нова база балансу",value:s.visibleMoney(n));Text("Усі історичні операції залишаться. Імпорт операцій до контрольної дати не змінить поточний баланс. Перевір, що сума є чистим обліковим залишком, а не доступними коштами.").font(.caption);Button("Зберегти контрольний баланс"){confirm=true}}
+    private var anchorSection:some View {Section("Контрольний баланс на дату") {
+        DatePicker("Дата і час",selection:$anchorDate,in:...Date())
+        if let a=anchorAccount {
+            LabeledContent("Поточний чистий баланс Finami",value:a.hideAmounts == true ? "••••":s.visibleMoney(s.nativeBalance(a),a.code))
+            if a.isCredit {
+                LabeledContent("Кредитний ліміт",value:a.hideAmounts == true ? "••••":s.visibleMoney(a.limit,a.code))
+                LabeledContent("Доступний кредит Finami",value:a.hideAmounts == true ? "••••":s.visibleMoney(s.unusedCredit(a),a.code))
+            }
+            Picker("Тип банківських даних",selection:$anchorKind) {
+                Text("Чистий обліковий баланс").tag("net")
+                if a.isCredit {Text("Власні кошти та використано").tag("components")}
+                Text("Оцінка з доступних коштів").tag("estimate")
+            }
+            if anchorKind=="components" {
+                FinamiField("Власні кошти, UAH",text:$ownText,keyboard:.decimalPad)
+                FinamiField("Використано кредиту, UAH",text:$usedText,keyboard:.decimalPad)
+            } else if anchorKind=="net" {FinamiField("Чистий залишок, UAH (борг зі знаком −)",text:$anchorText,keyboard:.numbersAndPunctuation)}
+            FinamiField(anchorKind=="estimate" ? "Доступно в банку, UAH":"Доступно в банку (необов’язково)",text:$availableText,keyboard:.decimalPad)
+            if anchorKind=="estimate" {
+                Text("Доступні кошти можуть відрізнятися через холди. Це оцінка, не підтверджений обліковий баланс. Нуль доступного не визначає чистий борг.").font(.caption).foregroundStyle(.orange)
+                Toggle("Приймаю оцінку як контрольну точку",isOn:$acceptEstimate)
+            }
+            if let net=anchorNet,let n=proposedOpening {
+                let position=CardPosition(net:net,limit:a.limit)
+                let historical=FinamiLedgerIndex(operations:s.historyForAccount(a.id),accounts:[a]).balanceAt(a,date:anchorDate)
+                LabeledContent("Finami на вибрану дату",value:a.hideAmounts == true ? "••••":s.visibleMoney(historical))
+                LabeledContent("Різниця (банк − Finami)",value:a.hideAmounts == true ? "••••":s.visibleMoney(net-historical))
+                LabeledContent("Контрольний чистий баланс",value:a.hideAmounts == true ? "••••":s.visibleMoney(net))
+                if a.isCredit {LabeledContent("Використано",value:a.hideAmounts == true ? "••••":s.visibleMoney(position.used));LabeledContent("Невикористаний ліміт",value:a.hideAmounts == true ? "••••":s.visibleMoney(position.unused))}
+                if let available=bankMinor(availableText),available>=0 {LabeledContent("Різниця з доступним банку",value:a.hideAmounts == true ? "••••":s.visibleMoney(available-position.available))}
+                LabeledContent("Нова база балансу",value:a.hideAmounts == true ? "••••":s.visibleMoney(n))
+                Text("Підтверди після перевірки виписки. Історія залишається; операції після цієї дати змінюють баланс. Операції до контрольної дати не змінюють поточний баланс. Це не дохід і не витрата.").font(.caption)
+                Button("Зберегти контрольний баланс"){confirmedVersion=s.databaseVersion;confirm=true}
+            }
+        }
     }}
     private func apply(){
-        if mode=="anchor",let a=anchorAccount,let n=proposedOpening,let net=bankMinor(anchorText) {s.change{d in guard let i=d.accounts.firstIndex(where:{$0.id==a.id}) else{return};d.accounts[i].opening=n;d.accounts[i].reconciliationDate=anchorDate;d.accounts[i].reconciliationNet=net
+        guard confirmedVersion==s.databaseVersion else {s.error="Дані змінилися. Перевір та підтвердь звірку повторно.";return}
+        if mode=="anchor",let a=anchorAccount,let n=proposedOpening,let net=anchorNet {s.change{d in guard let i=d.accounts.firstIndex(where:{$0.id==a.id}) else{return};d.accounts[i].opening=n;d.accounts[i].reconciliationDate=anchorDate;d.accounts[i].reconciliationNet=net;d.accounts[i].reconciliationEstimated=(anchorKind=="estimate")
             if let available=bankMinor(availableText),available>=0 {var values=d.balanceObservations ?? [:];if values[a.id].map({$0.date<=anchorDate}) ?? true {values[a.id]=FinamiBalanceObservation(accountID:a.id,date:anchorDate,available:available,currency:a.code)};d.balanceObservations=values}
         };return}
         guard let p=proposal,let data=try? JSONEncoder().encode(FinamiBalanceUndo(before:s.db.operations,after:p)) else{return}

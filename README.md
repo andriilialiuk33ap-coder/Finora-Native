@@ -424,3 +424,10 @@ Fixed the Xcode 16.4 type-check timeout in FinamiExportView.swift by moving the 
 
 ## Finami 5.3.3 — Smart Balance Build Hotfix (build 33)
 Виправлено помилку компіляції AccountEditor.newOpening (Int64/Int) з журналу 5.3.2. Додано шість перевірок безпосередньо розрахунку редактора. Формат бази не змінено.
+
+## 6.1 Next
+Див. [FINAMI-6.1-UK.md](FINAMI-6.1-UK.md) — шість стилів, Design Lab, рівні сітки та оптимізація основних екранів.
+
+## 6.1.1 Next · Balance Repair
+
+Див. [FINAMI-6.1.1-UK.md](FINAMI-6.1.1-UK.md): контрольні баланси, точне перенесення імпортованих записів, джерела операцій та спільний розрахунок кредиту.

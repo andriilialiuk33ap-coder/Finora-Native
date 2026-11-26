@@ -23,7 +23,10 @@ func finamiStatementConflict(_ batch:BankBatch, account:Account, accounts:[Accou
     if let bank=batch.rows.first?.source,let assigned=account.bankName,!assigned.isEmpty,bankCanonicalName(bank) != bankCanonicalName(assigned){return true}
     if let iban=batch.statementIBAN,let own=bankNormalizedIBAN(account.statementIBAN ?? ""),iban != own {return true}
     if let identified=finamiStatementAccount(batch,accounts:accounts),identified != account.id{return true}
-    if let last=batch.statementLastFour,!finamiAccountMasks(account).isEmpty,!finamiAccountMasks(account).contains(last){return true}
+    let masks=Set(batch.statementMasks + [batch.statementLastFour].compactMap{$0})
+    let ownMasks=finamiAccountMasks(account)
+    let exactIBAN=batch.statementIBAN != nil && bankNormalizedIBAN(account.statementIBAN ?? "")==batch.statementIBAN
+    if !exactIBAN,!masks.isEmpty,!ownMasks.isEmpty,ownMasks.isDisjoint(with:masks){return true}
     return false
 }
 // A confirmed balance at a specific instant anchors the opening without erasing historical rows.
@@ -142,4 +145,36 @@ func finamiSynchronizeRefundLinks(_ operations:inout [Operation])->Bool {
     }
     for i in linked {if let id=operations[i].refundOriginalID,let original=lookup[id] {operations[i].category=original.category}}
     return true
+}
+
+// Available is not necessarily the accounting balance: holds and reserved funds may differ.
+// The caller must explicitly accept the estimate; a zero available amount is ambiguous.
+func finamiEstimatedNetFromAvailable(_ available:Int64, limit:Int64) -> Int64? {
+    guard available>0, available<=1_000_000_000_000, limit>=0, limit<=1_000_000_000_000 else{return nil}
+    return available-limit
+}
+
+// Exact keys from an identified statement may repair an earlier wrong-account import.
+// No amount/date-only guessing, no transfers, no linked records, no ambiguous keys.
+func finamiStatementReassignments(_ batch:BankBatch,operations:[Operation],target:Account,accounts:[Account],protected:Set<String>) -> [String:String] {
+    guard finamiStatementAccount(batch,accounts:accounts)==target.id,
+          !finamiStatementConflict(batch,account:target,accounts:accounts) else{return [:]}
+    let rows=Dictionary(grouping:batch.rows,by:\.key)
+    var owners:[String:[Operation]]=[:]
+    for o in operations {
+        for key in [o.bankKey,o.destinationBankKey].compactMap({$0}) + (o.groupedBankParts ?? []).map(\.key) {owners[key,default:[]].append(o)}
+    }
+    let refundIDs=Set(operations.compactMap(\.refundOriginalID))
+    var result:[String:String]=[:]
+    for (_,same) in rows {
+        guard same.count==1,let row=same.first,let matches=owners[row.key],matches.count==1,let o=matches.first,
+              o.account != target.id,o.bankKey==row.key,o.kind != .transfer,o.kind != .refund,o.refundOriginalID==nil,
+              o.destination.isEmpty,o.groupedBankParts==nil,o.destinationBankKey==nil,o.importBatch != nil,
+              !protected.contains(o.id),!refundIDs.contains(o.id),o.signedNative==row.signed,
+              o.statementIBAN==nil || (batch.statementIBAN != nil && o.statementIBAN==batch.statementIBAN),
+              let old=accounts.first(where:{$0.id==o.account}),old.code==target.code,
+              o.sourceBank.map({bankCanonicalName($0)==bankCanonicalName(row.source)})==true else{continue}
+        result[row.id]=o.id
+    }
+    return result
 }

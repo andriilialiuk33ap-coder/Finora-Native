@@ -79,6 +79,7 @@ struct Account: Codable, Identifiable {
   var additionalCardMasks: [String]? = nil
   var reconciliationDate: Date? = nil
   var reconciliationNet: Int64? = nil
+  var reconciliationEstimated: Bool? = nil
   var creditLimit: Int64? = nil
   var hiddenInAccounts: Bool? = nil
   var hiddenInOverview: Bool? = nil
@@ -142,6 +143,13 @@ struct Operation: Codable, Identifiable, Equatable {
   var neutralFee: Int64 {
     guard !kind.incoming, kind != .expense, kind != .transfer, sourceBank == "А-БАНК", originalCurrency == "UAH", let originalAmount, let bankFee, bankFee > 0, originalAmount == amount - bankFee else {return 0}
     return bankFee
+  }
+  var sourceLabel: String {
+    if let captureSource, !captureSource.isEmpty { return captureSource }
+    if sourceBank != nil || bankKey != nil || groupedBankParts != nil || destinationBankKey != nil { return "Банківська виписка" }
+    if scanImageID != nil || scanFingerprint != nil { return "Сканування" }
+    if importBatch != nil { return "Імпорт" }
+    return "Ручний / невідоме джерело"
   }
   var expenseValue: Int64 { kind == .expense ? amount : kind == .refund ? -amount : neutralFee }
   var expenseGroup: String { kind == .expense || kind == .refund ? category : "🏦 Комісії" }
@@ -356,13 +364,14 @@ struct DataFile: FileDocument {
   @Published private(set) var db = Database() {
     didSet {
       mutationVersion &+= 1
-      if oldValue.operations != db.operations { ledgerIndex = nil; reportCache.removeAll(); comparisonCache.removeAll(); activityCache.removeAll(); historyCache.removeAll() }
+      if oldValue.operations != db.operations { ledgerIndex = nil; reportCache.removeAll(); comparisonCache.removeAll(); activityCache.removeAll(); historyCache.removeAll(); dashboardMonthCache.removeAll() }
       if oldValue.accounts.map(\.id) != db.accounts.map(\.id) || oldValue.accounts.map(\.name) != db.accounts.map(\.name) || oldValue.accounts.map(\.hideAmounts) != db.accounts.map(\.hideAmounts) { historyCache.removeAll() }
       if oldValue.accounts.map(\.reconciliationDate) != db.accounts.map(\.reconciliationDate) || oldValue.accounts.map(\.id) != db.accounts.map(\.id) {ledgerIndex=nil}
     }
   }
   private var mutationVersion: UInt64 = 0
   private var ledgerIndex: FinamiLedgerIndex?
+  private var dashboardMonthCache: [DateInterval: [Operation]] = [:]
   private struct ActivityKey: Hashable { let account: String; let currency: String; let month: Date }
   private var activityCache: [ActivityKey: AccountActivity] = [:]
   private var historyCache: [FinamiHistoryQuery: [Operation]] = [:]
@@ -455,6 +464,10 @@ struct DataFile: FileDocument {
             loaded.operations = [Operation(kind:.expense,amount:30000,account:"qa-pumb"),Operation(kind:.income,amount:100000,account:"qa-pumb"),Operation(kind:.expense,amount:10000,account:"qa-otp"),Operation(kind:.income,amount:20000,account:"qa-otp")]
             var p = AppearancePreferences(); p.reportsShowComparison=false; p.reportsShowCategories=false; p.reportsShowChart=false; loaded.preferences=p
           }
+          if ProcessInfo.processInfo.arguments.contains("--finami-qa-design-fixture") {
+            loaded.accounts = [Account(id:"qa-design-credit",name:"QA Credit Card",opening:-10000,accountType:"credit",creditLimit:100000),Account(id:"qa-design-debit",name:"QA Debit",opening:50000,accountType:"debit")]
+            var p=AppearancePreferences();p.modernAccountGrid=true;p.designLayout="grid";p.accountsMode="all";loaded.preferences=p
+          }
           if ProcessInfo.processInfo.arguments.contains("--finami-qa-payment-fixture") || ProcessInfo.processInfo.arguments.contains("--finami-qa-link-fixture") {
             loaded.accounts.append(Account(id:"qa-card",name:"QA Card",opening:100000))
             loaded.obligations.append(Obligation(id:"qa-loan",kind:.installment,name:"QA installment",target:30000,paid:10000,monthly:10000,due:Date().addingTimeInterval(-86400)))
@@ -515,7 +528,7 @@ struct DataFile: FileDocument {
   // Heavy statement imports encode a snapshot off the UI thread. The live
   // version must be unchanged before committing, so no edit can be overwritten.
   var databaseVersion: UInt64 { mutationVersion }
-  func replaceOperationsForImport(_ operations: [Operation], expectedVersion: UInt64) async -> Bool {
+  func replaceOperationsForImport(_ operations: [Operation], expectedVersion: UInt64, recordUndo:Bool = false) async -> Bool {
     guard expectedVersion == mutationVersion else { error = "Дані змінилися. Повтори перевірку виписки."; return false }
     guard ready else { error = "Запис заблоковано."; return false }
     let version = mutationVersion
@@ -523,7 +536,9 @@ struct DataFile: FileDocument {
     guard finamiLinkedOperationsPreserved(before: db, after: copy) else { error = "Імпорт змінює операцію, пов’язану з платежем. Перевір зіставлення."; return false }
     guard finamiSynchronizeRefundLinks(&copy.operations) else {error="Імпорт порушує зв’язок повернення з покупкою.";return false}
     guard finamiGroupedTransfersPreserved(before:db.operations,after:copy.operations) else {error="Імпорт змінює груповий переказ.";return false}
-    if db.operations != copy.operations {copy.reconciliationUndo=nil}
+    if db.operations != copy.operations {
+      copy.reconciliationUndo = recordUndo ? try? JSONEncoder().encode(FinamiBalanceUndo(before:db.operations,after:copy.operations)) : nil
+    }
     let candidate = copy
     do {
       let data = try await Task.detached(priority:.userInitiated) { try JSONEncoder().encode(candidate) }.value
@@ -564,20 +579,30 @@ struct DataFile: FileDocument {
     if kind == .expense {return operations.reduce(0) { $0 + $1.expenseValue }}
     return operations.reduce(0) { $0 + ($1.kind == kind ? $1.amount : 0) }
   }
-  func month(_ date: Date) -> [Operation] { db.operations.filter { sameMonth($0.date, date) } }
+  func month(_ date: Date) -> [Operation] {
+    let cal = Calendar.current
+    guard let interval = cal.dateInterval(of:.month,for:date) else { return db.operations.filter { sameMonth($0.date,date) } }
+    if let cached = dashboardMonthCache[interval] { return cached }
+    let values = db.operations.filter { $0.date >= interval.start && $0.date < interval.end }
+    if dashboardMonthCache.count >= 4 { dashboardMonthCache.removeAll(keepingCapacity:true) }
+    dashboardMonthCache[interval] = values
+    return values
+  }
   var currentRate: Decimal? { fxRate(db.currencyPreferences?.usdRate ?? "") }
   func nativeBalance(_ a: Account) -> Int64 {
     indexedLedger.balance(a)
   }
-  func ownFunds(_ a: Account) -> Int64 { CardPosition(net:nativeBalance(a),limit:a.limit).own }
-  func debt(_ a: Account) -> Int64 { CardPosition(net:nativeBalance(a),limit:a.limit).used }
-  func available(_ a: Account) -> Int64 { CardPosition(net:nativeBalance(a),limit:a.limit).available }
+  func cardPosition(_ a: Account) -> CardPosition { CardPosition(net:nativeBalance(a),limit:a.limit) }
+  func ownFunds(_ a: Account) -> Int64 { cardPosition(a).own }
+  func debt(_ a: Account) -> Int64 { cardPosition(a).used }
+  func available(_ a: Account) -> Int64 { cardPosition(a).available }
+  func unusedCredit(_ a: Account) -> Int64 { cardPosition(a).unused }
   func uah(_ n: Int64, account a: Account) -> Int64 { a.code == "USD" ? currentRate.flatMap{fxMinor(n,rate:$0)} ?? 0 : n }
   var includedAccounts: [Account] { db.accounts.filter { $0.excludedFromTotals != true } }
   var totalCreditLimit: Int64 { includedAccounts.filter(\.isCredit).reduce(0) { $0 + uah($1.limit, account: $1) } }
   var totalCreditUsed: Int64 { includedAccounts.filter(\.isCredit).reduce(0) { $0 + uah(debt($1), account: $1) } }
   var totalOwnFunds: Int64 { includedAccounts.reduce(0){$0+uah(ownFunds($1),account:$1)} }
-  var totalAvailableCredit: Int64 { includedAccounts.filter(\.isCredit).reduce(0){$0+uah(max(0,$1.limit-debt($1)),account:$1)} }
+  var totalAvailableCredit: Int64 { includedAccounts.filter(\.isCredit).reduce(0){$0+uah(unusedCredit($1),account:$1)} }
   var totalAccountDebt: Int64 { includedAccounts.reduce(0){$0+uah(debt($1),account:$1)} }
   func balance(_ a: Account) -> Int64 {
     let n=nativeBalance(a)
@@ -813,17 +838,17 @@ struct MonthControl: View {
       Button {
         date = shift(date, -1)
       } label: {
-        Image(systemName: "chevron.left")
-      }
+        Image(systemName: "chevron.left").frame(width:44,height:44)
+      }.accessibilityLabel("Попередній місяць")
       Spacer()
       Text(monthName(date).capitalized).font(.headline)
       Spacer()
       Button {
         date = shift(date, 1)
       } label: {
-        Image(systemName: "chevron.right")
-      }
-    }.padding(.vertical, 6)
+        Image(systemName: "chevron.right").frame(width:44,height:44)
+      }.accessibilityLabel("Наступний місяць")
+    }.padding(.vertical, 2)
   }
 }
 struct Home: View {
@@ -922,17 +947,15 @@ struct Accounts: View {
   func update(_ action:(inout AppearancePreferences)->Void) { s.changeAppearance { p in action(&p) } }
   var shown:[Account] { s.db.accounts.filter { (prefs.accountsShowHidden == true || $0.hiddenInAccounts != true) && (mode == "all" || (mode == "credit" ? $0.isCredit : (!$0.isCredit || s.ownFunds($0)>0))) } }
   var body: some View {
-    ScrollView { VStack(spacing: 14) {
+    ScrollView { LazyVStack(spacing: prefs.finamiSpacing) {
       FinamiAccountsBalance()
       Button { reorder = true } label: { Label("Змінити порядок рахунків", systemImage: "arrow.up.arrow.down").font(.subheadline.weight(.medium)).frame(maxWidth: .infinity, alignment: .leading).padding(12) }.buttonStyle(.plain).background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14))
       Picker("Розділ",selection:Binding(get:{mode},set:{v in update{$0.accountsMode=v}})){Text("Власні").tag("own");Text("Кредитні").tag("credit");Text("Усі").tag("all")}.pickerStyle(.segmented)
       if mode != "own" { FinamiCreditSummary(showLimit:prefs.accountsShowLimit ?? true,showUsed:prefs.accountsShowUsed ?? true,showAvailable:prefs.accountsShowAvailable ?? true).environment(\.finamiMask, prefs.accountsHideCredit == true) }
-      if !dynamicTypeSize.isAccessibilitySize {
-        Button { update{$0.modernAccountGrid = !(prefs.modernAccountGrid ?? false)} } label: { Label(prefs.modernAccountGrid == true ? "Докладні картки" : "Компактна сітка",systemImage:prefs.modernAccountGrid == true ? "list.bullet" : "square.grid.2x2").font(.subheadline).frame(maxWidth:.infinity,alignment:.leading).padding(.vertical,6) }.buttonStyle(.bordered)
-      }
+      Picker("Вигляд рахунків",selection:Binding(get:{prefs.finamiLayout},set:{v in update{$0.designLayout=v;$0.modernAccountGrid=v == "grid"}})) { Text("Сітка").tag("grid");Text("Список").tag("list");Text("Картки").tag("cards") }.pickerStyle(.segmented).accessibilityIdentifier("qa.account.layout")
       if shown.isEmpty { FinamiEmptyCard(title: "Немає рахунків", detail: "Додай рахунок або зміни режим відображення.", icon: "wallet.pass") }
-      if prefs.modernAccountGrid == true && !dynamicTypeSize.isAccessibilitySize {
-        FinamiCompactAccountsGrid(accounts:finamiOrderedAccounts(shown),mode:mode,date:Date())
+      if prefs.finamiLayout != "cards" {
+        FinamiCompactAccountsGrid(accounts:finamiOrderedAccounts(shown),mode:mode,date:Date(),onAccountsScreen:true)
       } else {
       ForEach(finamiOrderedAccounts(shown)) { a in
         VStack(alignment: .leading, spacing: 5) {
@@ -946,7 +969,7 @@ struct Accounts: View {
       Button {edit=Account(name:"",accountType:"debit")} label:{Label("Додати рахунок",systemImage:"plus.circle.fill").frame(maxWidth:.infinity).padding(8)}.buttonStyle(.borderedProminent)
       NavigationLink { FinamiScanView(initialMode: .balance) } label: { Label("Звірити зі скриншота", systemImage: "doc.viewfinder") }
       NavigationLink("Перевірити старі імпортовані операції") { CreditImportCorrection() }
-    }.padding() }.background(Color(uiColor:.systemGroupedBackground)).navigationTitle("Рахунки").toolbar {
+    }.padding() }.background(finamiScreenBackground(s.db.preferences)).navigationTitle("Рахунки").toolbar {
       ToolbarItemGroup(placement:.navigationBarTrailing) {
         Button {configure=true} label:{Image(systemName:"slider.horizontal.3")}.accessibilityLabel("Налаштування рахунків")
         Button {edit=Account(name:"",accountType:"debit")} label:{Image(systemName:"plus.circle.fill")}.accessibilityLabel("Додати рахунок")
@@ -982,7 +1005,7 @@ struct CreditAccountRow: View {
       if a.isCredit && mode != "own" {
         FinamiMetric(title: "Кредитний ліміт", value: display(a.limit), tint: .primary)
         FinamiMetric(title: "Використано", value: display(s.debt(a)), tint: .orange)
-        FinamiMetric(title: "Доступний кредит", value: display(max(0,a.limit-s.debt(a))), tint: .green)
+        FinamiMetric(title: "Доступний кредит", value: display(s.unusedCredit(a)), tint: .green)
       } else if s.nativeBalance(a) < 0 { FinamiMetric(title: "Чистий залишок", value: display(s.nativeBalance(a)), tint: .orange) }
       if a.excludedFromTotals == true { Text("Не враховується в загальних сумах").font(.caption).foregroundStyle(.secondary) }
     }.padding(18).frame(maxWidth:.infinity,alignment:.leading).modifier(FinamiCardStyle(tint:.teal))
@@ -1054,12 +1077,12 @@ struct AccountEditor: View {
           Toggle("Не враховувати в загальних сумах", isOn: Binding(get:{a.excludedFromTotals ?? false},set:{a.excludedFromTotals=$0}))
           Text("Видимість не видаляє операції та не змінює історію.").font(.caption)
         }
-        if let date=a.reconciliationDate {Text("Контрольний баланс на "+date.formatted(date:.abbreviated,time:.shortened)+". Зміна початкової суми або ручна корекція скине цю прив’язку.").font(.caption)}
+        if let date=a.reconciliationDate {Text((a.reconciliationEstimated == true ? "Оціночний контрольний баланс на ":"Контрольний баланс на ")+date.formatted(date:.abbreviated,time:.shortened)+". Зміна початкової суми скине прив’язку; нова звірка встановить контрольну дату.").font(.caption)}
         Toggle("Звірити з поточним балансом банку",isOn:$correctBalance)
         if correctBalance {
           if a.isCredit {Picker("Яку суму показує банк",selection:$actualMode){Text("Чистий баланс (+ власні / − борг)").tag("net");Text("Доступно разом з кредитом").tag("available");Text("Власні кошти та використаний кредит").tag("components")}}
           if a.isCredit && actualMode == "components" {componentFields} else {FinamiField("Поточна сума, \(a.code)", text: $actualText, keyboard: .numbersAndPunctuation)}
-          Text("Початковий залишок буде скориговано з урахуванням усієї записаної історії. Це не створює дохід. Не застосовуй до неповної історії без звірки.").font(.caption)
+          Text("Звірка встановить контрольний баланс на поточну дату. Історія збережеться; старі імпорти не змінять контрольну точку. Якщо банк показує доступні кошти з холдами, використовуй чистий баланс або борг. Це не дохід.").font(.caption)
         } else if a.isCredit && !existingAccount {
           componentFields
         } else {
@@ -1075,8 +1098,18 @@ struct AccountEditor: View {
         ToolbarItem(placement: .confirmationAction) {
           Button("Зберегти") {
             guard let n = newOpening, validLimit else { return }
-            if a.opening != n || correctBalance {a.reconciliationDate=nil;a.reconciliationNet=nil}
-            a.opening = n
+            if correctBalance {
+              let net:Int64?
+              if a.isCredit && actualMode == "components" { net=enteredCardNet }
+              else if a.isCredit && actualMode == "available" { net=bankMinor(actualText).flatMap { finamiEstimatedNetFromAvailable($0,limit:bankMinor(limitText) ?? 0) } }
+              else { net=bankMinor(actualText) }
+              let now=Date()
+              guard let actual=net,let adjusted=finamiOpeningForAnchor(account:a,operations:s.db.operations,net:actual,at:now) else { s.error="Уточни чистий баланс або використаний кредит. Нуль доступного не визначає борг.";return }
+              a.opening=adjusted;a.reconciliationDate=now;a.reconciliationNet=actual;a.reconciliationEstimated=(actualMode == "available" && a.isCredit)
+            } else {
+              if a.opening != n {a.reconciliationDate=nil;a.reconciliationNet=nil;a.reconciliationEstimated=nil}
+              a.opening=n
+            }
             a.statementIBAN = bankNormalizedIBAN(a.statementIBAN ?? "")
             a.additionalCardMasks = Array(Set(masksText.split(separator:",").map{String($0).trimmingCharacters(in:.whitespacesAndNewlines)}.filter{$0.count==4 && $0.allSatisfy{$0.isASCII && $0.isNumber}})).sorted()
             a.creditLimit = a.isCredit ? bankMinor(limitText) : nil
@@ -1128,9 +1161,9 @@ struct More: View {
     switch kind { case .installment: return .blue; case .owe: return .orange; case .owed: return .green; case .recurring: return .purple; case .goal: return .teal }
   }
   var body: some View {
-    ScrollView { VStack(alignment: .leading, spacing: 20) {
+    ScrollView { LazyVStack(alignment: .leading, spacing: (s.db.preferences ?? .init()).finamiSpacing) {
       VStack(alignment: .leading, spacing: 6) {
-        Text("Finami").font(.system(size: 40, weight: .bold, design: .rounded))
+        Text("Finami").font(.title.bold())
         Text("Особисті фінанси.").font(.subheadline).foregroundStyle(.secondary)
       }.frame(maxWidth: .infinity, alignment: .leading).padding(18).modifier(FinamiCardStyle(tint: .teal))
       NavigationLink { FinamiGlobalSearch() } label: { FinamiMenuLabel(title:"Пошук Finami",icon:"magnifyingglass",color:.teal) }.buttonStyle(.plain)
@@ -1198,7 +1231,7 @@ struct More: View {
         Text("Finami · " + FinamiBuildInfo.version + " · " + FinamiBuildInfo.edition + "\nБез реклами, серверів та платних API.").font(.footnote)
           .foregroundStyle(.secondary)
       }
-    }.padding() }.background(Color(uiColor: .systemGroupedBackground)).navigationTitle("Ще").toolbar{Button{menuSettings=true} label:{Image(systemName:"slider.horizontal.3")}.accessibilityLabel("Налаштування меню")}.sheet(isPresented:$menuSettings){NavigationStack{Form{Toggle("Компактні ілюстрації",isOn:Binding(get:{s.db.preferences?.menuCompact ?? false},set:{v in s.changeAppearance { p in p.menuCompact=v }}));NavigationLink("Студія дизайну"){AppearanceView()};NavigationLink("Блоки головної"){DashboardSettings()};NavigationLink("Рахунки"){FinamiAccountSettings()}}.navigationTitle("Налаштування меню").toolbar{Button("Готово"){menuSettings=false}}}}
+    }.padding() }.background(finamiScreenBackground(s.db.preferences)).navigationTitle("Ще").toolbar{Button{menuSettings=true} label:{Image(systemName:"slider.horizontal.3")}.accessibilityLabel("Налаштування меню")}.sheet(isPresented:$menuSettings){NavigationStack{Form{Toggle("Компактні ілюстрації",isOn:Binding(get:{s.db.preferences?.menuCompact ?? false},set:{v in s.changeAppearance { p in p.menuCompact=v }}));NavigationLink("Студія дизайну"){AppearanceView()};NavigationLink("Блоки головної"){DashboardSettings()};NavigationLink("Рахунки"){FinamiAccountSettings()}}.navigationTitle("Налаштування меню").toolbar{Button("Готово"){menuSettings=false}}}}
   }
 }
 struct Budgets: View {

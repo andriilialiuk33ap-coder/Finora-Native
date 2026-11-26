@@ -189,6 +189,10 @@ struct FinamiReconciliation: View {
     var body: some View {
         List {
             Section {
+                NavigationLink("Ввести контрольний баланс банку") { FinamiBalanceView(initialMode:"anchor") }
+                NavigationLink("Перенести записи або об’єднати обмін") { FinamiBalanceView() }
+                NavigationLink("Перевірити схожі операції") { FinamiNextReviewView() }
+                NavigationLink("Вхідні банківські події (\(s.capturePending.count))") { AutomationCenter() }
                 NavigationLink("Звірити зі скриншота") { FinamiScanView(initialMode: .balance) }
                 Text("Доступний залишок із банківського повідомлення зберігається як довідка. Він може включати кредит або блокування коштів. Finami не змінює баланс без підтвердження.").font(.caption)
             }

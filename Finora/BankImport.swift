@@ -292,9 +292,16 @@ struct BankReview: View {
     @State private var linked: [String: String] = [:]
     @State private var confirm = false
     @State private var saving = false
+    @State private var repairAccounts = false
+    @State private var confirmedVersion:UInt64? = nil
+    private var protectedIDs:Set<String> {Set((s.db.paidRecords ?? []).compactMap(\.operationID) + (s.db.exchangeDiary ?? []).flatMap{$0.linkedReceiptIDs ?? []})}
+    private var reassignments:[String:String] {
+        guard let target=s.db.accounts.first(where:{$0.id==account}) else{return [:]}
+        return finamiStatementReassignments(batch,operations:s.db.operations,target:target,accounts:s.db.accounts,protected:protectedIDs)
+    }
     private var otherAccountKeys:Set<String> {Set(s.db.operations.flatMap { o in [o.account != account ? o.bankKey : nil,o.destination != account ? o.destinationBankKey : nil].compactMap{$0} + (o.destination != account ? (o.groupedBankParts ?? []).map(\.key) : []) })}
     private func isSelected(_ row: BankRow, matches: [Operation], otherKeys:Set<String>) -> Bool {
-        linked[row.id] == nil && !excluded.contains(row.id) && ((matches.isEmpty && !otherKeys.contains(row.key)) || includedMatches.contains(row.id))
+        !otherKeys.contains(row.key) && linked[row.id] == nil && !excluded.contains(row.id) && (matches.isEmpty || includedMatches.contains(row.id))
     }
     private func setSelected(_ row: BankRow, _ value: Bool) {
         if value { excluded.remove(row.id); includedMatches.insert(row.id); linked.removeValue(forKey:row.id) }
@@ -309,13 +316,13 @@ struct BankReview: View {
                     Text(row.date.formatted(date:.abbreviated,time:.shortened)).font(.caption)
                     Text(kind(row).title).font(.caption).foregroundStyle(kind(row).needsReview ? Color.orange : Color.secondary)
                     Text(category(row)).font(.caption)
-                    if otherKeys.contains(row.key) {Text("Цей ключ уже на іншому рахунку. Перевір у майстрі звірки.").font(.caption).foregroundStyle(.orange)}
+                    if otherKeys.contains(row.key) {Text("Цей ключ уже на іншому рахунку. Повторний запис заблоковано; перевір перенесення або звірку.").font(.caption).foregroundStyle(.orange)}
                     if row.postingKnown == true && row.postingDate == nil {Text("Дата постінгу відсутня — звірити з банком").font(.caption).foregroundStyle(.orange)}
                     if let warning=row.warning {Text(warning).font(.caption).foregroundStyle(.orange)}
                     if row.fee>0 {Text("Комісія: "+s.visibleMoney(row.fee)).font(.caption)}
                 }
-            }.accessibilityIdentifier("qa.statement.new." + row.id)
-            if !matches.isEmpty {
+            }.disabled(otherKeys.contains(row.key)).accessibilityIdentifier("qa.statement.new." + row.id)
+            if !matches.isEmpty && !otherKeys.contains(row.key) {
                 Text("Можливий дубль: запис із такою сумою вже є. Обери його або увімкни імпорт, якщо це інша операція.").font(.caption).foregroundStyle(.orange)
                 Picker("Пов’язати з операцією",selection:Binding(get:{linked[row.id] ?? ""},set:{ value in
                     if value.isEmpty {linked.removeValue(forKey:row.id)}
@@ -338,12 +345,14 @@ struct BankReview: View {
         let selected = rows.filter { isSelected($0,matches:matches[$0.id] ?? [],otherKeys:otherKeys) }
         let linkedCount = rows.filter { linked[$0.id] != nil }.count
         let enrichCount=finamiEnrichStatementMetadata(batch,operations:s.db.operations,account:account).count
+        let moves=reassignments
+        let moveCount=repairAccounts ? moves.count:0
         let needsReview = rows.filter { (!(matches[$0.id] ?? []).isEmpty || otherKeys.contains($0.key)) && linked[$0.id] == nil && !isSelected($0,matches:matches[$0.id] ?? [],otherKeys:otherKeys) }.count
         return List {
             Section {
                 LabeledContent("Рахунок",value:s.accountName(account))
                 LabeledContent("Нові рядки",value:String(rows.count))
-                if batch.rows.contains(where:{otherKeys.contains($0.key)}) { Text("Деякі банківські ключі вже є на іншому рахунку. Перевір, чи обрано правильну картку; їх пропущено за замовчуванням. Увімкни рядок лише якщо це дійсно окрема операція.").font(.caption).foregroundStyle(.orange) }
+                if batch.rows.contains(where:{otherKeys.contains($0.key)}) { Text("Деякі банківські ключі вже є на іншому рахунку. Повторний імпорт заблоковано; підтвердь перенесення однозначних рядків або звір їх вручну.").font(.caption).foregroundStyle(.orange) }
                 LabeledContent("Уже імпортовано / повтори",value:String(batch.rows.count-rows.count))
                 LabeledContent("Потребують звірки",value:String(needsReview))
                 LabeledContent("Нових операцій до запису",value:String(selected.count))
@@ -356,8 +365,30 @@ struct BankReview: View {
                 if rows.isEmpty {Label("У цій виписці немає нових операцій",systemImage:"checkmark.shield").foregroundStyle(.green)}
                 else {Text("Повторно імпортуються лише ще не записані рядки. Схожі ручні, скановані та автоматичні операції пропущено до підтвердження.").font(.caption)}
             }
+            if !moves.isEmpty { repairSection(moves) }
             ForEach(rows) { row in rowView(row,matches:matches[row.id] ?? [],otherKeys:otherKeys) }
-        }.disabled(saving).overlay { if saving { ProgressView("Збереження…").padding().background(.regularMaterial,in:RoundedRectangle(cornerRadius:12)) } }.navigationTitle("Перевірити імпорт").toolbar{Button("Зберегти (\(selected.count + linkedCount + enrichCount))"){confirm=true}.disabled(saving || (selected.isEmpty && linkedCount==0 && enrichCount==0))}.confirmationDialog("Зберегти вибрані операції?",isPresented:$confirm){Button("Зберегти") { save() }}
+        }.disabled(saving).overlay { if saving { ProgressView("Збереження…").padding().background(.regularMaterial,in:RoundedRectangle(cornerRadius:12)) } }.navigationTitle("Перевірити імпорт").toolbar{Button("Зберегти (\(selected.count + linkedCount + enrichCount + moveCount))"){confirmedVersion=s.databaseVersion;confirm=true}.disabled(saving || (selected.isEmpty && linkedCount==0 && enrichCount==0 && moveCount==0))}.confirmationDialog("Зберегти вибрані операції?",isPresented:$confirm){Button("Зберегти") { save() }}
+    }
+    private func repairSection(_ moves:[String:String])->some View {
+        let ids=Set(moves.values)
+        let selectedRows=s.db.operations.filter{ids.contains($0.id)}
+        let oldLedger=FinamiLedgerIndex(operations:s.db.operations,accounts:s.db.accounts)
+        let next=s.db.operations.map { o -> Operation in var copy=o;if ids.contains(o.id){copy.account=account};return copy }
+        let newLedger=FinamiLedgerIndex(operations:next,accounts:s.db.accounts)
+        return Section("Виправити рахунок раніше імпортованих") {
+            Toggle("Перенести \(ids.count) точних збігів",isOn:$repairAccounts)
+            Text("Перенесення лише після підтвердження. Не створює нові записи, зберігає категорії та ключі. Перевір рахунок і список. Баланси нижче — ефект тільки перенесення, без нових рядків.").font(.caption)
+            ForEach(s.db.accounts.filter{oldLedger.balance($0) != newLedger.balance($0)}) { a in
+                VStack(alignment:.leading) { Text(a.name);Text(a.hideAmounts == true ? "••••" : s.visibleMoney(oldLedger.balance(a),a.code)+" → "+s.visibleMoney(newLedger.balance(a),a.code)).font(.caption) }
+            }
+            ForEach(selectedRows) { o in
+                VStack(alignment:.leading) { Text(o.note.isEmpty ? o.kind.title:o.note);Text(repairRowLabel(o)).font(.caption) }
+            }
+        }
+    }
+    private func repairRowLabel(_ o:Operation)->String {
+        let hidden=s.db.accounts.contains { ($0.id==o.account || $0.id==account) && $0.hideAmounts==true }
+        return s.accountName(o.account)+" → "+s.accountName(account)+" · "+(hidden ? "••••":s.visibleMoney(o.signedNative))
     }
     func kind(_ row: BankRow) -> Kind {
         let credit = s.db.accounts.first(where: {$0.id == account})?.isCredit ?? false
@@ -375,16 +406,21 @@ struct BankReview: View {
     func save() {
         guard !saving, let selectedAccount=s.db.accounts.first(where:{$0.id == account && $0.code == "UAH"}), !finamiStatementConflict(batch,account:selectedAccount,accounts:s.db.accounts) else {return}
         let version = s.databaseVersion
+        guard confirmedVersion==version else {s.error="Дані змінилися після перегляду. Підтвердь імпорт повторно.";return}
         // Recompute against the live ledger immediately before committing.
         let index = FinamiStatementMatchIndex(operations:s.historyForAccount(account),account:account)
         let rows = index.newRows(batch.rows)
-        let enriched=finamiEnrichStatementMetadata(batch,operations:s.db.operations,account:account)
+        let moves=repairAccounts ? reassignments:[:]
+        let moveIDs=Set(moves.values)
+        let moved=s.db.operations.map { o -> Operation in var copy=o;if moveIDs.contains(o.id){copy.account=account};return copy }
+        let enriched=finamiEnrichStatementMetadata(batch,operations:moved,account:account)
         var operations = enriched.operations
         let positions = Dictionary(operations.enumerated().map { ($0.element.id,$0.offset) },uniquingKeysWith:{first,_ in first})
         let otherKeys=otherAccountKeys
         let batchID = UUID().uuidString
         var added = 0, matched = 0
         for row in rows {
+            if otherKeys.contains(row.key) {continue}
             if let id = linked[row.id] {
                 guard let i = positions[id], finamiAttachStatement(row,to:&operations[i],account:account) else { s.error="Операція змінилася. Перевір звірку ще раз.";return }
                 matched += 1
@@ -394,12 +430,12 @@ struct BankReview: View {
                 operations.append(o);added += 1
             }
         }
-        guard added+matched+enriched.count>0 else {s.error="Немає нових або вибраних рядків.";return}
+        guard added+matched+enriched.count+moveIDs.count>0 else {s.error="Немає нових або вибраних рядків.";return}
         saving = true
         let prepared = operations, newCount = added, linkedCount = matched, updatedCount=enriched.count
         Task { @MainActor in
             defer { saving = false }
-            if await s.replaceOperationsForImport(prepared,expectedVersion:version) {s.error="Додано: \(newCount). Звірено без зміни балансу: \(linkedCount). Оновлено реквізитів: \(updatedCount)."; dismiss()}
+            if await s.replaceOperationsForImport(prepared,expectedVersion:version,recordUndo:!moveIDs.isEmpty) {s.error="Додано: \(newCount). Звірено без зміни балансу: \(linkedCount). Перенесено: \(moveIDs.count). Оновлено реквізитів: \(updatedCount)."; dismiss()}
         }
     }
 }
