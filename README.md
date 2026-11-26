@@ -1,3 +1,36 @@
+# Finami 5.0 Preview 10 — Smart & Stability (Build 19)
+
+Оновлення на основі Preview 9. Bundle ID та файл бази не змінено.
+
+## Нове в коді
+- Центр імпорту та перевірки: скриншоти, розстрочки, чеки, виписки, голос, банківські повідомлення, неуточнені операції, історія пакетного імпорту та локальні копії.
+- Автоматичний підбір рахунку за маскою з чотирьох цифр у межах визначеного банку. Вказуй банк та останні 4 цифри у редакторі рахунку. Для дії «сповіщення банку» можна використати код `auto` і вказати назву банку. Якщо рахунок не визначений однозначно — подія потрапляє у вхідні. Ручний вибір рахунку та категорії, навчання категорії продавця разом зі збереженням операції.
+- Опційні локальні сповіщення про збережені операції (без фінансової суми). Події, отримані через App Intent, як раніше обробляються з локальної черги при відкритому й розблокованому Finami. Це не гарантія миттєвого запису на заблокованому iPhone.
+- Звірка: сума «Доступно» у банківському повідомленні є довідковою. Finami порівнює її після підтвердження операції, не змінює початковий баланс самостійно. Для коригування є окреме підтвердження зі скриншота.
+- Finami Scan: об’єднання кількох фото одного договору з окремим аналізом кожного; суперечливі поля залишаються порожніми; збереження явно розпізнаних рядків графіка як довідки. Не імпортує статуси платежів і не вигадує відсутні рядки.
+- Діагностика: стан читання бази, дозволи на сповіщення, мікрофон та мовлення, кількість запланованих нагадувань, часові позначки викликів Команд, локальний тест парсера без запису операції.
+- Зашифрована резервна копія JSON (AES-GCM, PBKDF2-HMAC-SHA256 600000 ітерацій, випадкова сіль, новий nonce). Пароль від 12 символів. Старий JSON/CSV та локальні копії збережено; вони не шифруються цим паролем. Вхідна черга, токени Keychain та налаштування системних автоматизацій не включені. Втрата пароля означає втрату можливості розшифрувати копію.
+- GitHub Actions: simulator workflow тепер запускається на змінах вихідного коду (push/PR) і вручну; використовує квоту macOS. Розширено UI-тести центру імпорту й діагностики; додано регресійні тести маршрутизації, графіка, звірки та окрему macOS-перевірку шифрування.
+
+## Важливі обмеження
+- Справжні shared Shortcut URL не включені: їх треба створити/експортувати на Apple-пристрої. Кнопки чесно названі «Налаштувати шаблон», доки URL не задано. Після введення перевіреного за форматом iCloud URL — «Додати в Команди». Це не підтверджує існування команди, активацію тригера або його роботу під замком. Дії Finami доступні через системний ShortcutsLink, якщо їх зареєструвала iOS.
+- ПУМБ перевірено на транскрибованих прикладах; специфічні формати сповіщень OTP/Приват24 потребують прикладів. Реальний OCR, SwiftUI, Apple Pay/сповіщення та шифрування не виконувалися на iOS у цьому Linux-середовищі. macOS/Xcode та реальні iPhone-тести залишаються обов’язковими.
+- Редизайн усіх екранів, відновлення видаленого окремого запису одним натисканням і повний автоматичний імпорт усіх банківських графіків не реалізовані цим оновленням. Існує скасування пакетного імпорту та відновлення попередньої бази; це різні операції.
+
+## Встановлення
+Зроби резервну копію; розпакуй весь ZIP і скопіюй вміст у локальний GitHub Desktop репозиторій, не видаляючи `.git`. Commit + Push; `Test Finami on iOS Simulator` запуститься автоматично, `Build Finami IPA` запускається вручну. Дивись журнали і артефакти з симулятора. Збірку не оголошено стабільною, доки не пройдено Apple-перевірки.
+
+---
+
+# Preview 8 QA · Build 17
+
+- Fixed an incorrect adjacent amount assignment for reversed label/value OCR layouts. Ambiguous runs stay empty.
+- Added three Foundation regression checks and a four-scenario XCUITest target.
+- Run **Test Finami on iOS Simulator** on GitHub Actions. Its result bundle contains test screenshots.
+- UI tests use a separate database directory, available only in Debug on simulator. They do not modify a real user's data.
+- The OCR fixture is a synthetic image passed to the real Vision pipeline, not a test of the system PhotosPicker or a real bank layout.
+- Xcode / XCUITest execution requires the macOS runner; not validated locally. The genuine imported Shortcuts automation and real bank notifications still require separate testing.
+
 # Finami 5.0.0 — Preview 7 (build 15), виправлення
 
 На основі Preview 6; Bundle ID і формат фінансової бази не змінено.
@@ -282,3 +315,12 @@ WidgetKit-віджети, App Intents/Команди Wallet та SMS, автом
 - Retry Vision without language correction if first pass returns no text. Actual bank screenshot recognition still needs device testing.
 - Added AppShortcutsProvider entries for Wallet, bank notification and bank SMS, in addition to diagnostics. These are app shortcuts/actions, not a signed shareable personal automation. Configure the trigger, input and account manually in Shortcuts. To distribute a real importable template, create and export a working shortcut using Apple Shortcuts and share its iCloud link. No fake link or unsigned file is supplied.
 - Foundation tests and Swift syntax checked locally. iOS SDK compilation, real OCR, App Shortcuts discovery and Apple Pay/push behavior not verified.
+
+## Finami 5.0 Preview 9 — build 18 (QA / automation / scan)
+
+- Based on Preview 8 plus QA work: separate simulator XCUITest target, isolated test database, navigation, dashboard sizing and persistence, account privacy and synthetic Vision OCR regression. Simulator workflow still needs its first macOS run.
+- PUMB notifications: recognize purchase amount, bounded merchant, local transaction timestamp and optional separate notification title; ignore available balance. A masked credit-card label is not a repayment. A payment without identified merchant or truncated message stays in review. The account must be chosen in the shortcut; card number is not automatically matched. OTP Bank name is not itself a security code; security-code filters still apply. OTP and Privat actual push formats have not been supplied/tested.
+- Scan: handles the supplied two-column installment layout, payment-count vs amount, title, remaining, next payment and yearless Ukrainian date (inferred next occurrence, explicitly confirmed). Separate transaction detail screenshot parser ignores own funds and balance, recognizes signed payment and date. Inconsistent or missing values stay for review. Real Vision OCR has not been run on the supplied images; automated tests use transcribed/deidentified rows and a synthetic image fixture on the simulator. No original private images are included in this archive.
+- Automation: the new “Додати в Команди” buttons support real exported iCloud shortcut URLs saved separately for bank notifications and Wallet. When no URL is configured, the template editor opens instead of pretending to install a shortcut. Apple's ShortcutsLink opens the app's page in Shortcuts. An actual shared Finami shortcut must still be created, configured and exported once on an Apple device. No fake link, unsigned template or competitor shortcut is included. User selects bank/card, grants permissions and enables trigger. Test timestamps indicate receipt, not proof of an installed/enabled trigger. Capture events are processed when Finami is opened, not guaranteed to be posted while locked.
+- To create a reusable template: open Finami → Ще → Автоматизація → ShortcutsLink (the Apple button). In Shortcuts create a new shortcut, add Finami: сповіщення банку, pass notification body and (if separate) title; set account code using the selected Finami account. Add the app-notification trigger if available, select bank, filter purchases and enable. For Apple Pay use the transaction trigger and Finami: Apple Pay action with amount, merchant, account code and correct currency. Test without auto-posting first. Share the completed Finami shortcut using Copy iCloud Link; paste into Finami → Посилання на власні шаблони. When sharing to other users, clear account-specific values and add import questions. Keep notifications for selected banks only. No need to export financial data or credentials.
+- Build: copy the full archive (including hidden .github, Tests and UITests) into the existing repo, commit/push, run Build Finami IPA and Test Finami on iOS Simulator. Bundle ID and production database name retained. Foundation tests + Swift parser checked on Linux, not Xcode compilation, runtime Shortcuts or actual iPhone. Keep backup before upgrade.

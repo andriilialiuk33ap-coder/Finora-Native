@@ -6,7 +6,7 @@ settings:
   base:
     SWIFT_VERSION: '5.0'
     MARKETING_VERSION: '5.0.0'
-    CURRENT_PROJECT_VERSION: '16'
+    CURRENT_PROJECT_VERSION: '19'
     TARGETED_DEVICE_FAMILY: '1'
 packages:
   ZIPFoundation:
@@ -29,3 +29,24 @@ targets:
         INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: "Розпізнавання голосової чернетки операції"
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+  FinamiUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [UITests]
+    dependencies:
+      - target: Finora
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ua.finora.personal.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: Finora
+schemes:
+  Finora:
+    build:
+      targets:
+        Finora: all
+        FinamiUITests: [test]
+    test:
+      config: Debug
+      targets:
+        - FinamiUITests
