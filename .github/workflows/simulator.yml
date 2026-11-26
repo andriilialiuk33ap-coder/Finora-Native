@@ -1,0 +1,41 @@
+name: Test Finami on iOS Simulator
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  simulator-smoke:
+    runs-on: macos-26
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate project
+        run: |
+          command -v xcodegen || brew install xcodegen
+          xcodegen generate
+          xcodebuild -resolvePackageDependencies -project Finora.xcodeproj -scheme Finora
+      - name: Select and boot a simulator
+        run: |
+          mkdir -p simulator-results
+          xcodebuild -version | tee simulator-results/xcode.txt
+          xcrun simctl list devices available -j > simulator-results/devices.json
+          device=$(python3 -c 'import json; d=json.load(open("simulator-results/devices.json"))["devices"]; print(next(x["udid"] for k,vs in sorted(d.items(),reverse=True) if "iOS" in k for x in vs if x.get("isAvailable") and x["name"].startswith("iPhone")))')
+          echo "SIM_DEVICE=$device" >> "$GITHUB_ENV"
+          xcrun simctl boot "$device" || true
+          xcrun simctl bootstatus "$device" -b
+      - name: Build for iOS Simulator
+        run: |
+          set -o pipefail
+          xcodebuild -project Finora.xcodeproj -scheme Finora -configuration Debug -sdk iphonesimulator -destination "id=$SIM_DEVICE" -derivedDataPath simulator-build CODE_SIGNING_ALLOWED=NO build | tee simulator-results/build.log
+      - name: Install and launch on a clean simulator
+        run: |
+          xcrun simctl install "$SIM_DEVICE" simulator-build/Build/Products/Debug-iphonesimulator/Finora.app
+          xcrun simctl launch "$SIM_DEVICE" ua.finora.personal | tee simulator-results/launch.txt
+          sleep 5
+          xcrun simctl io "$SIM_DEVICE" screenshot simulator-results/home.png
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Finami-Simulator-Results
+          path: simulator-results/
+          if-no-files-found: warn
