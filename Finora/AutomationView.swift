@@ -1,12 +1,21 @@
 import SwiftUI
 import UIKit
+import AppIntents
+import UserNotifications
 
 struct CapturePreferences: Codable {
     var walletAuto = false
     var messageAuto = false
+    var notifySaved: Bool? = nil
 }
 
 @MainActor extension Store {
+    func routedCapture(_ e: CapturedPayment) -> CapturedPayment {
+        var event = e
+        let accounts = db.accounts.map { a in FinamiCaptureAccount(id: a.id, currency: a.code, suffix: a.lastFour, bank: finamiBankHint((a.bankName ?? "") + " " + a.name)) }
+        event.account = finamiCaptureRoute(e, accounts: accounts) ?? ""
+        return event
+    }
     func captureRepeat(_ e: CapturedPayment) -> Bool {
         captureRepeatedMessage(e,handled:db.captureMessageFingerprints ?? [])
     }
@@ -33,7 +42,8 @@ struct CapturePreferences: Codable {
             let all=try CaptureInbox.read(in:dir)
             let handled=Set(db.captureHandled ?? [])
             var pending=[CapturedPayment]()
-            for e in all {
+            for original in all {
+                let e = routedCapture(original)
                 if handled.contains(e.id) || db.operations.contains(where:{$0.id==e.id}) {
                     try CaptureInbox.remove(e,in:dir);continue
                 }
@@ -48,7 +58,7 @@ struct CapturePreferences: Codable {
             if captureWarning != nil {captureWarning=nil}
         } catch {captureWarning=error.localizedDescription}
     }
-    @discardableResult func finishCapture(_ e: CapturedPayment, operation: Operation?, allowSeparatePayment: Bool = false, inbox: URL? = nil) -> Bool {
+    @discardableResult func finishCapture(_ e: CapturedPayment, operation: Operation?, allowSeparatePayment: Bool = false, learnMerchantCategory: Bool = false, inbox: URL? = nil) -> Bool {
         // Recheck at commit, not just when a review screen was opened.
         if operation != nil && !allowSeparatePayment && captureMatch(e) {
             captureWarning="Можливий дублікат. Підтвердьте, що це окрема покупка."
@@ -56,7 +66,18 @@ struct CapturePreferences: Codable {
         }
         guard change({d in
             if !(d.captureHandled ?? []).contains(e.id) {
-                if let operation, !d.operations.contains(where:{$0.id==e.id}) {d.operations.append(operation)}
+                if let operation, !d.operations.contains(where:{$0.id==e.id}) {
+                    d.operations.append(operation)
+                    if learnMerchantCategory && operation.kind.isReportCategory && !e.merchant.isEmpty {
+                        let key = operation.kind.rawValue + ":" + e.merchant.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                        var rules = d.merchantRules ?? [:]; rules[key] = operation.category; d.merchantRules = rules
+                    }
+                    if let available = e.reportedAvailable, d.accounts.contains(where: { $0.id == operation.account && $0.code == e.currency }) {
+                        var observations = d.balanceObservations ?? [:]
+                        if observations[operation.account].map({ $0.date <= e.date }) ?? true { observations[operation.account] = FinamiBalanceObservation(accountID: operation.account, date: e.date, available: available, currency: e.currency) }
+                        d.balanceObservations = observations
+                    }
+                }
                 var handled=d.captureHandled ?? [];handled.append(e.id);d.captureHandled=handled
                 d.captureMessageFingerprints=captureRememberMessage(e,handled:d.captureMessageFingerprints ?? [])
             }
@@ -80,6 +101,13 @@ struct AutomationCenter: View {
     @AppStorage("finami.lastBankNotification") private var lastBankNotification: Double = 0
     @State private var openFailed = false
     @State private var checkTime: Double = 0
+    @AppStorage("finami.notificationShortcutLink") private var notificationShortcutLink = ""
+    @AppStorage("finami.walletShortcutLink") private var walletShortcutLink = ""
+    @State private var templateEditor = false
+    private func importShortcut(_ link: String) {
+        guard let url = finamiSharedShortcutURL(link) else { templateEditor = true; return }
+        openURL(url) { accepted in if !accepted { openFailed = true } }
+    }
     private func launchShortcuts() {
         guard let url = URL(string: "shortcuts://") else { return }
         openURL(url) { accepted in if !accepted { openFailed = true } }
@@ -94,6 +122,7 @@ struct AutomationCenter: View {
     var body: some View {
         List {
             setupSection
+            templateSection
             connectionSection
             autoSection
             inboxSection
@@ -115,10 +144,41 @@ struct AutomationCenter: View {
                 Button {UIPasteboard.general.string=chosen.id;copied=true} label:{Label(copied ? "Код скопійовано":"Копіювати код рахунку",systemImage:"doc.on.doc")}
                 Text(chosen.id).font(.caption2.monospaced()).textSelection(.enabled)
             }
+            Text("Для сповіщень можна вказати auto та назву банку в дії Finami. Заповни останні 4 цифри картки в Рахунках; неоднозначні збіги залишаться у вхідних.").font(.caption)
             Text("Спочатку створіть рахунок у вкладці Рахунки. Для кожної картки налаштуйте окрему автоматизацію. Код рахунку — внутрішній ID, не номер картки.").font(.caption)
             Button { if let chosen { UIPasteboard.general.string = chosen.id; copied = true }; launchShortcuts() } label: { Label("Відкрити Команди для налаштування", systemImage: "bolt.fill") }.disabled(chosen == nil)
             Text("Шукай готові дії в Команди → Програми → Finami. Ця кнопка не встановлює персональну автоматизацію. Тригер та його параметри потрібно один раз налаштувати вручну.").font(.caption).foregroundStyle(.secondary)
         }.onChange(of:account){_ in copied=false}
+    }
+    private var templateSection: some View {
+        Section("Додати в Команди") {
+            Label("Витрати зі сповіщень банку", systemImage: "bell.badge")
+            Text("ПУМБ, ОТП, Приват24 · обери банк у системній автоматизації. Формат ПУМБ перевірено на текстових прикладах; ОТП і Приват потребують зразків.").font(.caption)
+            Button { importShortcut(notificationShortcutLink) } label: {
+                Label(finamiSharedShortcutURL(notificationShortcutLink) == nil ? "Налаштувати шаблон · сповіщення" : "Додати в Команди · сповіщення", systemImage: "plus.circle.fill")
+            }.buttonStyle(.borderless).accessibilityIdentifier("qa.automation.import.bank")
+            Button { importShortcut(walletShortcutLink) } label: {
+                Label(finamiSharedShortcutURL(walletShortcutLink) == nil ? "Налаштувати шаблон · Apple Pay" : "Додати в Команди · Apple Pay", systemImage: "plus.circle.fill")
+            }.buttonStyle(.borderless).accessibilityIdentifier("qa.automation.import.wallet")
+            if finamiSharedShortcutURL(notificationShortcutLink) == nil || finamiSharedShortcutURL(walletShortcutLink) == nil {
+                Text("Для імпорту потрібне справжнє iCloud-посилання, експортоване з Команд. Якщо шаблону немає, скористайся готовими діями Finami нижче.").font(.caption).foregroundStyle(.secondary)
+            }
+            ShortcutsLink()
+            Button { templateEditor = true } label: { Label("Посилання на власні шаблони", systemImage: "link") }.buttonStyle(.borderless)
+        }.sheet(isPresented: $templateEditor) {
+            NavigationStack {
+                Form {
+                    Section("Експортовані команди Finami") {
+                        TextField("Сповіщення банку · iCloud URL", text: $notificationShortcutLink).textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
+                        if !notificationShortcutLink.isEmpty && finamiSharedShortcutURL(notificationShortcutLink) == nil { Text("Некоректне посилання iCloud").foregroundStyle(.orange) }
+                        TextField("Apple Pay · iCloud URL", text: $walletShortcutLink).textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
+                        if !walletShortcutLink.isEmpty && finamiSharedShortcutURL(walletShortcutLink) == nil { Text("Некоректне посилання iCloud").foregroundStyle(.orange) }
+                        Text("Створи команду з дією Finami, потім у Командах → Поділитися → Копіювати посилання iCloud. Не використовуй шаблон іншого застосунку: він викликає чужу дію.").font(.caption)
+                    }
+                    Section("Перший запуск") { ShortcutsLink(); Text("Налаштуй тригер, передай текст сповіщення або параметри Apple Pay, вибери рахунок та увімкни автоматизацію. Перевірка зв’язку не підтверджує встановлення тригера.").font(.caption) }
+                }.navigationTitle("Шаблони команд").toolbar { ToolbarItem(placement: .confirmationAction) { Button("Готово") { templateEditor = false } } }
+            }
+        }
     }
     private var connectionSection: some View {
         Section("Перевірка зв’язку Apple Pay") {
@@ -139,6 +199,10 @@ struct AutomationCenter: View {
         Section("2. Автоматичне збереження") {
             Toggle("Apple Pay без підтвердження",isOn:setting(\.walletAuto))
             Toggle("Однозначні покупки з SMS / сповіщень",isOn:setting(\.messageAuto))
+            Toggle("Сповіщати про збережені операції", isOn: Binding(get: { s.db.capturePreferences?.notifySaved ?? false }, set: { value in
+                s.change { d in var p = d.capturePreferences ?? .init(); p.notifySaved = value; d.capturePreferences = p }
+                if value { Task { _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert,.sound]) } }
+            }))
             Text("Спочатку обидва вимкнені. Перевірте одну реальну покупку, потім увімкніть потрібний режим. Події обробляються при відкритті Finami (після розблокування), а не в момент оплати. Невідомий магазин отримує категорію «Без категорії». Повторні повідомлення ніколи не додаються автоматично, навіть після перезапуску. Схожі платежі, доларові суми та неоднозначні рухи залишаються на перевірку. Не вмикайте одночасно кілька джерел для однієї картки без звірки.").font(.caption)
         }
     }
@@ -186,6 +250,11 @@ struct CaptureReview: View {
     @Environment(\.dismiss) var dismiss
     let event: CapturedPayment
     @State private var kind: Kind = .expense
+    @State private var accountID = ""
+    @State private var category = ""
+    @State private var remember = false
+    private var selectedEvent: CapturedPayment { var e = event; e.account = accountID; return e }
+    private var categories: [String] { kind == .income ? s.db.incomeCategories : s.db.expenseCategories }
     @State private var confirm=false
     @State private var discard=false
     @State private var separatePayment=false
@@ -194,26 +263,31 @@ struct CaptureReview: View {
         NavigationStack {
             Form {
                 LabeledContent("Джерело",value:event.source)
-                LabeledContent("Рахунок",value:s.accountName(event.account))
+                Picker("Рахунок", selection: $accountID) { Text("Обери рахунок").tag(""); ForEach(s.db.accounts.filter { $0.code == event.currency }) { Text($0.name).tag($0.id) } }
+                if accountID.isEmpty { Text("Рахунок не визначено однозначно. Вибери його вручну.").foregroundStyle(.orange) }
                 LabeledContent("Сума",value:s.visibleMoney(event.minor,event.currency))
                 LabeledContent("Дата",value:event.date.formatted(date:.abbreviated,time:.shortened))
+                if let available = event.reportedAvailable { LabeledContent("Доступно за даними банку", value: s.visibleMoney(available, event.currency)); Text("Це довідкова сума, а не витрата.").font(.caption) }
                 if !event.merchant.isEmpty {LabeledContent("Продавець",value:event.merchant)}
                 Picker("Тип",selection:$kind){ForEach(allowed){k in Text(k.title).tag(k)}}
-                if s.captureMatch(event) {
+                if s.captureMatch(selectedEvent) {
                     Text(s.captureRepeat(event) ? "Такий самий текст повідомлення вже оброблено. Повтор не змінить баланс автоматично." : "Схожа операція вже є. Якщо це та сама покупка, відхиліть подію.").foregroundStyle(.orange)
                     Toggle("Це інша, окрема покупка",isOn:$separatePayment)
                 }
-                if let o=s.capturedOperation(event,kind:kind) {
-                    LabeledContent("Категорія",value:o.category)
+                if let o=s.capturedOperation(selectedEvent,kind:kind) {
+                    if kind.isReportCategory {
+                        Picker("Категорія", selection: $category) { Text("Автоматично: " + o.category).tag(""); ForEach(categories, id: \.self) { Text($0).tag($0) } }
+                        if !event.merchant.isEmpty { Toggle("Запам’ятати категорію продавця", isOn: $remember) }
+                    }
                     if let rate=o.exchangeRate {LabeledContent("Курс UAH/USD (поточний)",value:rate);LabeledContent("Еквівалент",value:s.visibleMoney(o.amount));Text("Після збереження можна виправити курс у редакторі операції.").font(.caption)}
                 }
                 else {Text("Рахунок видалено, валюта не збігається або немає курсу. Перевірте рахунок і курс. За потреби внесіть платіж вручну.").foregroundStyle(.orange)}
-                Button("Зберегти операцію"){confirm=true}.disabled(s.capturedOperation(event,kind:kind)==nil || (s.captureMatch(event) && !separatePayment))
+                Button("Зберегти операцію"){confirm=true}.disabled(s.capturedOperation(selectedEvent,kind:kind)==nil || (s.captureMatch(selectedEvent) && !separatePayment))
                 Button("Відхилити подію",role:.destructive){discard=true}
             }.navigationTitle("Перевірка платежу").navigationBarTitleDisplayMode(.inline)
                 .toolbar{ToolbarItem(placement:.cancellationAction){Button("Закрити"){dismiss()}}}
-                .onAppear{kind=event.incoming ? .unclassifiedCredit : event.clearPurchase ? .expense:.unclassifiedDebit}
-                .confirmationDialog("Зберегти платіж?",isPresented:$confirm){Button("Зберегти"){if let o=s.capturedOperation(event,kind:kind),s.finishCapture(event,operation:o,allowSeparatePayment:separatePayment){dismiss()}}}
+                .onAppear{kind=event.incoming ? .unclassifiedCredit : event.clearPurchase ? .expense:.unclassifiedDebit; accountID=event.account}.onChange(of: kind) { _ in category="" }.onChange(of: accountID) { _ in separatePayment=false }
+                .confirmationDialog("Зберегти платіж?",isPresented:$confirm){Button("Зберегти"){if var o=s.capturedOperation(selectedEvent,kind:kind) { if kind.isReportCategory && categories.contains(category) { o.category=category }; if s.finishCapture(selectedEvent,operation:o,allowSeparatePayment:separatePayment,learnMerchantCategory:remember) { dismiss() } }}}
                 .confirmationDialog("Відхилити без запису?",isPresented:$discard){Button("Відхилити",role:.destructive){if s.finishCapture(event,operation:nil){dismiss()}}}
         }
     }
@@ -256,7 +330,7 @@ struct AutomationGuide: View {
     static let notifications=[
         "На iOS 27 відкрийте Команди, створіть нову команду та в редакторі виберіть розділ Автоматизація → Сповіщення (Notification). На старіших iOS використовуйте SMS, Wallet або виписки.",
         "Виберіть тільки застосунок потрібного банку. За можливості встановіть фільтр на проведені покупки й конкретну картку, а не всі сповіщення.",
-        "Додайте дію Finami: сповіщення банку. У Текст сповіщення виберіть змінну Сповіщення та її текст/тіло (Body). Якщо сума у заголовку чи підзаголовку, об’єднайте лише потрібні поля через дію Текст. У Код рахунку Finami вставте скопійований код. Не передавайте OTP чи повідомлення безпеки.",
+        "Додайте дію Finami: сповіщення банку. У Текст сповіщення виберіть змінну Сповіщення та її текст/тіло (Body). Якщо банк передає тип операції окремо (наприклад, Купівля), розгорніть дію та передайте властивість Title в Заголовок сповіщення. Якщо сума у підзаголовку, об’єднайте потрібні поля через дію Текст. У Код рахунку Finami вставте скопійований код. Не передавайте OTP чи повідомлення безпеки.",
         "Увімкніть автоматизацію в редакторі команди. За можливості вимкніть підтвердження перед запуском. Перевірте наступну реальну оплату у вхідних Finami та час останнього повідомлення. Не вмикайте одночасно два джерела для тієї ж картки без звірки. Готові дії доступні через Програми → Finami після реєстрації iOS. Щоб отримати імпортований шаблон, збережіть створену команду через Поділитися → Копіювати посилання iCloud."]
     static let banks=[
         "ПУМБ: Wallet або SMS/сповіщення, якщо доступні; для звірки використовуйте PDF-виписку. Кредитний ліміт задайте в картці, не як дохід.",

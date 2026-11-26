@@ -4,7 +4,7 @@ import Foundation
 struct CapturedPayment: Codable, Identifiable, Equatable {
     var id = UUID().uuidString
     var date = Date()
-    let account: String
+    var account: String
     let currency: String
     let minor: Int64
     let merchant: String
@@ -13,6 +13,10 @@ struct CapturedPayment: Codable, Identifiable, Equatable {
     let clearPurchase: Bool
     // Optional for decoding events from Preview 4. Contains no raw SMS text.
     var messageFingerprint: String? = nil
+    var cardSuffix: String? = nil
+    var bankHint: String? = nil
+    var ambiguousCard: Bool? = nil
+    var reportedAvailable: Int64? = nil
 }
 enum CaptureError: LocalizedError {
     case invalid, unsafeMessage, ambiguous, storage
@@ -30,12 +34,18 @@ func captureWallet(amount: Double, merchant: String, account: String, currency: 
     guard !account.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, ["UAH","USD"].contains(code), amount.isFinite, amount > 0, amount <= 10_000_000_000, let minor = bankMinor(String(amount)), minor > 0 else {throw CaptureError.invalid}
     return CapturedPayment(account:account.trimmingCharacters(in:.whitespacesAndNewlines),currency:code,minor:minor,merchant:String(bankRedact(merchant).prefix(160)),source:"Apple Pay",incoming:false,clearPurchase:true)
 }
+// Shortcuts may expose the notification title and body separately.
+func captureBankNotification(title: String?, body: String, account: String) throws -> CapturedPayment {
+    let header = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return try captureMessage(header.isEmpty ? body : header + "\n" + body, account: account)
+}
 func captureMessage(_ text: String, account: String) throws -> CapturedPayment {
     let account = account.trimmingCharacters(in:.whitespacesAndNewlines)
     guard !account.isEmpty, text.count <= 4000 else {throw CaptureError.invalid}
     let normalized = bankClean(text)
     let lower = normalized.lowercased()
-    guard !["otp", "одноразов", "код підтвердж", "код авторизац", "verification code", "password", "пароль", "не повідомляйте", "не передавайте", "one-time", "security code", "код для", "код операції", "declined", "відхилен", "неуспіш", "скасован", "відмов", "недостатньо коштів", "failed"].contains(where:{lower.contains($0)}) else {throw CaptureError.unsafeMessage}
+    let securityText = lower.replacingOccurrences(of: "otp bank", with: "банк").replacingOccurrences(of: "otpbank", with: "банк")
+    guard !["otp", "одноразов", "код підтвердж", "код авторизац", "verification code", "password", "пароль", "не повідомляйте", "не передавайте", "one-time", "security code", "код для", "код операції", "declined", "відхилен", "неуспіш", "скасован", "відмов", "недостатньо коштів", "failed"].contains(where:{securityText.contains($0)}) else {throw CaptureError.unsafeMessage}
     let purchase = ["покупка","купівля","оплата","purchase","payment","списання","списано","сплачено","paid","debit"].contains{lower.contains($0)}
     let incoming = ["зарахування","зараховано","надходження","поповнення","поповнено","credited","received","refund","повернення"].contains{lower.contains($0)}
     guard purchase != incoming else {throw CaptureError.unsafeMessage}
@@ -54,12 +64,36 @@ func captureMessage(_ text: String, account: String) throws -> CapturedPayment {
     if let m = merchantRegex.firstMatch(in:payment,range:NSRange(payment.startIndex...,in:payment)), let r = Range(m.range(at:1),in:payment) {
         let candidate = String(payment[r]); if !candidate.contains(where:{$0.isNumber}) {merchant = String(bankRedact(candidate).prefix(160))}
     }
-    let paymentLower = payment.lowercased()
+    // PUMB sends title, amount, merchant, date and card metadata as separate lines.
+    // Only a bounded merchant segment before an explicit transaction date is accepted.
+    let pumbPattern = #"(?i)(?:купівля|покупка)\s+[+-]?\d+(?:[ ]\d{3})*(?:[.,]\d{1,2})?\s*(?:UAH|USD|грн\.?|₴|\$)\s+([^;|]+?)\s+(\d{2}[-.]\d{2}[-.]\d{4}\s+\d{2}:\d{2})(?!\d)"#
+    let pumbRegex = try NSRegularExpression(pattern: pumbPattern)
+    var transactionDate: Date? = nil
+    if let m = pumbRegex.firstMatch(in: payment, range: NSRange(payment.startIndex..., in: payment)),
+       let mr = Range(m.range(at: 1), in: payment), let dr = Range(m.range(at: 2), in: payment) {
+        let candidate = String(payment[mr])
+        if candidate.count <= 160 && candidate.range(of: #"(?i)(?:рахунок|картка|доступно|баланс|\d{6,})"#, options: .regularExpression) == nil {
+            if merchant.isEmpty { merchant = bankRedact(candidate) }
+            transactionDate = bankDate(String(payment[dr]).replacingOccurrences(of: "-", with: "."))
+        }
+    }
+    if transactionDate == nil, let dateRegex = try? NSRegularExpression(pattern: #"(?<!\d)\d{2}[-.]\d{2}[-.]\d{4}\s+\d{2}:\d{2}(?!\d)"#),
+       let m = dateRegex.firstMatch(in: payment, range: NSRange(payment.startIndex..., in: payment)), let r = Range(m.range, in: payment) {
+        transactionDate = bankDate(String(payment[r]).replacingOccurrences(of: "-", with: "."))
+    }
+    // A masked credit-card label does not make a normal purchase a credit repayment.
+    let paymentLower = payment.lowercased().replacingOccurrences(of: #"(?:кредитна картка|дебетова картка|картка|рахунок)\s*:\s*[•*… .\d]+"#, with: "", options: .regularExpression)
     guard !incoming || minor > 0 else {throw CaptureError.ambiguous}
     let transfer = ["переказ","transfer","погашення","repayment","готівк","withdrawal","кредит","loan","комісія","fee","авторизація","authorization","hold","заблоковано"].contains{paymentLower.contains($0)}
     let explicitPurchase = ["покупка","купівля","purchase","оплата","сплачено","paid"].contains{paymentLower.contains($0)}
-    var event = CapturedPayment(account:account,currency:currency,minor:abs(minor),merchant:merchant,source:"Bank message",incoming:incoming,clearPurchase:purchase && explicitPurchase && !transfer)
+    var event = CapturedPayment(account:account,currency:currency,minor:abs(minor),merchant:merchant,source:"Bank message",incoming:incoming,clearPurchase:purchase && explicitPurchase && !transfer && !merchant.isEmpty)
+    if let transactionDate { event.date = transactionDate }
     event.messageFingerprint = captureMessageFingerprint(account:account, text:normalized)
+    let masks = finamiCardSuffixes(normalized)
+    event.cardSuffix = masks.count == 1 ? masks.first : nil
+    event.ambiguousCard = masks.count > 1 ? true : nil
+    event.reportedAvailable = finamiReportedAvailable(normalized, currency: currency)
+    event.bankHint = finamiBankHint(normalized)
     return event
 }
 // SHA-256 for a stable, non-reversible duplicate hint. Never store the message body.
@@ -147,4 +181,68 @@ enum CaptureInbox {
         let url = dir.appendingPathComponent(event.id+".json")
         if FileManager.default.fileExists(atPath:url.path) {try FileManager.default.removeItem(at:url)}
     }
+}
+
+// Shared shortcut links must originate from Apple Shortcuts, not a guessed identifier.
+func finamiSharedShortcutURL(_ text: String) -> URL? {
+    guard let c = URLComponents(string: text.trimmingCharacters(in: .whitespacesAndNewlines)),
+          c.scheme?.lowercased() == "https", c.host?.lowercased() == "www.icloud.com",
+          c.user == nil, c.password == nil, c.port == nil,
+          c.path.range(of: #"^/shortcuts/[0-9a-fA-F]{32}/?$"#, options: .regularExpression) != nil else { return nil }
+    return c.url
+}
+
+// Only a labelled, masked suffix is accepted. Never keep full card numbers.
+func finamiCardSuffixes(_ text: String) -> Set<String> {
+    let pattern = #"(?i)(?:картка|картки|карта|рахунок|card|account)\s*:?\s*[*•●xX]{1,}\s*(\d{4})(?!\d)"#
+    guard let re = try? NSRegularExpression(pattern: pattern) else { return [] }
+    let values = Set(re.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap { m in Range(m.range(at: 1), in: text).map { String(text[$0]) } })
+    return values
+}
+func finamiCardSuffix(_ text: String) -> String? { let values = finamiCardSuffixes(text); return values.count == 1 ? values.first : nil }
+func finamiBankHint(_ text: String) -> String? {
+    let lower = text.lowercased()
+    let candidates: [(String,[String])] = [("pumb",["пумб","pumb"]),("otp",["отп","otp bank","otpbank"]),("privat",["приват","privat"]),("mono",["monobank","монобанк"]),("abank",["а-банк","a-bank","abank"])]
+    let found = candidates.filter { item in item.1.contains { lower.contains($0) } }
+    return found.count == 1 ? found[0].0 : nil
+}
+struct FinamiCaptureAccount {
+    let id: String
+    let currency: String
+    let suffix: String?
+    let bank: String?
+}
+// Explicit account remains the fallback only when metadata does not contradict it.
+// An unscoped suffix cannot redirect a payment to a different bank on its own.
+func finamiCaptureRoute(_ event: CapturedPayment, accounts: [FinamiCaptureAccount]) -> String? {
+    guard event.ambiguousCard != true else { return nil }
+    let compatible = accounts.filter { $0.currency == event.currency }
+    let explicit = compatible.first { $0.id == event.account }
+    guard let suffix = event.cardSuffix else {
+        if let bank = event.bankHint, let explicit, explicit.bank != bank { return nil }
+        return explicit?.id
+    }
+    let bank = event.bankHint ?? explicit?.bank
+    if let explicit, explicit.suffix == suffix, bank == nil || explicit.bank == bank { return explicit.id }
+    guard let bank else { return nil }
+    let matches = compatible.filter { $0.suffix == suffix && $0.bank == bank }
+    return matches.count == 1 ? matches[0].id : nil
+}
+
+struct FinamiBalanceObservation: Codable {
+    var accountID: String
+    var date: Date
+    var available: Int64
+    var currency: String
+}
+// A bank's reported available amount can include credit and authorization holds.
+// Save it only as a comparison reference, not as an opening balance or transaction.
+func finamiReportedAvailable(_ text: String, currency: String) -> Int64? {
+    let pattern = #"(?i)(?:доступно|доступна сума|available)\s*[:=]?\s*([+-]?\d+(?:[ ]\d{3})*(?:[.,]\d{1,2})?)\s*(UAH|USD|грн\.?|₴|\$)(?![\p{L}\d])"#
+    guard let re = try? NSRegularExpression(pattern: pattern) else { return nil }
+    let matches = re.matches(in: text, range: NSRange(text.startIndex..., in: text))
+    guard matches.count == 1, let m = matches.first, let ar = Range(m.range(at: 1), in: text), let cr = Range(m.range(at: 2), in: text) else { return nil }
+    let token = String(text[cr]).uppercased(); let code = token == "USD" || token == "$" ? "USD" : "UAH"
+    guard code == currency, let n = bankMinor(String(text[ar])), n >= 0 else { return nil }
+    return n
 }

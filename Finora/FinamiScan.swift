@@ -14,6 +14,8 @@ private struct ScanPhoto: Identifiable {
     let lines: [String]
     let image: Data?
     var warning: String? = nil
+    var mergedDraft: ScanInstallmentDraft? = nil
+    var sourceIDs: [String]? = nil
     var bank: String? { FinamiScanParser.bank(lines.joined(separator: "\n")) }
 }
 private enum ScanFailure: LocalizedError {
@@ -79,6 +81,11 @@ struct FinamiScanView: View {
                 }.padding(.vertical, 12)
                 Picker("Тип імпорту", selection: $mode) { ForEach(FinamiScanMode.allCases) { Text($0.rawValue).tag($0) } }.pickerStyle(.menu)
                 PhotosPicker(selection: $selections, maxSelectionCount: 10, matching: .images) { Label("Обрати скриншоти", systemImage: "photo.on.rectangle.angled") }.disabled(busy)
+                #if DEBUG && targetEnvironment(simulator)
+                if ProcessInfo.processInfo.arguments.contains("--finami-qa") {
+                    Button("QA: тестове фото розстрочки") { runQAImage() }.disabled(busy)
+                }
+                #endif
                 if busy { ProgressView("Розпізнавання на пристрої…") }
                 DisclosureGroup("Резервний імпорт тексту") {
                     Text("Якщо фото не читається, скопіюй текст з фото через Live Text і встав сюди. Перевір дані перед збереженням.").font(.caption)
@@ -95,6 +102,13 @@ struct FinamiScanView: View {
             }
             if !photos.isEmpty {
                 Section("Перевірити скриншоти") {
+                    if mode == .installment && photos.count > 1 {
+                        NavigationLink { ScanInstallmentReview(photo: mergedPhoto()) } label: {
+                            Label("Об’єднати всі фото одного договору", systemImage: "rectangle.on.rectangle")
+                        }.disabled(busy)
+                        Text("Об’єднуй тільки фото одного договору. Суперечливі поля залишаться порожніми.").font(.caption)
+                    }
+
                     ForEach(photos) { photo in
                         NavigationLink {
                             if mode == .transactions { ScanTransactionsReview(photo: photo) }
@@ -108,7 +122,7 @@ struct FinamiScanView: View {
                                 Label("Відкрити та перевірити", systemImage: "chevron.right").font(.caption)
                                 if s.db.operations.contains(where: { $0.scanFingerprint?.hasPrefix(photo.id + ":") == true }) || s.db.obligations.contains(where: { $0.scanFingerprint == photo.id }) { Text("Раніше імпортовано повністю або частково").font(.caption).foregroundStyle(.orange) }
                             }
-                        }.disabled(busy)
+                        }.disabled(busy).accessibilityIdentifier("qa.scan.review." + photo.id)
                     }
                 }
             }
@@ -132,6 +146,33 @@ struct FinamiScanView: View {
             }
         }
     }
+    private func mergedPhoto() -> ScanPhoto {
+        let merged = finamiMergeInstallments(photos.map { FinamiScanParser.installment($0.lines) })
+        let ids = photos.map(\.id).sorted()
+        let id = SHA256.hash(data: Data(ids.joined(separator: "|").utf8)).map { String(format: "%02x", $0) }.joined()
+        return ScanPhoto(id: id, lines: photos.flatMap(\.lines), image: nil, warning: merged.conflicts.isEmpty ? "Перевір, що всі фото належать одному договору." : "Суперечливі поля: " + merged.conflicts.joined(separator: ", "), mergedDraft: merged.draft, sourceIDs: ids)
+    }
+    #if DEBUG && targetEnvironment(simulator)
+    private func runQAImage() {
+        mode = .installment; busy = true; photos = []; errors = []
+        let format = UIGraphicsImageRendererFormat(); format.scale = 1; format.opaque = true
+        let size = CGSize(width: 1000, height: 1250)
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            UIColor.white.setFill(); context.fill(CGRect(origin: .zero, size: size))
+            let text = ["Тестовий телефон", "Розстрочка на 30 000 ₴", "6 із 12", "Платежів сплачено", "Подивитися графік платежів", "7 грудня", "2 500 ₴", "Наступний платіж"]
+            let attrs: [NSAttributedString.Key: Any] = [.font: UIFont.systemFont(ofSize: 48), .foregroundColor: UIColor.black]
+            for (i, line) in text.enumerated() { (line as NSString).draw(at: CGPoint(x: 45, y: 35 + i*125), withAttributes: attrs) }
+            ("15 000 ₴" as NSString).draw(at: CGPoint(x: 570, y: 285), withAttributes: attrs)
+            ("Залишилось" as NSString).draw(at: CGPoint(x: 570, y: 410), withAttributes: attrs)
+        }
+        guard let data = image.pngData() else { busy = false; errors = ["QA: не вдалося створити фото"]; return }
+        Task { @MainActor in
+            defer { busy = false }
+            do { photos = [try await Task.detached(priority: .userInitiated) { try recognizeScan(data) }.value] }
+            catch { errors = [error.localizedDescription] }
+        }
+    }
+    #endif
 }
 private struct ScanSourceSection: View {
     let photo: ScanPhoto
@@ -327,15 +368,20 @@ private struct ScanInstallmentReview: View {
     @State private var busy = false
     private let foreign: Bool
     private let recognizedDue: Bool
+    @State private var keepSchedule = false
+    private var scheduleRows: [FinamiScheduleRow] { finamiScheduleRows(photo.lines) }
     @State private var sourceAssignment = "total"
     init(photo: ScanPhoto) {
-        self.photo = photo; let d = FinamiScanParser.installment(photo.lines)
+        self.photo = photo; let d = photo.mergedDraft ?? FinamiScanParser.installment(photo.lines)
         _name = State(initialValue: d.name); _total = State(initialValue: d.total.map(amountText) ?? "")
         _remaining = State(initialValue: d.remaining.map(amountText) ?? ""); _monthly = State(initialValue: d.monthly.map(amountText) ?? "")
         _due = State(initialValue: d.due ?? Date()); foreign = d.foreignCurrency; recognizedDue = d.due != nil
     }
     private var existing: [Obligation] { s.db.obligations.filter { $0.kind == .installment || $0.kind == .owe } }
-    private var exact: Bool { existing.contains { $0.scanFingerprint == photo.id && $0.id != targetID } }
+    private var exact: Bool { existing.contains { o in
+        let incoming = Set((photo.sourceIDs ?? []) + [photo.id]); let prior = Set((o.scanSourceIDs ?? []) + [o.scanFingerprint].compactMap { $0 })
+        return o.id != targetID && !incoming.isDisjoint(with: prior)
+    } }
     private var similar: Bool { existing.contains { o in
         o.id != targetID && (o.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() || (o.target == bankMinor(total) && o.monthly == bankMinor(monthly)))
     } }
@@ -365,7 +411,7 @@ private struct ScanInstallmentReview: View {
                     }
                     ForEach(Array(photo.lines.enumerated()), id: \.offset) { entry in
                         let line = entry.element
-                        if sourceAssignment == "name" || (sourceAssignment == "due" ? FinamiScanParser.installmentDate(line) != nil : FinamiScanParser.installmentCandidateAmount(line) != nil) {
+                        if sourceAssignment == "name" || (sourceAssignment == "due" ? FinamiScanParser.nextPaymentDate(line) != nil : FinamiScanParser.installmentCandidateAmount(line) != nil) {
                             Button { assign(line) } label: { Label(line, systemImage: "arrow.down.circle").font(.subheadline) }
                         }
                     }
@@ -382,6 +428,13 @@ private struct ScanInstallmentReview: View {
                 Toggle("Дату перевірено", isOn: $dateChecked)
                 if foreign { Text("Виявлено іноземну валюту. Модель розстрочок поки підтримує лише гривню; імпорт цього договору заблоковано.").foregroundStyle(.orange) }
                 Toggle("Я перевірив усі дані", isOn: $checked)
+            }
+            if !scheduleRows.isEmpty {
+                Section("Графік зі скриншота") {
+                    ForEach(scheduleRows) { row in LabeledContent(row.date.formatted(date: .abbreviated, time: .omitted), value: s.visibleMoney(row.amount)) }
+                    Toggle("Зберегти як довідковий графік", isOn: $keepSchedule)
+                    Text("Перевір всі дати та суми. Це знайдені рядки, не підтвердження оплати і не автоматичне списання.").font(.caption)
+                }
             }
             Section("Додатково") {
                 if photo.image != nil { Toggle("Зберегти скриншот у договорі", isOn: $attach) }
@@ -406,7 +459,7 @@ private struct ScanInstallmentReview: View {
     private func assign(_ line: String) {
         checked = false; duplicateOverride = false
         if sourceAssignment == "name" { name = bankRedact(line); return }
-        if sourceAssignment == "due" { if let d = FinamiScanParser.installmentDate(line) { due = d; dateChecked = false }; return }
+        if sourceAssignment == "due" { if let d = FinamiScanParser.nextPaymentDate(line) { due = d; dateChecked = false }; return }
         guard let amount = FinamiScanParser.installmentCandidateAmount(line) else { return }
         switch sourceAssignment { case "total": total = amountText(amount); case "remaining": remaining = amountText(amount); case "monthly": monthly = amountText(amount); default: break }
     }
@@ -416,6 +469,8 @@ private struct ScanInstallmentReview: View {
         let previous = existing.first { $0.id == targetID }
         var o = previous ?? Obligation(kind: .installment)
         o.name = name.trimmingCharacters(in: .whitespacesAndNewlines); o.target = t; o.paid = t-r; o.monthly = m; o.due = due; o.scanFingerprint = photo.id
+        o.scanSourceIDs = Array(Set((previous?.scanSourceIDs ?? []) + [previous?.scanFingerprint].compactMap { $0 } + (photo.sourceIDs ?? []) + [photo.id])).sorted()
+        if keepSchedule { o.importedSchedule = scheduleRows }
         if attach && photo.image != nil { o.scanImageID = photo.id }
         let oldReminders = (s.db.reminders ?? []).filter { $0.linkedID == o.id }
         var changed: [PersonalReminder] = []

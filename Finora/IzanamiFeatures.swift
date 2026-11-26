@@ -263,7 +263,7 @@ struct DashboardSettings: View {
                         Toggle(isOn: Binding(get: { items.first(where: { $0.id == item.id })?.enabled ?? false }, set: { v in modify(item.id) { $0.enabled = v } })) { Label(item.kind.title, systemImage: item.kind.icon) }
                         if item.enabled {
                             NavigationLink("Оформлення та показники") { FinamiBlockSettings(id:item.id) }
-                            Picker("Розмір", selection: Binding(get: { items.first(where: { $0.id == item.id })?.size ?? .medium }, set: { v in modify(item.id) { $0.size = v } })) { ForEach(DashboardSize.allCases, id: \.self) { Text($0.rawValue).tag($0) } }.pickerStyle(.segmented)
+                            Picker("Розмір", selection: Binding(get: { items.first(where: { $0.id == item.id })?.size ?? .medium }, set: { v in modify(item.id) { $0.size = v } })) { ForEach(DashboardSize.allCases, id: \.self) { Text($0.rawValue).tag($0) } }.pickerStyle(.segmented).accessibilityIdentifier("qa.dashboard.size." + item.id)
                         }
                     }
                 }.onMove { from, to in s.change { d in var all = DashboardItem.merged(d.dashboard); all.move(fromOffsets: from, toOffset: to); d.dashboard = all } }
@@ -352,11 +352,13 @@ struct DashboardTile: View {
         .padding(item.kind == .accounts ? 0 : tilePadding)
         .modifier(FinamiDashboardSurface(isAccounts: item.kind == .accounts, tint: color, template: item.template))
         .environment(\.finamiMask, masked)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("qa.dashboard.tile." + item.id)
         .sheet(item:$paymentDetails) { FinamiPaymentDetails(payment:$0) }
         .sheet(isPresented:$accountSettings) { NavigationStack { FinamiHomeAccountsSettings().toolbar { ToolbarItem(placement:.cancellationAction) { Button("Готово") { accountSettings = false } } } } }
     }
     var privacyButton: some View {
-        Button { s.change { d in var all=DashboardItem.merged(d.dashboard);if let i=all.firstIndex(where:{$0.id==item.id}){all[i].hideAmounts = !(all[i].hideAmounts ?? false)};d.dashboard=all } } label:{Image(systemName:masked ? "eye.slash" : "eye").frame(minWidth:44,minHeight:44)}.buttonStyle(.plain).accessibilityLabel("Показати або приховати суми блоку").disabled(s.privateAmounts)
+        Button { s.change { d in var all=DashboardItem.merged(d.dashboard);if let i=all.firstIndex(where:{$0.id==item.id}){all[i].hideAmounts = !(all[i].hideAmounts ?? false)};d.dashboard=all } } label:{Image(systemName:masked ? "eye.slash" : "eye").frame(minWidth:44,minHeight:44)}.buttonStyle(.plain).accessibilityLabel("Показати або приховати суми блоку").disabled(s.privateAmounts).accessibilityIdentifier("qa.dashboard.hide." + item.id)
     }
     var cardBackground: some View {
         ZStack {

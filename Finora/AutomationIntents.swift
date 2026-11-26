@@ -43,12 +43,15 @@ struct CaptureBankNotificationIntent: AppIntent {
     static var description: IntentDescription? = IntentDescription("Записати операцію з тексту банківського сповіщення, переданого Командами")
     static var openAppWhenRun: Bool = false
     @Parameter(title: "Текст сповіщення") var message: String
-    @Parameter(title: "Код рахунку Finami") var account: String
+    @Parameter(title: "Заголовок сповіщення (необов’язково)") var notificationTitle: String?
+    @Parameter(title: "Код рахунку Finami або auto") var account: String
+    @Parameter(title: "Банк (необов’язково)") var bank: String?
     static var parameterSummary: some ParameterSummary {
         Summary("Записати сповіщення \(\.$message) на рахунок \(\.$account)")
     }
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        let event = try captureMessage(message, account: account)
+        var event = try captureBankNotification(title: notificationTitle, body: message, account: account)
+        if event.bankHint == nil, let bank { event.bankHint = finamiBankHint(bank) }
         try CaptureInbox.enqueue(event, in: CaptureInbox.folder())
         UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "finami.lastBankNotification")
         return .result(dialog: "Сповіщення прийнято. Відкрий Finami для обробки.")

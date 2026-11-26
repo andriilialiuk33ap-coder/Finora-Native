@@ -178,6 +178,8 @@ struct Obligation: Codable, Identifiable {
   var due = Date()
   var scanFingerprint: String? = nil
   var scanImageID: String? = nil
+  var scanSourceIDs: [String]? = nil
+  var importedSchedule: [FinamiScheduleRow]? = nil
   var remaining: Int64 { max(0, target - paid) }
 }
 struct Database: Codable {
@@ -197,6 +199,7 @@ struct Database: Codable {
   var currencyPreferences: CurrencyPreferences? = nil
   var capturePreferences: CapturePreferences? = nil
   var captureHandled: [String]? = nil
+  var balanceObservations: [String: FinamiBalanceObservation]? = nil
   var captureMessageFingerprints: [String]? = nil
   var hiddenExpenseCategories: [String]? = nil
   var hiddenIncomeCategories: [String]? = nil
@@ -232,10 +235,22 @@ struct DataFile: FileDocument {
   @Published var capturePending: [CapturedPayment] = []
   @Published var captureWarning: String? = nil
   private var ready = true
-  private let url = FileManager.default.urls(
-    for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Finora.json")
+  private let url: URL = {
+    let folder = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+    #if DEBUG && targetEnvironment(simulator)
+    if ProcessInfo.processInfo.arguments.contains("--finami-qa") {
+      return folder.appendingPathComponent("FinamiUITestData", isDirectory: true).appendingPathComponent("Finora.json")
+    }
+    #endif
+    return folder.appendingPathComponent("Finora.json")
+  }()
   init() {
     do {
+      #if DEBUG && targetEnvironment(simulator)
+      if ProcessInfo.processInfo.arguments.contains("--finami-qa"), ProcessInfo.processInfo.arguments.contains("--finami-qa-reset"), FileManager.default.fileExists(atPath: url.path) {
+        try FileManager.default.removeItem(at: url)
+      }
+      #endif
       try FileManager.default.createDirectory(
         at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
       if FileManager.default.fileExists(atPath: url.path) {
@@ -258,7 +273,16 @@ struct DataFile: FileDocument {
       let references = Set(copy.operations.compactMap(\.scanImageID) + copy.obligations.compactMap(\.scanImageID))
       copy.scanImages = images.filter { references.contains($0.key) }
     }
-    return write(copy)
+    var newlyCaptured = 0
+    if copy.capturePreferences?.notifySaved == true {
+      let oldIDs = Set(db.operations.map(\.id))
+      newlyCaptured = copy.operations.filter { $0.captureSource != nil && !oldIDs.contains($0.id) }.count
+    }
+    let saved = write(copy)
+    if saved && newlyCaptured > 0 && copy.capturePreferences?.notifySaved == true {
+      FinamiSavedNotification.post(count: newlyCaptured)
+    }
+    return saved
   }
   private func write(_ copy: Database) -> Bool {
     do {
@@ -332,6 +356,8 @@ struct DataFile: FileDocument {
         decoded.accounts.allSatisfy({ ["UAH","USD"].contains($0.code) && $0.opening >= -1_000_000_000_000 && $0.opening <= 1_000_000_000_000 && ($0.creditLimit ?? 0) >= 0 && ($0.creditLimit ?? 0) <= 1_000_000_000_000 }),
         (!decoded.accounts.contains(where:{$0.code=="USD"}) || fxRate(decoded.currencyPreferences?.usdRate ?? "") != nil),
         Set(decoded.operations.map(\.id)).count == decoded.operations.count,
+        decoded.obligations.allSatisfy({ o in (o.importedSchedule ?? []).allSatisfy { $0.amount > 0 && $0.amount <= 1_000_000_000_000 } }),
+        (decoded.balanceObservations ?? [:]).values.allSatisfy({ $0.available >= 0 && $0.available <= 1_000_000_000_000 && ["UAH","USD"].contains($0.currency) }),
         decoded.operations.allSatisfy({ o in
           o.amount > 0 && o.amount <= 1_000_000_000_000
             && (o.sourceMinor.map { $0 > 0 && $0 <= 1_000_000_000_000 } ?? true)
@@ -396,6 +422,7 @@ struct DataFile: FileDocument {
       (($0.resourceValuesDate) ?? .distantPast) > (($1.resourceValuesDate) ?? .distantPast)
     }
   }
+  var storageHealthy: Bool { ready }
   func backup() -> DataFile { DataFile(data: (try? JSONEncoder().encode(db)) ?? Data()) }
   func csv() -> DataFile {
     func q(_ s: String) -> String { "\"" + s.replacingOccurrences(of: "\"", with: "\"\"") + "\"" }
@@ -414,6 +441,7 @@ struct DataFile: FileDocument {
   }
 }
 @main @MainActor struct FinoraApp: App {
+  @UIApplicationDelegateAdaptor(FinamiNotificationDelegate.self) private var notifications
   @StateObject private var store = Store()
   init() { FinamiShortcuts.updateAppShortcutParameters() }
   var body: some Scene { WindowGroup { IzanamiShell().environmentObject(store) } }
@@ -1043,11 +1071,13 @@ struct More: View {
         }
       }
       FinamiMenuGroup("Банки") {
+        NavigationLink { FinamiImportHub() } label: { FinamiMenuLabel(title: "Центр імпорту та перевірки", icon: "tray.full.fill", color: .indigo) }.accessibilityIdentifier("qa.smart.hub")
         NavigationLink { FinamiScanView() } label: { FinamiMenuLabel(title: "Finami Scan · зі скриншота", icon: "doc.viewfinder", color: .purple) }
         NavigationLink { BankCenter() } label: { FinamiMenuLabel(title: "Банки та імпорт", icon: "building.columns.fill", color: .cyan) }
         NavigationLink { AutomationCenter() } label: { FinamiMenuLabel(title: "Автоматизація · Apple Pay / SMS (\(s.capturePending.count))", icon: "bolt.fill", color: .orange) }
       }
       FinamiMenuGroup("Персоналізація") {
+        NavigationLink { FinamiDiagnostics() } label: { FinamiMenuLabel(title: "Діагностика Finami", icon: "checkmark.shield.fill", color: .green) }.accessibilityIdentifier("qa.smart.diagnostics")
         NavigationLink { FinamiHelp() } label: { FinamiMenuLabel(title: "Допомога та інструкції", icon: "book.fill", color: .blue) }
         NavigationLink { DashboardSettings() } label: { FinamiMenuLabel(title: "Блоки огляду", icon: "square.grid.2x2.fill", color: .orange) }
         NavigationLink { AppearanceView() } label: { FinamiMenuLabel(title: "Студія дизайну", icon: "paintpalette.fill", color: .pink) }
@@ -1063,7 +1093,7 @@ struct More: View {
         }
       }
       VStack(alignment: .leading) {
-        Text("Finami · 5.0 Preview 6\nБез реклами, серверів та платних API.").font(.footnote)
+        Text("Finami · 5.0 Preview 10\nБез реклами, серверів та платних API.").font(.footnote)
           .foregroundStyle(.secondary)
       }
     }.padding() }.background(Color(uiColor: .systemGroupedBackground)).navigationTitle("Ще").toolbar{Button{menuSettings=true} label:{Image(systemName:"slider.horizontal.3")}.accessibilityLabel("Налаштування меню")}.sheet(isPresented:$menuSettings){NavigationStack{Form{Toggle("Компактні ілюстрації",isOn:Binding(get:{s.db.preferences?.menuCompact ?? false},set:{v in s.change{d in var p=d.preferences ?? .init();p.menuCompact=v;d.preferences=p}}));NavigationLink("Студія дизайну"){AppearanceView()};NavigationLink("Блоки головної"){DashboardSettings()};NavigationLink("Рахунки"){FinamiAccountSettings()}}.navigationTitle("Налаштування меню").toolbar{Button("Готово"){menuSettings=false}}}}
@@ -1209,6 +1239,14 @@ struct ObligationEditor: View {
   var body: some View {
     NavigationStack {
       Form {
+      if let rows = o.importedSchedule, !rows.isEmpty {
+        Section("Графік з банківського скриншота") {
+          ForEach(rows) { row in LabeledContent(row.date.formatted(date: .abbreviated, time: .omitted), value: s.visibleMoney(row.amount)) }
+          Text("Довідкові дані імпорту; можуть застаріти після зміни договору.").font(.caption)
+          Button("Видалити довідковий графік", role: .destructive) { o.importedSchedule = nil }
+        }
+      }
+
         Section("Параметри") {
           FinamiField("Назва", text: $o.name)
           if o.kind == .installment {
@@ -1402,6 +1440,7 @@ struct Settings: View {
         ).font(.caption)
       }
       Section("Резервні копії") {
+        NavigationLink("Зашифровані резервні копії") { FinamiSecureBackupView() }
         NavigationLink("Локальні попередні копії") { SnapshotView() }
         Text("Зберігай експорт JSON у «Файли» / iCloud Drive. Автоматична хмарна синхронізація ще не підключена.").font(.caption)
         Button("Експорт JSON") {
