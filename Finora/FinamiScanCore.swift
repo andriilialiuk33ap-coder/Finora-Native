@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(CoreGraphics)
+import CoreGraphics
+#endif
 
 // Foundation-only recognition heuristics. All extracted values remain drafts.
 struct ScanMoney: Equatable {
@@ -347,12 +350,20 @@ enum FinamiScanParser {
         let labels = clean.indices.filter { kind(clean[$0].text) != nil && installmentAmount(clean[$0].text) == nil && nextPaymentDate(clean[$0].text, reference: reference) == nil }
         let amounts = clean.indices.filter { isolatedAmount(clean[$0].text) != nil }
         func distance(_ label: CGRect, _ amount: CGRect) -> Double? {
-            let h = max(label.height, amount.height, 0.012)
-            let overlap = min(label.maxX, amount.maxX) - max(label.minX, amount.minX)
-            let gapY = max(0, max(label.minY, amount.minY) - min(label.maxY, amount.maxY))
-            let gapX = max(0, max(label.minX, amount.minX) - min(label.maxX, amount.maxX))
-            if abs(label.midY - amount.midY) <= h * 0.45 && gapX <= 0.55 { return Double(gapX * 0.25 + abs(label.midY - amount.midY)) }
-            if (overlap >= min(label.width, amount.width) * 0.35 || abs(label.minX - amount.minX) < 0.035), gapY <= min(0.065, h * 2.0) { return Double(gapY + abs(label.midX - amount.midX) * 0.12 + 0.015) }
+            let h: CGFloat = max(label.height, amount.height, 0.012)
+            let overlap: CGFloat = min(label.maxX, amount.maxX) - max(label.minX, amount.minX)
+            let gapY: CGFloat = max(0, max(label.minY, amount.minY) - min(label.maxY, amount.maxY))
+            let gapX: CGFloat = max(0, max(label.minX, amount.minX) - min(label.maxX, amount.maxX))
+            let centerGapY = abs(label.midY - amount.midY)
+            let centerGapX = abs(label.midX - amount.midX)
+            let leftGap = abs(label.minX - amount.minX)
+            let minimumOverlap = min(label.width, amount.width) * 0.35
+            if centerGapY <= h * 0.45 && gapX <= 0.55 {
+                return Double(gapX * 0.25 + centerGapY)
+            }
+            if (overlap >= minimumOverlap || leftGap < 0.035), gapY <= min(0.065, h * 2.0) {
+                return Double(gapY + centerGapX * 0.12 + 0.015)
+            }
             return nil
         }
         var proposals: [(label: Int, amount: Int)] = []

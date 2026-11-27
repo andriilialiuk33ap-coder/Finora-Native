@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(CoreGraphics)
+import CoreGraphics
+#endif
 
 // Learns a field's position only on a screen with recognizable structural
 // anchors. Layout memory produces suggestions, never a saved contract.
