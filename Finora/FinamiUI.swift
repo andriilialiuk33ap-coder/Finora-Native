@@ -90,7 +90,7 @@ struct FinamiCardStyle: ViewModifier {
     func body(content: Content) -> some View {
         let design = FinamiDesign(rawValue:s.db.preferences?.design ?? "Dark Classic") ?? .darkClassic
         let style = FinamiCardTemplate(rawValue:template ?? s.db.preferences?.cardTemplate ?? "За дизайном") ?? .automatic
-        let radius: CGFloat = s.db.preferences?.designRadius.map { CGFloat(FinamiDesignPolicy.radius($0)) } ?? (style == .minimal || style == .compact ? 12 : design.corner)
+        let radius: CGFloat = s.db.preferences?.designRadius.map { CGFloat(FinamiDesignPolicy.radius($0)) } ?? (style == .minimal ? 8 : style == .compact ? 12 : design.corner)
         let economical = s.db.preferences?.designLowEffects == true
         let accent = finamiDesignAccent(s.db.preferences?.designAccent) ?? (design.monochrome && style == .automatic ? design.tint : tint)
         let base = finamiDesignSurface(design, scheme: scheme)
@@ -101,12 +101,15 @@ struct FinamiCardStyle: ViewModifier {
             ZStack(alignment:.leading) {
                 RoundedRectangle(cornerRadius:radius).fill(base)
                 if glass && !reduceTransparency && !economical && (style == .glass || design == .liquidGlass) { RoundedRectangle(cornerRadius:radius).fill(.regularMaterial) }
-                if !economical && (gradient || glass) { RoundedRectangle(cornerRadius:radius).fill(LinearGradient(colors:[accent.opacity(0.12),accent.opacity(0.015)],startPoint:.topLeading,endPoint:.bottomTrailing)) }
-                else if style == .soft || (style == .automatic && [.canvas,.rose,.nord,.warmSand,.nordicWhite].contains(design)) { RoundedRectangle(cornerRadius:radius).fill(accent.opacity(0.07)) }
+                if economical && style != .automatic && (gradient || glass) { RoundedRectangle(cornerRadius:radius).fill(accent.opacity(style == .premium ? 0.19 : style == .glass ? 0.06 : 0.13)) }
+                if !economical && (gradient || glass) { RoundedRectangle(cornerRadius:radius).fill(LinearGradient(colors:[accent.opacity(style == .premium ? 0.29 : style == .bank ? 0.21 : style == .gradient ? 0.25 : 0.13),accent.opacity(0.015)],startPoint:.topLeading,endPoint:.bottomTrailing)) }
+                if style == .illustrated { Circle().strokeBorder(accent.opacity(0.22),lineWidth:16).frame(width:100,height:100).frame(maxWidth:.infinity,alignment:.trailing).offset(x:25,y:-24).accessibilityHidden(true) }
+                if style == .bank { Capsule().fill(accent.opacity(0.6)).frame(width:28,height:3).frame(maxHeight:.infinity,alignment:.top).padding(10) }
+                if style == .soft || (style == .automatic && [.canvas,.rose,.nord,.warmSand,.nordicWhite].contains(design)) { RoundedRectangle(cornerRadius:radius).fill(accent.opacity(0.07)) }
                 if style == .stripe { Capsule().fill(accent).frame(width:3).padding(.vertical,10) }
             }
         }.clipShape(RoundedRectangle(cornerRadius:radius))
-         .overlay { RoundedRectangle(cornerRadius:radius).strokeBorder(neon ? accent.opacity(0.55) : (design.monochrome ? accent.opacity(0.16) : Color.primary.opacity(0.07)),lineWidth:1) }
+         .overlay { RoundedRectangle(cornerRadius:radius).strokeBorder(neon ? accent.opacity(0.72) : style == .premium ? accent.opacity(0.42) : style == .compact ? accent.opacity(0.22) : style == .minimal ? Color.primary.opacity(0.035) : (design.monochrome ? accent.opacity(0.16) : Color.primary.opacity(0.07)),lineWidth:1) }
     }
 }
 // Original local vector illustrations, not remote images. No network required.

@@ -61,7 +61,8 @@ struct FinamiUpcomingDesign: View {
     var body: some View {
         let style = p.designStyle(for: "upcoming") ?? "original"
         let count = size == .small || style == "original" ? 1 : max(1, min(10, p.designUpcomingCount ?? 3))
-        let payments = Array(s.upcomingPayments.prefix(count))
+        let all = s.upcomingPayments
+        let payments = Array(all.prefix(count))
         VStack(alignment: .leading, spacing: 10) {
             if payments.isEmpty { Text("Немає запланованих платежів").font(.caption).foregroundStyle(.secondary) }
             if style == "bankingPro" && size != .small && p.designShowsUpcoming("month") && p.designShowsUpcoming("amount") {
@@ -92,6 +93,7 @@ struct FinamiUpcomingDesign: View {
                     }
                 }.buttonStyle(.plain)
             }
+            if !all.isEmpty { FinamiAllPaymentsLink(count: all.count, masked: masked) }
         }
     }
 }

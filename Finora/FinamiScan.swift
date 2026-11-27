@@ -22,7 +22,7 @@ private enum ScanFailure: LocalizedError {
     case image, empty
     var errorDescription: String? { self == .image ? "Не вдалося відкрити фото або воно перевищує 25 МБ." : "Текст не знайдено. Спробуй чіткіший скриншот." }
 }
-private func recognizeScan(_ data: Data, knownDigest: String? = nil) throws -> ScanPhoto {
+private func recognizeScan(_ data: Data, knownDigest: String? = nil, installment: Bool = false) throws -> ScanPhoto {
     guard data.count <= 25_000_000, let source = CGImageSourceCreateWithData(data as CFData, nil) else { throw ScanFailure.image }
     let options: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceThumbnailMaxPixelSize: 3000]
     guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { throw ScanFailure.image }
@@ -44,23 +44,47 @@ private func recognizeScan(_ data: Data, knownDigest: String? = nil) throws -> S
         let retry = VNRecognizeTextRequest(); retry.recognitionLevel = .accurate; retry.usesLanguageCorrection = false
         if (try? VNImageRequestHandler(cgImage: image, options: [:]).perform([retry])) != nil, !(retry.results ?? []).isEmpty { recognized = retry; warning = nil }
     }
-    // Vision returns bounding boxes. Join items on the same horizontal row (merchant + amount).
-    let observations = (recognized.results ?? []).compactMap { o -> (CGRect, String)? in
-        guard let text = o.topCandidates(1).first?.string else { return nil }
-        return (o.boundingBox, text)
-    }.sorted { $0.0.midY > $1.0.midY }
-    var groups: [[(CGRect, String)]] = []
-    for observation in observations {
-        if let first = groups.last?.first, abs(first.0.midY - observation.0.midY) < min(first.0.height, observation.0.height) * 0.45 {
-            groups[groups.count - 1].append(observation)
-        } else { groups.append([observation]) }
+    // Preserve horizontal reading order in both Vision passes. The second pass
+    // disables language correction only when the installment fields are incomplete.
+    func rows(_ request: VNRecognizeTextRequest) -> [String] {
+        let observations = (request.results ?? []).compactMap { o -> (CGRect, String)? in
+            guard let text = o.topCandidates(1).first?.string else { return nil }
+            return (o.boundingBox, text)
+        }.sorted { $0.0.midY > $1.0.midY }
+        var groups: [[(CGRect, String)]] = []
+        for observation in observations {
+            if let first = groups.last?.first, abs(first.0.midY - observation.0.midY) < min(first.0.height, observation.0.height) * 0.45 {
+                groups[groups.count - 1].append(observation)
+            } else { groups.append([observation]) }
+        }
+        return groups.map { $0.sorted { $0.0.minX < $1.0.minX }.map { $0.1 }.joined(separator: " ") }
     }
-    let lines = groups.map { $0.sorted { $0.0.minX < $1.0.minX }.map { $0.1 }.joined(separator: " ") }
+    var lines = rows(recognized)
+    var mergedDraft: ScanInstallmentDraft?
+    if installment {
+        let first = FinamiScanParser.installment(lines)
+        if first.total == nil || first.remaining == nil || first.monthly == nil || first.name.isEmpty || first.due == nil {
+            let alternate = VNRecognizeTextRequest()
+            alternate.recognitionLevel = .accurate
+            alternate.usesLanguageCorrection = false
+            if !preferred.isEmpty { alternate.recognitionLanguages = preferred }
+            if (try? VNImageRequestHandler(cgImage: image, options: [:]).perform([alternate])) != nil {
+                let extra = rows(alternate)
+                if !extra.isEmpty && extra != lines {
+                    let merged = finamiMergeInstallments([first, FinamiScanParser.installment(extra)])
+                    mergedDraft = merged.draft
+                    var seen = Set(lines)
+                    lines += extra.filter { seen.insert($0).inserted }
+                    if !merged.conflicts.isEmpty { warning = "OCR: суперечливі поля залишено для перевірки: " + merged.conflicts.joined(separator: ", ") }
+                }
+            }
+        }
+    }
     if lines.isEmpty && warning == nil { warning = "Текст не знайдено. Можна заповнити чернетку вручну." }
     let previewOptions: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceThumbnailMaxPixelSize: 1600]
     let jpeg = CGImageSourceCreateThumbnailAtIndex(source, 0, previewOptions as CFDictionary).flatMap { UIImage(cgImage: $0).jpegData(compressionQuality: 0.7) }
     let digest = knownDigest ?? SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-    return ScanPhoto(id: digest, lines: lines, image: jpeg, warning: warning)
+    return ScanPhoto(id: digest, lines: lines, image: jpeg, warning: warning, mergedDraft: mergedDraft)
 }
 struct FinamiScanView: View {
     @EnvironmentObject private var s: Store
@@ -123,6 +147,9 @@ struct FinamiScanView: View {
                                 if s.db.operations.contains(where: { $0.scanFingerprint?.hasPrefix(photo.id + ":") == true }) || s.db.obligations.contains(where: { $0.scanFingerprint == photo.id }) { Text("Раніше імпортовано повністю або частково").font(.caption).foregroundStyle(.orange) }
                             }
                         }.disabled(busy).accessibilityIdentifier("qa.scan.review." + photo.id)
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            Button(role: .destructive) { photos.removeAll { $0.id == photo.id } } label: { Label("Прибрати фото", systemImage: "trash") }
+                        }
                     }
                 }
             }
@@ -141,10 +168,11 @@ struct FinamiScanView: View {
                         guard let data = try await item.loadTransferable(type: Data.self) else { throw ScanFailure.image }
                         guard data.count <= 25_000_000 else { throw ScanFailure.image }
                         let known = Set(photos.map(\.id))
+                        let isInstallment = mode == .installment
                         let photo = try await Task.detached(priority: .userInitiated) { () throws -> ScanPhoto? in
                             let digest = SHA256.hash(data:data).map { String(format:"%02x",$0) }.joined()
                             guard !known.contains(digest) else { return nil }
-                            return try recognizeScan(data, knownDigest:digest)
+                            return try recognizeScan(data, knownDigest:digest, installment: isInstallment)
                         }.value
                         if let photo, !photos.contains(where: { $0.id == photo.id }) { photos.append(photo) }
                     } catch { errors.append("Фото \(index + 1): \(error.localizedDescription)") }
@@ -153,7 +181,7 @@ struct FinamiScanView: View {
         }
     }
     private func mergedPhoto() -> ScanPhoto {
-        let merged = finamiMergeInstallments(photos.map { FinamiScanParser.installment($0.lines) })
+        let merged = finamiMergeInstallments(photos.map { $0.mergedDraft ?? FinamiScanParser.installment($0.lines) })
         let ids = photos.map(\.id).sorted()
         let id = SHA256.hash(data: Data(ids.joined(separator: "|").utf8)).map { String(format: "%02x", $0) }.joined()
         return ScanPhoto(id: id, lines: photos.flatMap(\.lines), image: nil, warning: merged.conflicts.isEmpty ? "Перевір, що всі фото належать одному договору." : "Суперечливі поля: " + merged.conflicts.joined(separator: ", "), mergedDraft: merged.draft, sourceIDs: ids)
@@ -174,7 +202,7 @@ struct FinamiScanView: View {
         guard let data = image.pngData() else { busy = false; errors = ["QA: не вдалося створити фото"]; return }
         Task { @MainActor in
             defer { busy = false }
-            do { photos = [try await Task.detached(priority: .userInitiated) { try recognizeScan(data) }.value] }
+            do { photos = [try await Task.detached(priority: .userInitiated) { try recognizeScan(data, installment: true) }.value] }
             catch { errors = [error.localizedDescription] }
         }
     }
@@ -421,7 +449,7 @@ private struct ScanInstallmentReview: View {
                             Button { assign(line) } label: { Label(line, systemImage: "arrow.down.circle").font(.subheadline) }
                         }
                     }
-                    Text("Обери поле, потім натисни потрібний рядок. Суми без чіткого підпису не підставляються навмання.").font(.caption).foregroundStyle(.secondary)
+                    Text("Обери поле, потім натисни потрібну суму. Якщо скриншот не містить підпису або решти даних, додай фото з деталями договору. Суми без чіткого підпису не підставляються навмання.").font(.caption).foregroundStyle(.secondary)
                 }
             }
             Section("Дані договору · UAH") {

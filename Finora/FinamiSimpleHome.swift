@@ -28,7 +28,7 @@ struct FinamiSimpleHome: View {
             Divider()
             metric("Доступний кредит",s.totalAvailableCredit)
             metric("Використано кредиту",s.totalCreditUsed)
-        }.padding(16).frame(maxWidth:.infinity,alignment:.leading).modifier(FinamiAuroraSurface(tint:finamiDesignAccent(p.designAccent) ?? finoraAccent))
+        }.padding(16).frame(maxWidth:.infinity,alignment:.leading).modifier(FinamiDashboardSurface(isAccounts: false, tint: finamiDesignAccent(p.designAccent) ?? finoraAccent, template: DashboardItem.merged(s.db.dashboard).first { $0.kind == .ownFunds }?.template, aurora: true))
     }
     private func add(_ kind:Kind) { operation=Operation(kind:kind,category:"Без категорії",account:s.db.accounts.first?.id ?? cash) }
     private var actions:some View {
@@ -71,16 +71,16 @@ struct FinamiSimpleHome: View {
             Text("Рахунки").font(.headline)
             FinamiCompactAccountsGrid(accounts:accountList,mode:"all",date:Date(),onAccountsScreen:false,forceList:true).environment(\.finamiMask,masked)
             if !s.upcomingPayments.isEmpty {
-                NavigationLink { CalendarView() } label:{ HStack {Text("Найближчі платежі").font(.headline);Spacer();Image(systemName:"chevron.right")} }.buttonStyle(.plain)
+                NavigationLink { FinamiAllUpcomingPayments(maskAmounts: masked) } label:{ HStack {Text("Найближчі платежі").font(.headline);Spacer();Image(systemName:"chevron.right")} }.buttonStyle(.plain)
                 if p.designStyle(for: "upcoming") != nil || p.componentSizes?["upcoming"] != nil || p.designUpcomingFields != nil {
                     FinamiUpcomingDesign(item: DashboardItem.merged(s.db.dashboard).first { $0.kind == .obligations } ?? .init(kind: .obligations, enabled: true, size: .medium), open: { payment = $0 }).environment(\.finamiMask,masked)
-                } else { ForEach(Array(s.upcomingPayments.prefix(5))) { item in paymentRow(item) } }
+                } else { ForEach(Array(s.upcomingPayments.prefix(5))) { item in paymentRow(item) }; FinamiAllPaymentsLink(count: s.upcomingPayments.count, masked: masked) }
             }
         }.padding() }.background(finamiScreenBackground(s.db.preferences)).navigationTitle(p.homeTitle ?? "Головна")
         .toolbar {
             NavigationLink {FinamiGlobalSearch()} label:{Image(systemName:"magnifyingglass")}.accessibilityLabel("Пошук Finami")
             Button {s.changeAppearance{$0.hideAmounts = !s.privateAmounts}} label:{Image(systemName:s.privateAmounts ? "eye.slash":"eye")}.accessibilityLabel("Приховати або показати суми")
             NavigationLink {AppearanceView()} label:{Image(systemName:"paintpalette")}.accessibilityLabel("Finami Design")
-        }.sheet(item:$operation){OpEditor(original:$0)}.sheet(item:$payment){FinamiPaymentDetails(payment:$0)}
+        }.sheet(item:$operation){OpEditor(original:$0)}.sheet(item:$payment){FinamiPaymentDetails(payment:$0).environment(\.finamiMask, masked || (p.designHiddenSubscriptions ?? []).contains($0.id))}
     }
 }

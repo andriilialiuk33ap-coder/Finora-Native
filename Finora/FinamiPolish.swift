@@ -28,13 +28,14 @@ struct FinamiAccountSurface: View {
     }
 }
 struct FinamiDashboardSurface: ViewModifier {
+    @EnvironmentObject private var s: Store
     var isAccounts: Bool
     var tint: Color
     var template: String?
     var aurora = false
     @ViewBuilder func body(content: Content) -> some View {
         if isAccounts { content }
-        else if aurora && (template == nil || template == FinamiCardTemplate.automatic.rawValue) { content.modifier(FinamiAuroraSurface(tint: tint)) }
+        else if aurora && (template ?? s.db.preferences?.cardTemplate ?? FinamiCardTemplate.automatic.rawValue) == FinamiCardTemplate.automatic.rawValue { content.modifier(FinamiAuroraSurface(tint: tint)) }
         else { content.modifier(FinamiCardStyle(tint: tint, template: template)) }
     }
 }

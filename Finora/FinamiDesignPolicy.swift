@@ -53,6 +53,16 @@ extension AppearancePreferences {
         if let homeAccountRight { result["cardRight"] = homeAccountRight }
         if let designAccent { result["accent"] = designAccent }
         if let designRadius { result["radius"] = String(FinamiDesignPolicy.radius(designRadius)) }
+        // Versioned additions preserve component settings in new style snapshots.
+        // No account IDs, hidden amounts, ledger data or filters are captured.
+        result["componentSchema"] = "1"
+        for key in FinamiDesignPolicy.componentOptions.keys {
+            if let style = designStyle(for: key) { result["componentStyle." + key] = style }
+        }
+        for (key, size) in componentSizes ?? [:] where FinamiDesignPolicy.componentSizes.contains(size) {
+            result["componentSize." + key] = size
+        }
+        if let count = designUpcomingCount { result["upcomingCount"] = String(count) }
         return result
     }
     mutating func restoreFinamiStyle(_ values: [String: String]) {
@@ -74,6 +84,16 @@ extension AppearancePreferences {
         if let value = values["colorful"] { colorfulDashboard = value == "on" }
         homeAccountLayout = values["cardLayout"].flatMap { ["premium","detailed","compact","physical"].contains($0) ? $0 : nil }
         homeAccountRight = values["cardRight"].flatMap { ["art","photo","expenses","credit","actions","last","count","none"].contains($0) ? $0 : nil }
+        if values["componentSchema"] == "1" {
+            componentStyles = [:]; componentSizes = [:]
+            for key in FinamiDesignPolicy.componentOptions.keys {
+                setDesignStyle(values["componentStyle." + key], for: key)
+            }
+            for (key, size) in values where key.hasPrefix("componentSize.") {
+                setDesignSize(size, for: String(key.dropFirst("componentSize.".count)))
+            }
+            designUpcomingCount = values["upcomingCount"].flatMap(Int.init).map { min(10, max(1, $0)) }
+        }
     }
 }
 

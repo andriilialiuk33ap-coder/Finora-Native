@@ -549,6 +549,10 @@ struct DataFile: FileDocument {
             loaded.accounts = [Account(id:"qa-design-credit",name:"QA Credit Card",opening:-10000,accountType:"credit",creditLimit:100000),Account(id:"qa-design-debit",name:"QA Debit",opening:50000,accountType:"debit")]
             var p=AppearancePreferences();p.modernAccountGrid=true;p.designLayout="grid";p.accountsMode="all";loaded.preferences=p
           }
+          if ProcessInfo.processInfo.arguments.contains("--finami-qa-upcoming-fixture") {
+            loaded.obligations = (1...6).map { i in Obligation(id: "qa-upcoming-" + String(i), kind: .installment, name: "QA payment " + String(i), target: 100000, monthly: 10000, due: Date().addingTimeInterval(Double(i) * 86400)) }
+            loaded.dashboard = [.init(kind: .obligations, enabled: true, size: .large)]
+          }
           if ProcessInfo.processInfo.arguments.contains("--finami-qa-payment-fixture") || ProcessInfo.processInfo.arguments.contains("--finami-qa-link-fixture") {
             loaded.accounts.append(Account(id:"qa-card",name:"QA Card",opening:100000))
             loaded.obligations.append(Obligation(id:"qa-loan",kind:.installment,name:"QA installment",target:30000,paid:10000,monthly:10000,due:Date().addingTimeInterval(-86400)))
@@ -1420,10 +1424,13 @@ struct BudgetRow: View {
 }
 struct Obligations: View {
   @EnvironmentObject var s: Store
+  @Environment(\.finamiMask) private var masked
   var kind: ObligationKind
   @State private var paymentDetails: FinamiPayment?
   @State private var edit: Obligation?
   @State private var remove: Obligation?
+  @State private var archiveExpanded = false
+  private func visibleMoney(_ amount: Int64) -> String { masked ? "••••" : s.visibleMoney(amount) }
   private func moveToArchive(_ o: Obligation) {
     let linked = (s.db.reminders ?? []).filter { $0.linkedID == o.id }
     if s.change({ d in finamiRemoveInstallment(o.id, from: &d) }) { linked.forEach { ReminderScheduler.cancel($0) } }
@@ -1432,7 +1439,7 @@ struct Obligations: View {
     List {
       if kind == .installment { NavigationLink { FinamiScanView(initialMode: .installment) } label: { Label("Додати зі скриншота", systemImage: "doc.viewfinder") } }
       Section("Загальний залишок") {
-        Text(s.visibleMoney(s.db.obligations.filter { $0.kind == kind }.reduce(0) { $0 + $1.remaining }))
+        Text(visibleMoney(s.db.obligations.filter { $0.kind == kind }.reduce(0) { $0 + $1.remaining }))
           .font(.title.bold())
       }
       ForEach(s.db.obligations.filter { $0.kind == kind }) { o in
@@ -1446,13 +1453,13 @@ struct Obligations: View {
             HStack {
               Text(o.name).bold()
               Spacer()
-              Text(s.visibleMoney(o.remaining))
+              Text(visibleMoney(o.remaining))
             }
             if !collapsed {
               if kind == .installment { FinamiInstallmentDesign(obligation: o) }
-              else if !s.privateAmounts { ProgressView(value: o.target > 0 ? min(1, Double(o.paid) / Double(o.target)) : 0) }
+              else if !s.privateAmounts && !masked { ProgressView(value: o.target > 0 ? min(1, Double(o.paid) / Double(o.target)) : 0) }
               Text(
-                "\(s.visibleMoney(o.paid)) із \(s.visibleMoney(o.target)) · \(o.due.formatted(date:.abbreviated,time:.omitted))"
+                "\(visibleMoney(o.paid)) із \(visibleMoney(o.target)) · \(o.due.formatted(date:.abbreviated,time:.omitted))"
               ).font(.caption).foregroundStyle(.secondary)
             }
           }
@@ -1467,11 +1474,13 @@ struct Obligations: View {
         }
       }
       if kind == .installment, let archived = s.db.removedInstallments, !archived.isEmpty {
-        Section("Архів розстрочок") {
-          ForEach(archived) { o in
-            HStack { VStack(alignment: .leading) { Text(o.name); Text(s.visibleMoney(o.remaining)).font(.caption).foregroundStyle(.secondary) }; Spacer(); Button("Відновити") { s.change { d in finamiRestoreInstallment(o.id, into: &d) } }.buttonStyle(.borderless) }
+        Section {
+          DisclosureGroup("Архів розстрочок · \(archived.count)", isExpanded: $archiveExpanded) {
+            ForEach(archived) { o in
+              HStack { VStack(alignment: .leading) { Text(o.name); Text(visibleMoney(o.remaining)).font(.caption).foregroundStyle(.secondary) }; Spacer(); Button("Відновити") { s.change { d in finamiRestoreInstallment(o.id, into: &d) } }.buttonStyle(.borderless) }
+            }
+            Text("Відновлення повертає графік. Нагадування та прив’язку до партнерської групи налаштуй повторно.").font(.caption).foregroundStyle(.secondary)
           }
-          Text("Відновлення повертає графік. Нагадування та прив’язку до партнерської групи налаштуй повторно.").font(.caption).foregroundStyle(.secondary)
         }
       }
     }.confirmationDialog("Прибрати розстрочку з активного плану?", isPresented: Binding(get: { remove != nil }, set: { if !$0 { remove = nil } }), titleVisibility: .visible) {
@@ -1485,7 +1494,7 @@ struct Obligations: View {
         Image(systemName: "plus")
       }
     }.sheet(item: $edit) { ObligationEditor(original: $0) }
-      .sheet(item: $paymentDetails) { FinamiPaymentDetails(payment: $0) }
+      .sheet(item: $paymentDetails) { FinamiPaymentDetails(payment: $0).environment(\.finamiMask, masked) }
   }
 }
 struct ObligationEditor: View {
@@ -1618,9 +1627,10 @@ struct ObligationEditor: View {
 }
 struct CalendarView: View {
   @EnvironmentObject var s: Store
+  @Environment(\.finamiMask) private var maskAmounts
   var body: some View {
     ScrollView { VStack(alignment: .leading, spacing: 16) {
-        FinamiCalendarGrid().padding(14).modifier(FinamiCardStyle(tint: .teal))
+        FinamiCalendarGrid(masked: maskAmounts).padding(14).modifier(FinamiCardStyle(tint: .teal))
         FinamiMonthPayments()
     }.padding() }.background(Color(uiColor: .systemGroupedBackground)).navigationTitle("Календар платежів")
   }

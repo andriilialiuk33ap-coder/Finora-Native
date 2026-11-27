@@ -191,7 +191,7 @@ struct FinamiCalendarGrid: View {
                 ForEach(Array(overdue.prefix(compact ? 1 : 3))) { p in Button { payment = p } label: { HStack { Text(p.name).lineLimit(1); Spacer(); Text(hiddenSubscriptions.contains(p.id) ? "••••" : show(p.amount,p.currency)) }.font(.caption) }.buttonStyle(.plain) }
             }
             if !compact { Text("Майбутні повторення — прогноз, не операції. Сплатити можна найближчий платіж договору.").font(.caption2).foregroundStyle(.secondary) }
-        }.sheet(item: $payment) { FinamiPaymentDetails(payment: $0) }.accessibilityIdentifier("qa.calendar.grid")
+        }.sheet(item: $payment) { FinamiPaymentDetails(payment: $0).environment(\.finamiMask, masked || (s.db.preferences?.designHiddenSubscriptions ?? []).contains($0.id)) }.accessibilityIdentifier("qa.calendar.grid")
     }
     private func heat(_ matches: [FinamiCalendarEvent], events: [FinamiCalendarEvent]) -> Double {
         // Compare within each currency, never add amounts of unlike currencies.

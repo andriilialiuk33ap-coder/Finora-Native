@@ -160,10 +160,10 @@ enum FinamiScanParser {
     }
     // Only explicitly labelled, unambiguous amounts are filled automatically.
     private static let installmentLabels: [[String]] = [
-        ["загальний кредит", "загальна сума кредиту", "сума кредиту", "сума договору", "загальна сума", "початкова сума", "вартість покупки", "сума покупки", "сума розстрочки", "повна вартість", "сума фінансування", "тіло кредиту початкове"],
-        ["залишок боргу", "поточний залишок", "залишок розстрочки", "залишилося сплатити", "залишилось сплатити", "залишок заборгованості", "залишок до сплати", "залишок кредиту", "залишок суми кредиту", "залишок основного боргу", "непогашена сума", "сума до повного погашення", "залишок до погашення", "залишилось погасити", "залишилося погасити"],
-        ["щомісячний платіж", "регулярний платіж", "сума наступного платежу", "сума платежу", "платіж на місяць", "платіж щомісяця", "щомісячна оплата", "розмір платежу", "наступний платіж", "черговий платіж", "обов'язковий платіж", "щомісячний внесок"],
-        ["наступний платіж", "дата платежу", "дата наступного платежу", "сплатити до", "наступне списання", "дата списання", "дата чергового платежу", "черговий платіж", "наступна оплата", "дата оплати"],
+        ["загальний кредит", "загальна сума кредиту", "сума кредиту", "сума договору", "загальна сума", "початкова сума", "вартість покупки", "сума покупки", "сума розстрочки", "повна вартість", "сума фінансування", "тіло кредиту початкове", "початкова сума кредиту", "сума розстрочки за договором", "розстрочка на", "повна сума кредиту", "загальна вартість покупки"],
+        ["залишок боргу", "поточний залишок", "залишок розстрочки", "залишилося сплатити", "залишилось сплатити", "залишок заборгованості", "залишок до сплати", "залишок кредиту", "залишок суми кредиту", "залишок основного боргу", "непогашена сума", "сума до повного погашення", "залишок до погашення", "залишилось погасити", "залишилося погасити", "залишок за договором", "залишок до повного погашення", "залишок до кінця розстрочки", "залишок тіла кредиту", "залишилось виплатити", "залишилося виплатити"],
+        ["щомісячний платіж", "регулярний платіж", "сума наступного платежу", "сума платежу", "платіж на місяць", "платіж щомісяця", "щомісячна оплата", "розмір платежу", "наступний платіж", "черговий платіж", "обов'язковий платіж", "щомісячний внесок", "платіж на місяць", "сума щомісячного платежу", "розмір щомісячного платежу", "щомісячна сума", "сума регулярного платежу"],
+        ["наступний платіж", "дата платежу", "дата наступного платежу", "сплатити до", "наступне списання", "дата списання", "дата чергового платежу", "черговий платіж", "наступна оплата", "дата оплати", "дата щомісячного платежу", "дата внесення платежу"],
         ["вже сплачено", "вже погашено", "сплачено всього", "погашено всього", "сума погашеного основного боргу", "погашено основного боргу"]
     ]
     static func installmentDate(_ text: String) -> Date? {
@@ -186,6 +186,15 @@ enum FinamiScanParser {
         // Remove only explicit dates before parsing amounts; a date alone is not money.
         var line = text.replacingOccurrences(of: #"(?<!\d)\d{1,2}[./]\d{1,2}[./]\d{4}(?!\d)"#, with: " ", options: .regularExpression)
         line = line.replacingOccurrences(of: #"(?i)\d{1,2}\s+(?:січня|лютого|березня|квітня|травня|червня|липня|серпня|вересня|жовтня|листопада|грудня)\s+\d{4}"#, with: " ", options: .regularExpression)
+        // A marked currency can coexist with a date; bare numbers require a money
+        // label or a pure numeric row. Never treat card masks, time or counters as money.
+        if let marked = money(line) { return marked }
+        guard matches(currency, in: line).isEmpty,
+              matches(#"(?<!\d)\d{1,2}:\d{2}(?!\d)|[•●*]{1,}\s*\d|\b(?:картк[аиуиі]|рахунк[ау]|договір|договору)\s*(?:№|#)\s*\d"#, in: line).isEmpty else { return nil }
+        let lower = line.lowercased()
+        let labelled = installmentLabels.enumerated().contains { index, labels in index != 3 && labels.contains { lower.contains($0) } }
+        let pure = line.range(of: #"^\s*[+−-]?[\d\s,.]+\s*$"#, options: .regularExpression) != nil
+        guard labelled || pure else { return nil }
         return money(line.replacingOccurrences(of: ":", with: " "), allowBare: true)
     }
     static func installmentCandidates(_ lines: [String]) -> [String] {
@@ -199,7 +208,7 @@ enum FinamiScanParser {
     }
     static func installment(_ input: [String], reference: Date = Date()) -> ScanInstallmentDraft {
         let lines = input.map(bankClean).filter { !$0.isEmpty }
-        if let plan = purchasePlan(lines, reference: reference) { return plan }
+        let plan = purchasePlan(lines, reference: reference)
         var draft = ScanInstallmentDraft()
         draft.foreignCurrency = lines.contains(where: hasUnsupportedCurrency)
         var values = Array(repeating: [Int64](), count: 5), dates: [Date] = []
@@ -217,7 +226,7 @@ enum FinamiScanParser {
         enum Token { case label, value }
         func token(_ line: String) -> Token? {
             if !groups(line).isEmpty && installmentAmount(line) == nil && installmentDate(line) == nil { return .label }
-            if groups(line).isEmpty && (amountOnly(line) != nil || (installmentDate(line) != nil && installmentAmount(line) == nil)) { return .value }
+            if groups(line).isEmpty && (amountOnly(line) != nil || (nextPaymentDate(line, reference: reference) != nil && installmentAmount(line) == nil)) { return .value }
             return nil
         }
         func isLabel(_ index: Int) -> Bool { if case .label? = token(lines[index]) { return true }; return false }
@@ -262,6 +271,14 @@ enum FinamiScanParser {
             if principal.count == 1, let paid = installmentCandidateAmount(principal[0]), paid <= t { draft.remaining = t-paid }
         }
         if Set(dates).count == 1 { draft.due = dates.first }
+        if let plan {
+            if draft.name.isEmpty { draft.name = plan.name }
+            if values[0].isEmpty { draft.total = plan.total }
+            if values[1].isEmpty && draft.remaining == nil { draft.remaining = plan.remaining }
+            if values[2].isEmpty { draft.monthly = plan.monthly }
+            if dates.isEmpty { draft.due = plan.due }
+            draft.foreignCurrency = draft.foreignCurrency || plan.foreignCurrency
+        }
         return draft
     }
     static func balance(_ lines: [String]) -> ScanBalanceDraft {

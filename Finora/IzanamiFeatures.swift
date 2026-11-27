@@ -490,7 +490,7 @@ struct DashboardTile: View {
         .contextMenu { Button(collapsed ? "Розгорнути блок" : "Згорнути блок") { toggleCollapsed() } }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("qa.dashboard.tile." + item.id)
-        .sheet(item:$paymentDetails) { FinamiPaymentDetails(payment:$0) }
+        .sheet(item:$paymentDetails) { FinamiPaymentDetails(payment:$0).environment(\.finamiMask, masked || (s.db.preferences?.designHiddenSubscriptions ?? []).contains($0.id)) }
         .sheet(isPresented:$accountSettings) { NavigationStack { FinamiHomeAccountsSettings().toolbar { ToolbarItem(placement:.cancellationAction) { Button("Готово") { accountSettings = false } } } } }
     }
     private var reviewOperations: [Operation] { ops.filter { $0.needsCaptureAttention } }
@@ -603,9 +603,9 @@ struct DashboardTile: View {
         let shown = finamiOrderedAccounts(s.db.accounts).filter { $0.hiddenInOverview != true }
         if shown.isEmpty { detail("Немає рахунків. Додай рахунок у вкладці «Рахунки» або увімкни його в налаштуваннях блоку.") }
         if (s.db.preferences ?? .init()).finamiLayout != "cards" {
-            FinamiCompactAccountsGrid(accounts:shown,mode:"all",date:date)
+            FinamiCompactAccountsGrid(accounts:shown,mode:"all",date:date,template:item.template)
         } else {
-            VStack(spacing: 10) { ForEach(shown) { a in FinamiHomeAccountCard(accountID:a.id,date:date,fallbackTint:color,dashboardSize:item.size) } }
+            VStack(spacing: 10) { ForEach(shown) { a in FinamiHomeAccountCard(accountID:a.id,date:date,fallbackTint:color,dashboardSize:item.size,template:item.template) } }
         }
     }
     @ViewBuilder var content: some View {
@@ -702,8 +702,9 @@ struct DashboardTile: View {
                         FinamiModernPaymentRow(name:p.name,kind:p.kind,date:p.date,currency:p.currency,due:p.amount,total:loan?.target,monthly:loan?.monthly,remaining:p.remaining,status:p.overdue ? "Прострочено" : "Очікує оплати",showDate:item.showPaymentDate != false,showImage:item.showPaymentImage != false,showRemaining:remainingMode,masked:masked || (s.db.preferences?.designHiddenSubscriptions ?? []).contains(p.id))
                     }.buttonStyle(.plain)
                 }
-                if payments.count > (item.categoryCount ?? (compact ? 1 : detailed ? 6 : 3)) { detail("Усього: \(payments.count)") }
+
             }
+            FinamiAllPaymentsLink(count: payments.count, filter: item.kind == .installments ? "installments" : item.kind == .subscriptions ? "subscriptions" : "recurring", masked: masked)
             if item.showPaymentTotal == false && item.showPaymentNames == false { detail("Показники приховано") }
         }
     }

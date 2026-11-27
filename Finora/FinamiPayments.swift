@@ -102,6 +102,75 @@ extension Store {
     }
 
 }
+// Full live list, not a truncated snapshot of the dashboard. Archived contracts
+// are removed from future planning while preserving ledger and paid history.
+struct FinamiAllUpcomingPayments: View {
+    @EnvironmentObject private var s: Store
+    var filter: String = "all"
+    var maskAmounts = false
+    @State private var selected: FinamiPayment?
+    @State private var removing: FinamiPayment?
+    private var payments: [FinamiPayment] {
+        s.upcomingPayments.filter { p in
+            switch filter {
+            case "installments": return !p.subscription && p.kind == ObligationKind.installment.title
+            case "subscriptions": return p.subscription
+            case "recurring": return p.subscription || p.kind == ObligationKind.recurring.title || p.kind == ObligationKind.installment.title
+            default: return true
+            }
+        }
+    }
+    var body: some View {
+        List {
+            Section("Усього: \(payments.count)") {
+                if payments.isEmpty { Text("Немає запланованих платежів").foregroundStyle(.secondary) }
+                ForEach(payments) { p in
+                    Button { selected = p } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(p.name).font(.headline)
+                                Text(p.kind + " · " + p.date.formatted(date: .abbreviated, time: .omitted)).font(.caption).foregroundStyle(.secondary)
+                                if p.overdue { Text("Прострочено").font(.caption).foregroundStyle(.orange) }
+                            }
+                            Spacer()
+                            Text(maskAmounts || (s.db.preferences?.designHiddenSubscriptions ?? []).contains(p.id) ? "••••" : s.visibleMoney(p.amount, p.currency)).monospacedDigit()
+                            Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
+                        }.contentShape(Rectangle())
+                    }.buttonStyle(.plain).accessibilityIdentifier("qa.upcoming.row." + p.id)
+                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        if !p.subscription && p.kind == ObligationKind.installment.title {
+                            Button(role: .destructive) { removing = p } label: { Label("Видалити", systemImage: "trash") }
+                        }
+                    }
+                }
+            }
+            if filter == "all" || filter == "installments" { NavigationLink("Усі розстрочки, включно зі сплаченими") { Obligations(kind: .installment).environment(\.finamiMask, maskAmounts) } }
+            NavigationLink("Календар платежів") { CalendarView().environment(\.finamiMask, maskAmounts) }
+        }.navigationTitle("Усі платежі")
+        .sheet(item: $selected) { p in FinamiPaymentDetails(payment: p).environment(\.finamiMask, maskAmounts || (s.db.preferences?.designHiddenSubscriptions ?? []).contains(p.id)) }
+        .confirmationDialog("Видалити розстрочку з активного плану?", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }), titleVisibility: .visible) {
+            Button("Видалити в архів", role: .destructive) {
+                if let p = removing {
+                    let reminders = (s.db.reminders ?? []).filter { $0.linkedID == p.id }
+                    if s.change({ d in finamiRemoveInstallment(p.id, from: &d) }) { reminders.forEach { ReminderScheduler.cancel($0) } }
+                }
+                removing = nil
+            }
+            Button("Скасувати", role: .cancel) { removing = nil }
+        } message: { Text("Майбутні платежі буде прибрано. Банківські операції та історія оплат залишаться.") }
+    }
+}
+struct FinamiAllPaymentsLink: View {
+    var count: Int
+    var filter: String = "all"
+    var masked = false
+    var body: some View {
+        NavigationLink { FinamiAllUpcomingPayments(filter: filter, maskAmounts: masked) } label: {
+            HStack { Text("Усього: \(count)").font(.subheadline.weight(.medium)); Spacer(); Text("Відкрити всі").font(.caption); Image(systemName: "chevron.right").font(.caption.weight(.semibold)) }
+                .foregroundStyle(Color.accentColor).frame(minHeight: 44).contentShape(Rectangle())
+        }.buttonStyle(.plain).accessibilityIdentifier("qa.upcoming.all." + filter)
+    }
+}
 struct FinamiPaymentCard:View {
     @EnvironmentObject var s:Store
     @Environment(\.finamiMask) private var masked
@@ -132,6 +201,7 @@ struct FinamiMonthPayments:View {
     var body:some View { VStack(alignment:.leading,spacing:dashboardSize == .small ? 4 : dashboardSize == .large ? 12 : 8) {if dashboardSize != .small { Text("Заплановано до кінця місяця").font(.headline) };ForEach(["UAH","USD"],id:\.self) { currency in let total=s.scheduledThisMonth(currency:currency); if total>0 || currency=="UAH" {Text(privateTotal ? "••••" : s.visibleMoney(total,currency)).font(dashboardSize == .small ? .title3.bold() : dashboardSize == .large ? .largeTitle.bold() : .title.bold()).monospacedDigit()} };if dashboardSize != .small { Text("Прогноз за графіком; прострочені платежі показано окремо.").font(.caption).foregroundStyle(.secondary) } }.padding(dashboardSize == .small ? 6 : dashboardSize == .large ? 20 : 14).frame(maxWidth:.infinity,alignment:.leading).modifier(FinamiCardStyle(tint:.indigo)) }
 }
 struct FinamiPaymentDetails:View {
+    @Environment(\.finamiMask) private var maskAmounts
     @EnvironmentObject var s:Store; @Environment(\.dismiss) var dismiss
     var payment:FinamiPayment
     @State private var photo:PhotosPickerItem?
@@ -156,7 +226,7 @@ struct FinamiPaymentDetails:View {
         if !(s.db.paidRecords ?? []).filter({$0.paymentID == payment.id}).isEmpty {
             Section("Історія оплат") {
                 ForEach((s.db.paidRecords ?? []).filter{$0.paymentID == payment.id}.sorted{$0.paidDate > $1.paidDate}) { record in
-                    VStack(alignment:.leading, spacing:4) { Text(s.visibleMoney(record.amount,record.currency)).bold(); Text(record.paidDate.formatted(date:.abbreviated,time:.omitted) + " · " + (record.accountID.map{s.accountName($0)} ?? "Без списання")).font(.caption); if let id = record.operationID, !s.db.operations.contains(where:{$0.id == id}) { Text("Пов’язану операцію видалено").font(.caption).foregroundStyle(.orange) } }
+                    VStack(alignment:.leading, spacing:4) { Text(maskAmounts ? "••••" : s.visibleMoney(record.amount,record.currency)).bold(); Text(record.paidDate.formatted(date:.abbreviated,time:.omitted) + " · " + (record.accountID.map{s.accountName($0)} ?? "Без списання")).font(.caption); if let id = record.operationID, !s.db.operations.contains(where:{$0.id == id}) { Text("Пов’язану операцію видалено").font(.caption).foregroundStyle(.orange) } }
                 }
             }
         }

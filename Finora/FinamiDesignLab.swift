@@ -145,6 +145,10 @@ struct FinamiDesignLab: View {
                 Text("Індивідуальний стиль рахунку можна вибрати в меню його картки. Два нові стилі операцій позначено Preview.").font(.caption).foregroundStyle(.secondary)
             }
             Section("Кольори та картки") {
+                Picker("Шаблон карток", selection: binding(\.cardTemplate, "За дизайном")) {
+                    ForEach(FinamiCardTemplate.allCases) { Text($0.rawValue).tag($0.rawValue) }
+                }.accessibilityIdentifier("qa.design.template")
+                Text("Загальний шаблон діє на блоки без персонального оформлення. Aurora Balance — стиль за дизайном для верхньої картки.").font(.caption).foregroundStyle(.secondary)
                 Picker("Акцент",selection:Binding(get:{p.designAccent ?? "preset"},set:{v in s.changeAppearance { $0.designAccent=v == "preset" ? nil : v }})) {
                     Text("За стилем").tag("preset")
                     ForEach(FinamiDesignPolicy.accents,id:\.self) { key in Label(key,systemImage:"circle.fill").foregroundStyle(finamiDesignAccent(key) ?? .primary).tag(key) }

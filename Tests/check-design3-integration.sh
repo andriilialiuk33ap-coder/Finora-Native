@@ -31,6 +31,14 @@ check(FinamiDesignPolicy.calculate("10,25","2,75",operation:"+")=="13","decimal 
 check(FinamiDesignPolicy.calculate("10","4",operation:"÷")=="2,5","decimal division")
 check(FinamiDesignPolicy.calculate("10","0",operation:"÷")==nil && FinamiDesignPolicy.calculate("1","2",operation:"−")==nil,"reject zero divisor and negative result")
 check(FinamiDesignPolicy.calculate("1.2.3","1",operation:"+")==nil,"reject malformed number")
+var preset = AppearancePreferences(); preset.setDesignStyle("paymentTimeline", for: "upcoming"); preset.setDesignSize("L", for: "upcoming"); preset.cardTemplate = "Glass"; preset.designUpcomingCount = 5
+let snapshot = preset.finamiStyleSnapshot
+var changed = AppearancePreferences(); changed.hideAmounts = true; changed.collapsedInstallments = ["private"]; changed.setDesignStyle("paymentFocus", for: "upcoming"); changed.setDesignSize("S", for: "upcoming")
+changed.restoreFinamiStyle(snapshot)
+check(changed.designStyle(for: "upcoming") == "paymentTimeline" && changed.designSize(for: "upcoming") == "L" && changed.cardTemplate == "Glass" && changed.designUpcomingCount == 5, "new preset restores component styles and sizes")
+check(changed.hideAmounts == true && changed.collapsedInstallments == ["private"], "preset does not change privacy or individual collapsed cards")
+changed.restoreFinamiStyle(["template":"Bank"])
+check(changed.cardTemplate == "Bank" && changed.designStyle(for: "upcoming") == "paymentTimeline", "old preset retains unsaved component settings")
 SWIFT
 swiftc -swift-version 5 -warnings-as-errors Finora/FinamiDesignPolicy.swift "$tmp/Models.swift" "$tmp/main.swift" -o "$tmp/test"
 "$tmp/test"
