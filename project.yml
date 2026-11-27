@@ -5,8 +5,8 @@ options:
 settings:
   base:
     SWIFT_VERSION: '5.0'
-    MARKETING_VERSION: '6.4.1'
-    CURRENT_PROJECT_VERSION: '49'
+    MARKETING_VERSION: '6.4.6'
+    CURRENT_PROJECT_VERSION: '54'
     TARGETED_DEVICE_FAMILY: '1'
 packages:
   ZIPFoundation:
@@ -22,6 +22,8 @@ targets:
       properties:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         CFBundleShortVersionString: $(MARKETING_VERSION)
+        BGTaskSchedulerPermittedIdentifiers: [ua.finora.personal.capture-refresh]
+        UIBackgroundModes: [fetch]
         CFBundleURLTypes:
           - CFBundleURLName: ua.finora.personal.widgets
             CFBundleURLSchemes: [finami-widget]

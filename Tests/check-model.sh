@@ -48,11 +48,12 @@ func suggestedCategory(_ merchant: String,kind: Kind,database: Database) -> Stri
     var captureWarning:String?=nil
     var currentRate:Decimal?=nil
     var failWrite=false
+    var writes=0
     var storageHealthy=true
     var loading=false
     func change(_ update:(inout Database)->Void)->Bool {
         if failWrite {return false}
-        var copy=db;update(&copy);db=copy;return true
+        var copy=db;update(&copy);db=copy;writes += 1;return true
     }
 }
 SWIFT
@@ -117,6 +118,33 @@ import Foundation
         routeStore.refreshCaptures(inbox:dir)
         precondition(routeStore.capturePending.isEmpty && routeStore.captureWarning == nil && routeStore.db.operations.count == 1)
         print("PASS: empty inbox clears stale status without financial mutations")
+        // Build 54: valid files must progress while an unreadable file remains untouched.
+        let batch = Store(); batch.db.capturePreferences = CapturePreferences(walletAuto:true,messageAuto:true)
+        let broken = dir.appendingPathComponent("damaged.json")
+        let brokenData = Data("broken JSON".utf8)
+        try brokenData.write(to:broken)
+        let a = try captureWallet(amount:11,merchant:"A",account:cash,currency:"UAH")
+        let b = try captureWallet(amount:22,merchant:"B",account:cash,currency:"UAH")
+        var replay = try captureWallet(amount:11,merchant:"A",account:cash,currency:"UAH"); replay.date = a.date.addingTimeInterval(1)
+        let incoming = try captureMessage("Зарахування 1000 UAH; Магазин: Test",account:cash)
+        for e in [a,b,replay,incoming] { try CaptureInbox.enqueue(e,in:dir) }
+        batch.failWrite=true; batch.refreshCaptures(inbox:dir)
+        precondition(batch.db.operations.isEmpty && batch.capturePending.count == 4 && batch.captureWarning != nil)
+        precondition(try! CaptureInbox.scan(in:dir).events.count == 4)
+        print("PASS: failed capture batch leaves every event queued")
+        batch.failWrite=false; batch.refreshCaptures(inbox:dir)
+        precondition(batch.writes == 1 && batch.db.operations.count == 2 && batch.capturePending.count == 2)
+        print("PASS: two clear payments committed with one durable write; staged duplicate and incoming remain for review")
+        precondition(try! Data(contentsOf:broken) == brokenData && batch.captureWarning != nil)
+        print("PASS: damaged file isolated and preserved without blocking valid payments")
+        precondition(batch.capturePending.contains(where:{$0.id == replay.id}) && batch.capturePending.contains(where:{$0.id == incoming.id}))
+        batch.refreshCaptures(inbox:dir)
+        precondition(batch.writes == 1 && batch.db.operations.count == 2 && batch.captureWarning != nil)
+        print("PASS: repeated refresh does not duplicate accepted events or clear damage warning")
+        try FileManager.default.removeItem(at:broken)
+        batch.refreshCaptures(inbox:dir)
+        precondition(batch.captureWarning == nil && batch.capturePending.count == 2)
+        print("PASS: warning clears after queue file is repaired")
         // Legacy databases missing new optional fields still decode.
         let old=try JSONDecoder().decode(Database.self,from:JSONEncoder().encode(Database()))
         precondition(old.captureMessageFingerprints==nil)
@@ -124,5 +152,5 @@ import Foundation
     }
 }
 SWIFT
-swiftc Finora/BankCore.swift Finora/FinamiScanCore.swift Finora/MoneyCore.swift Finora/AutomationCore.swift "$tmp/CaptureModels.swift" "$tmp/CaptureHarness.swift" -o "$tmp/capture-test"
+swiftc Finora/FinamiIntelligenceCore.swift Finora/BankCore.swift Finora/FinamiScanCore.swift Finora/MoneyCore.swift Finora/AutomationCore.swift "$tmp/CaptureModels.swift" "$tmp/CaptureHarness.swift" -o "$tmp/capture-test"
 "$tmp/capture-test"

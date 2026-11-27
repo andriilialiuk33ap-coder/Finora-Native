@@ -6,7 +6,8 @@ final class FinamiUITests: XCTestCase {
         continueAfterFailure = false
         app = XCUIApplication()
         app.launchArguments = ["--finami-qa", "--finami-qa-reset"]
-        let fixtures = ["testAccountReportFieldsIndependentAndPersist":"--finami-qa-reports-fixture",
+        let fixtures = ["testHomeReviewOpensMatchingOperations":"--finami-qa-home-review-fixture",
+                        "testAccountReportFieldsIndependentAndPersist":"--finami-qa-reports-fixture",
                         "testCompactAccountGridAlignmentAndDetails":"--finami-qa-design-fixture",
                         "testBalanceReconciliationPersists":"--finami-qa-design-fixture",
                         "testInstallmentPaidFromSelectedAccount":"--finami-qa-payment-fixture",
@@ -43,6 +44,18 @@ final class FinamiUITests: XCTestCase {
     }
     private func capture(_ name: String) {
         let attachment = XCTAttachment(screenshot: app.screenshot()); attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
+    }
+    func testHomeQuickActionsOpenEditor() {
+        for kind in ["expense", "income", "transfer"] {
+            let tile = app.buttons["qa.home.quick." + kind]
+            for _ in 0..<5 { if tile.exists && tile.isHittable { break }; app.swipeUp() }
+            visible(tile)
+            XCTAssertTrue(tile.isHittable)
+            tile.tap()
+            visible(app.navigationBars["Операція"])
+            let cancel = app.buttons["Скасувати"].firstMatch
+            visible(cancel); cancel.tap()
+        }
     }
     func testNextScreensOpen() {
         tabButton("Ще").tap()
@@ -160,6 +173,18 @@ final class FinamiUITests: XCTestCase {
             visible(field); XCTAssertEqual(field.value as? String, expected)
         }
         capture("ocr-populated")
+    }
+    func testHomeReviewOpensMatchingOperations() {
+        let open = app.descendants(matching: .any).matching(identifier: "qa.dashboard.review.open").firstMatch
+        visible(open); XCTAssertEqual(open.value as? String, "2"); open.tap()
+        visible(app.navigationBars["Уточнення операцій"])
+        let credit = app.buttons["qa.review.operation.qa-review-in"]
+        let debit = app.buttons["qa.review.operation.qa-review-out"]
+        visible(credit); visible(debit)
+        XCTAssertFalse(app.buttons["qa.review.operation.qa-reviewed"].exists)
+        XCTAssertFalse(app.buttons["qa.review.operation.qa-review-previous"].exists)
+        credit.tap(); visible(app.navigationBars["Операція"])
+        capture("home-review-editor")
     }
     func testImportHubOpensAndShowsReview() {
         tabButton("Ще").tap()

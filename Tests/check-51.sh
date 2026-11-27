@@ -165,5 +165,5 @@ import Foundation
     }
 }
 SWIFT
-swiftc -O -warnings-as-errors "$tmp/Models.swift" Finora/BankCore.swift Finora/MoneyCore.swift Finora/FinamiScanCore.swift Finora/AutomationCore.swift Finora/FinamiCore.swift Finora/FinamiPaymentCore.swift Finora/FinamiStatementMatch.swift Finora/FinamiAppearanceStorage.swift Finora/FinamiHistoryQuery.swift "$tmp/Harness.swift" -o "$tmp/test"
+swiftc -O -warnings-as-errors "$tmp/Models.swift" Finora/BankCore.swift Finora/MoneyCore.swift Finora/FinamiScanCore.swift Finora/AutomationCore.swift Finora/FinamiCore.swift Finora/FinamiPaymentCore.swift Finora/FinamiStatementMatch.swift Finora/FinamiAppearanceStorage.swift Finora/FinamiHistoryQuery.swift Finora/FinamiIntelligenceCore.swift "$tmp/Harness.swift" -o "$tmp/test"
 "$tmp/test"

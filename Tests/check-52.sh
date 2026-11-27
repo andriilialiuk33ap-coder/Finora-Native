@@ -17,6 +17,16 @@ check(finamiIntelligentCategory("EASYPAY*LIFECELL KYIV UA",kind:.expense,allowed
 check(finamiIntelligentCategory("LIFECELL UA",kind:.expense,allowed:allowed,learned:["expense:lifecell":"Моя категорія","expense:lifecell kyiv":"Інша категорія"]) == "Без категорії", "conflicting learned rules do not guess")
 check(finamiIntelligentCategory("APPLE.COM/BILL",kind:.expense,allowed:allowed,learned:[:]) == "Без категорії", "ambiguous Apple invoice not assumed subscription")
 check(finamiIntelligentCategory("ATB",kind:.expense,allowed:[],learned:[:]) == "Без категорії", "hidden or deleted category not restored")
+var learned = ["expense:silpo 1234":"🛒 Продукти", "income:silpo":"💼 Зарплата", "expense:atb":"🛒 Продукти"]
+finamiRememberMerchant("Сільпо 0342 VINNYTSIA",kind:.expense,category:"Моя категорія",rules:&learned)
+check(finamiIntelligentCategory("SILPO 9876 KYIV UA",kind:.expense,allowed:allowed,learned:learned)=="Моя категорія", "confirmed chain rule works across language and store numbers")
+check(learned["income:silpo"]=="💼 Зарплата" && learned["expense:atb"]=="🛒 Продукти", "learning preserves other kinds and merchants")
+let before = learned
+finamiRememberMerchant("Apple Pay",kind:.expense,category:"Моя категорія",rules:&learned)
+finamiRememberMerchant("SILPO",kind:.transfer,category:"Моя категорія",rules:&learned)
+finamiRememberMerchant("SILPO",kind:.expense,category:"Без категорії",rules:&learned)
+check(learned == before, "generic source, transfer and empty category are not learned")
+check(finamiMerchantKey("SILPO 1234") != finamiMerchantKey("SILPO 5678"), "category aliases do not alter recurring and transfer matching")
 let a=Account(id:"a",name:"PUMB",opening:100000), b=Account(id:"b",name:"OTP",opening:-5000,accountType:"credit",creditLimit:20000)
 let ops=[Operation(id:"1",kind:.expense,amount:10000,date:day(2026,8,7),category:"📺 Підписки",note:"Netflix",account:a.id),Operation(id:"2",kind:.expense,amount:10000,date:day(2026,9,7),category:"📺 Підписки",note:"NETFLIX KYIV UA",account:a.id),Operation(id:"3",kind:.expense,amount:11000,date:day(2026,10,7),category:"📺 Підписки",note:"Netflix",account:a.id)]
 let c = finamiRecurringCandidates(operations:ops,accounts:[a,b],now:day(2026,10,26),calendar:cal)
