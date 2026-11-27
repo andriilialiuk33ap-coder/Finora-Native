@@ -1275,7 +1275,8 @@ struct More: View {
     switch kind { case .installment: return .blue; case .owe: return .orange; case .owed: return .green; case .recurring: return .purple; case .goal: return .teal }
   }
   var body: some View {
-    ScrollView { LazyVStack(alignment: .leading, spacing: (s.db.preferences ?? .init()).finamiSpacing) {
+    // This is a small, fixed menu; keep navigation links mounted when returning from a destination.
+    ScrollView { VStack(alignment: .leading, spacing: (s.db.preferences ?? .init()).finamiSpacing) {
       VStack(alignment: .leading, spacing: 6) {
         Text("Finami").font(.title.bold())
         Text("Особисті фінанси.").font(.subheadline).foregroundStyle(.secondary)
@@ -1349,7 +1350,7 @@ struct More: View {
         Text("Finami · " + FinamiBuildInfo.version + " · " + FinamiBuildInfo.edition + "\nБез реклами, серверів та платних API.").font(.footnote)
           .foregroundStyle(.secondary)
       }
-    }.padding() }.background(finamiScreenBackground(s.db.preferences)).navigationTitle("Ще").toolbar{Button{menuSettings=true} label:{Image(systemName:"slider.horizontal.3")}.accessibilityLabel("Налаштування меню")}.sheet(isPresented:$menuSettings){NavigationStack{Form{Toggle("Компактні ілюстрації",isOn:Binding(get:{s.db.preferences?.menuCompact ?? false},set:{v in s.changeAppearance { p in p.menuCompact=v }}));NavigationLink("Студія дизайну"){AppearanceView()};NavigationLink("Блоки головної"){DashboardSettings()};NavigationLink("Рахунки"){FinamiAccountSettings()}}.navigationTitle("Налаштування меню").toolbar{Button("Готово"){menuSettings=false}}}}
+    }.padding() }.accessibilityIdentifier("qa.more.scroll").background(finamiScreenBackground(s.db.preferences)).navigationTitle("Ще").toolbar{Button{menuSettings=true} label:{Image(systemName:"slider.horizontal.3")}.accessibilityLabel("Налаштування меню")}.sheet(isPresented:$menuSettings){NavigationStack{Form{Toggle("Компактні ілюстрації",isOn:Binding(get:{s.db.preferences?.menuCompact ?? false},set:{v in s.changeAppearance { p in p.menuCompact=v }}));NavigationLink("Студія дизайну"){AppearanceView()};NavigationLink("Блоки головної"){DashboardSettings()};NavigationLink("Рахунки"){FinamiAccountSettings()}}.navigationTitle("Налаштування меню").toolbar{Button("Готово"){menuSettings=false}}}}
   }
 }
 struct Budgets: View {

@@ -58,13 +58,55 @@ final class FinamiUITests: XCTestCase {
             visible(cancel); cancel.tap()
         }
     }
+    // Use short, scoped gestures and search in both directions. A return from a
+    // destination can leave a menu row just above or below the viewport.
+    private func revealNextMenuItem(_ item: XCUIElement, in menu: XCUIElement) {
+        func ready() -> Bool { item.exists && item.isHittable }
+        func step(up: Bool) {
+            let start = menu.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: up ? 0.72 : 0.32))
+            let end = menu.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: up ? 0.32 : 0.72))
+            start.press(forDuration: 0.05, thenDragTo: end)
+        }
+        // Try the direction indicated by the accessibility frame before scanning.
+        if item.exists && !ready() {
+            let frame = item.frame
+            if !frame.isEmpty && !frame.isInfinite {
+                step(up: frame.midY > menu.frame.midY)
+            }
+        }
+        for up in [false, true, false] {
+            for _ in 0..<12 {
+                if ready() { return }
+                step(up: up)
+            }
+        }
+        if !ready() {
+            capture("next-menu-missing-" + item.identifier)
+            let details = XCTAttachment(string: app.debugDescription)
+            details.name = "next-menu-accessibility-tree"
+            details.lifetime = .keepAlways
+            add(details)
+        }
+        XCTAssertTrue(ready(), "Menu item not reachable: \(item)")
+    }
     func testNextScreensOpen() {
         tabButton("Ще").tap()
+        let root = app.navigationBars["Ще"]
         for (identifier,title) in [("qa.next.review","Перевірка операцій"),("qa.next.insights","Фінансові підсумки"),("qa.next.usdt","Журнал USDT")] {
-            let item=app.descendants(matching:.any).matching(identifier:identifier).firstMatch
-            for _ in 0..<8 {if item.exists && item.isHittable {break};app.swipeUp()}
-            visible(item);item.tap();visible(app.navigationBars[title]);capture(identifier)
-            app.navigationBars.buttons.firstMatch.tap()
+            visible(root)
+            // Some iOS accessibility snapshots omit a ScrollView's custom identifier.
+            // The verified root has a single scrolling menu, so keep a structural fallback.
+            let identifiedMenu = app.scrollViews["qa.more.scroll"]
+            let menu = identifiedMenu.exists ? identifiedMenu : app.scrollViews.firstMatch
+            visible(menu)
+            let item = app.descendants(matching: .any).matching(identifier: identifier).firstMatch
+            revealNextMenuItem(item, in: menu)
+            item.tap()
+            let destination = app.navigationBars[title]
+            visible(destination); capture(identifier)
+            let back = destination.buttons.firstMatch
+            visible(back); back.tap()
+            visible(root); visible(menu)
         }
     }
     func testCompactAccountGridAlignmentAndDetails() {
