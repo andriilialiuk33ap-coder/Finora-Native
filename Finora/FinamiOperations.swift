@@ -363,158 +363,229 @@ struct OpEditor: View {
               rememberAccount(); dismiss()
             }
   }
-  var body: some View {
+  @ViewBuilder private var editorHeaderFields: some View {
+    if editorStyle != "original" {
+      VStack(alignment: .leading, spacing: 8) {
+        Text(o.displayKindTitle).font(.caption).foregroundStyle(.secondary)
+        Text(s.privateAmounts ? "••••" : amount.isEmpty ? "0" : amount).font(editorStyle == "minimal" ? .title2.bold() : .largeTitle.bold()).monospacedDigit()
+        if editorStyle == "bankingPro" { Label(s.accountName(o.account), systemImage: "wallet.pass") }
+        if editorStyle == "smartEntry" { Label("Категорія: " + suggestedCategory(o.note, kind: o.kind, database: s.db), systemImage: "sparkles").font(.caption) }
+      }.frame(maxWidth: .infinity, alignment: editorStyle == "minimal" ? .leading : .center).padding(8)
+    }
+    Picker("Тип", selection: choiceBinding) { ForEach(allowedChoices) { Text($0.title).tag($0) } }
+      .pickerStyle(.menu).disabled(financialLocked)
+    if editorChoice == .legacy { Text("Збережений тип: " + o.kind.title + ". Облік не зміниться, якщо залишити цей тип.").font(.caption).foregroundStyle(.secondary) }
+    if editorChoice == .income { Text("Зарплата, кешбек та інші надходження — категорії одного типу «Дохід».").font(.caption).foregroundStyle(.secondary) }
+    if editorChoice == .withdrawal && o.kind == .movementOut { Text("Банківське списання позначено як зняття готівки. Готівковий рахунок автоматично не поповнюється, щоб не дублювати рух коштів.").font(.caption).foregroundStyle(.secondary) }
+    if editorChoice == .withdrawal && o.kind == .transfer && cashAccounts.isEmpty { Text("Спочатку додай готівковий рахунок.").font(.caption).foregroundStyle(.orange) }
+    if o.kind.needsReview { Text("Не входить у доходи чи витрати до уточнення. Баланс враховує рух коштів.").font(.caption) }
+  }
+  @ViewBuilder private var editorAmountFields: some View {
+    FinamiField("Сума, \(entryCurrency)", text: $amount, keyboard: .decimalPad).disabled(financialLocked)
+    if !financialLocked && s.db.preferences?.designEditorKeyboard == true { FinamiDesignKeyboard(amount: $amount, haptics: s.db.preferences?.designEditorHaptics != false) }
+    if !financialLocked && !savedOperation && editorStyle == "quickEntry" && sourceCode == "UAH", let recent = repeatCandidate {
+      Button("Повторити останню ручну операцію") { amount = amountText(recent.amount); entryCurrency = "UAH"; if categories.contains(recent.category) { o.category = recent.category }; o.note = recent.note; tagsText = (recent.tags ?? []).joined(separator: ", "); linkedPaymentID = "" }.font(.caption)
+    }
+    if !financialLocked && editorStyle != "original" {
+      Button("Калькулятор суми") { calculatorInput = ""; calculator = true }.font(.caption)
+    }
+  }
+  @ViewBuilder private var editorAccountFields: some View {
+    if editorStyle == "quickEntry" || editorStyle == "bankingPro" {
+      ScrollView(.horizontal, showsIndicators: false) { HStack { ForEach(s.db.accounts.filter { o.sourceBank == nil || $0.code == "UAH" }) { account in
+        Button { o.account = account.id } label: { Label(account.name, systemImage: o.account == account.id ? "checkmark.circle.fill" : "wallet.pass").font(.caption).padding(10).frame(minHeight: 44).background(Color.accentColor.opacity(o.account == account.id ? 0.18 : 0.05), in: RoundedRectangle(cornerRadius: 10)) }.buttonStyle(.plain).disabled(financialLocked)
+      } } }
+    }
+    if o.kind != .transfer && sourceCode == "UAH" && o.sourceBank == nil {
+      Picker("Валюта введення",selection:$entryCurrency){Text("Гривня").tag("UAH");Text("Долар").tag("USD")}.disabled(financialLocked)
+    }
+    if requiresRate { FinamiField("Курс UAH за 1 USD", text: $rate, keyboard: .decimalPad).disabled(financialLocked); if let n=converted { LabeledContent("Сума у гривнях",value:money(n)) } }
+    if supportsExactUAH && (o.kind == .income || o.kind == .receipt) {FinamiField("Фактично отримано UAH (необов’язково)",text:$exactReceived,keyboard:.decimalPad).disabled(financialLocked)}
+    DatePicker("Дата і час", selection: $o.date, displayedComponents: [.date,.hourAndMinute]).disabled(financialLocked)
+    Picker("Рахунок", selection: $o.account) {
+      ForEach(s.db.accounts.filter{o.sourceBank == nil || $0.code == "UAH"}) { Text($0.name).tag($0.id) }
+    }.disabled(financialLocked)
+  }
+  @ViewBuilder private var editorCategoryFields: some View {
+    if o.kind == .transfer {
+      Picker(editorChoice == .withdrawal ? "Готівковий рахунок" : "Куди", selection: $o.destination) {
+        Text("Вибрати").tag("")
+        ForEach(editorChoice == .withdrawal ? cashAccounts : s.db.accounts) { Text($0.name).tag($0.id) }
+      }.disabled(financialLocked)
+      if sourceCode == "USD" && destinationCode == "UAH" && o.sourceBank == nil {FinamiField("Фактично отримано UAH (необов’язково)",text:$exactReceived,keyboard:.decimalPad).disabled(financialLocked);if exactMode {Text("Сума зарахування має пріоритет над введеним курсом.").font(.caption)}}
+      if let n=received, !o.destination.isEmpty { LabeledContent("Зарахувати",value:currencyMoney(n,destinationCode)) }
+    } else if o.kind.isReportCategory {
+      Picker("Категорія", selection: Binding(get: { o.category }, set: { selectCategory($0) })) {
+        ForEach(categories, id: \.self) { Text($0).tag($0) }
+      }
+      if editorStyle != "original" && editorStyle != "minimal" {
+        let favorites = (s.db.preferences?.designEditorFavorites ?? []).filter { categories.contains($0) }
+        let recent = Array(Set(s.db.operations.suffix(150).filter { $0.kind == o.kind && categories.contains($0.category) }.map(\.category))).sorted()
+        ScrollView(.horizontal, showsIndicators: false) { HStack {
+          ForEach(Array((favorites + recent.filter { !favorites.contains($0) }).prefix(10)), id: \.self) { category in
+            Button { selectCategory(category) } label: { Label(category, systemImage: favorites.contains(category) ? "star.fill" : "clock").font(.caption).padding(8).frame(minHeight:44).background(Color.accentColor.opacity(o.category == category ? 0.18 : 0.05),in: RoundedRectangle(cornerRadius: 8)) }.buttonStyle(.plain)
+          }
+        } }
+        Button(favorites.contains(o.category) ? "Прибрати з обраних" : "Додати категорію в обрані") { s.changeAppearance { p in var list = Set(p.designEditorFavorites ?? []); if list.contains(o.category) { list.remove(o.category) } else { list.insert(o.category) }; p.designEditorFavorites = list.sorted() } }.font(.caption)
+      }
+    }
+  }
+  private var visibleCompensations: [Operation] {
+    let selectedID = o.refundOriginalID
+    let query = compensationSearch
+    let matches = compensationChoices.filter { operation in
+      if operation.id == selectedID || query.isEmpty { return true }
+      return operation.note.localizedCaseInsensitiveContains(query) || operation.category.localizedCaseInsensitiveContains(query)
+    }
+    return Array(matches.prefix(100))
+  }
+  private var receiptTreatmentBinding: Binding<FinamiReceiptTreatment> {
+    Binding(get: { o.receiptTreatment ?? .pending }, set: { setTreatment($0) })
+  }
+  private var compensationSelection: Binding<String> {
+    Binding(get: { o.refundOriginalID ?? "" }, set: { value in
+      o.refundOriginalID = value.isEmpty ? nil : value
+    })
+  }
+  private func compensationTitle(_ original: Operation) -> String {
+    let dateText = original.date.formatted(date: .abbreviated, time: .omitted)
+    let accountHidden = s.db.accounts.contains { account in
+      account.id == original.account && account.hideAmounts == true
+    }
+    let amountText = accountHidden ? "••••" : s.visibleMoney(original.amount)
+    return [dateText, original.category, amountText].joined(separator: " · ")
+  }
+  private var compensationPicker: some View {
+    let visible = visibleCompensations
+    return Picker("Початкова витрата", selection: compensationSelection) {
+      Text("Обрати").tag("")
+      ForEach(visible) { original in
+        Text(compensationTitle(original)).tag(original.id)
+      }
+      if let id = o.refundOriginalID, !visible.contains(where: { $0.id == id }) {
+        Text("Раніше вибрана витрата").tag(id)
+      }
+    }
+  }
+  @ViewBuilder private var editorReceiptFields: some View {
+    if o.kind == .receipt {
+      Section("Облік зарахування") {
+        Picker("У звітах", selection: receiptTreatmentBinding) {
+          ForEach(FinamiReceiptTreatment.allCases) { Text($0.title).tag($0) }
+        }.disabled(financialLocked).accessibilityIdentifier("qa.receipt.treatment")
+        if o.receiptTreatment == .reimbursement {
+          TextField("Пошук початкової витрати", text: $compensationSearch)
+          compensationPicker
+          if !compensationValid { Text("Обери витрату UAH, яка ще не була компенсована повністю.").font(.caption).foregroundStyle(.orange) }
+        }
+        Text("Баланс рахунку збільшується завжди. Компенсація зменшує витрати початкової категорії. Позики не створюють договір автоматично.").font(.caption).foregroundStyle(.secondary)
+      }
+    }
+  }
+  @ViewBuilder private var editorPaymentFields: some View {
+    if let parts=o.groupedBankParts {
+      Section("Звірені надходження") {Text("\(parts.count) банківських рядків. Для зміни суми або рахунку спочатку скасуй групову звірку.").font(.caption);ForEach(Array(parts.enumerated()),id:\.offset){_,part in LabeledContent(part.date.formatted(date:.abbreviated,time:.shortened),value:s.visibleMoney(part.amount))}}
+    } else if let record = linkedRecord {
+      Section("Пов’язаний платіж") {
+        LabeledContent("Оплачено", value: s.db.obligations.first(where: { $0.id == record.paymentID })?.name ?? s.db.subscriptions?.first(where: { $0.id == record.paymentID })?.name ?? "Платіж з історії").accessibilityIdentifier("qa.operation.linked")
+        LabeledContent("Дата оплати",value:record.paidDate.formatted(date:.abbreviated,time:.omitted))
+        if o.kind == .expense, s.db.subscriptions?.contains(where:{$0.id == record.paymentID}) == true,
+           o.category != "📺 Підписки", categories.contains("📺 Підписки") {
+          Button("Встановити категорію «Підписки»") { o.category = "📺 Підписки"; selectedLearningCategory = nil }
+            .accessibilityIdentifier("qa.operation.subscriptionCategory")
+          Text("Збережи категорію без повторної оплати.").font(.caption).foregroundStyle(.secondary)
+        }
+        Text("Ця операція вже оновила графік. Фінансові поля та видалення захищені від випадкової зміни; примітку й категорію можна редагувати.").font(.caption)
+      }
+    } else if editorChoice != .withdrawal && finamiPaymentDebitKind(o.kind) {
+      Section("Пов’язати з платежем") {
+        Picker("Розстрочка, кредит або підписка", selection: $linkedPaymentID) {
+          Text("Не пов’язувати").tag("")
+          ForEach(paymentChoices) { p in Text(p.kind + " · " + p.name + " · " + s.visibleMoney(p.amount, p.currency)).tag(p.id) }
+        }.accessibilityIdentifier("qa.operation.payment")
+        if paymentChoices.isEmpty { Text("Немає активних платежів у валюті цього рахунку.").font(.caption) }
+        if let payment = selectedPayment {
+          Button("Підставити суму платежу") { amount = amountText(payment.amount); entryCurrency = sourceCode }.disabled(o.sourceBank != nil)
+          if nativeAmount != payment.amount { Text(payment.kind == "Розстрочка" ? "Часткова або дострокова оплата: перевір графік банку." : "Сума має дорівнювати плановому платежу.").font(.caption).foregroundStyle(.orange) }
+          if !similarPayments.isEmpty || hasRecentSubscriptionPayment { Toggle("Це окрема нова оплата", isOn: $separatePayment); Text("Є схожа або вже записана оплата. Підтвердь лише якщо це інший платіж.").font(.caption).foregroundStyle(.orange) }
+          Text("Збереження оновить рахунок, залишок договору, наступну дату та нагадування одним записом.").font(.caption)
+          if o.kind == .transfer { Text("Прив’язуй переказ лише якщо це фактична оплата договору, а не звичайне поповнення кредитної картки.").font(.caption).foregroundStyle(.orange) }
+        }
+      }
+    }
+  }
+  @ViewBuilder private var editorMetadataFields: some View {
+    TextField("Теги через кому", text:$tagsText).onChange(of:tagsText) { value in o.tags=finamiCleanTags(value) }
+    if !(o.tags ?? []).isEmpty {Text((o.tags ?? []).map{"#"+$0}.joined(separator:"  ")).font(.caption).foregroundStyle(.secondary)}
+    if let bank = o.sourceBank { LabeledContent("Джерело", value: bank) }
+    if let suffix=o.creditContractSuffix {LabeledContent("Договір",value:"••"+suffix)}
+    if o.bankPostingKnown == true {LabeledContent("Дата постінгу",value:o.bankPostingDate?.formatted(date:.abbreviated,time:.omitted) ?? "Невідомо — звірити з банком")}
+    if let description = o.destinationBankNote { LabeledContent("Опис другої сторони",value:description) }
+    LabeledContent("Джерело запису", value: o.sourceLabel)
+  }
+  @ViewBuilder private var editorAttachmentFields: some View {
+    if let imageID = o.scanImageID { NavigationLink("Вкладений скриншот") { FinamiScanAttachment(imageID: imageID) } }
+    if let n = o.originalAmount, let c = o.originalCurrency { LabeledContent("Оригінальна сума", value: currencyMoney(n,c)) }
+    if let fee = o.bankFee, fee > 0 { LabeledContent("Комісія у виписці", value: money(fee)) }
+    if o.kind == .expense || o.kind == .income || o.kind == .receipt {
+      Button("Визначити категорію") { o.category = suggestedCategory(o.note, kind: o.kind, database: s.db) }
+      Toggle("Запам’ятати категорію для цього продавця", isOn: $learnRule)
+    }
+  }
+  @ViewBuilder private var editorExtraFields: some View {
+    TextField("Магазин / примітка", text: $o.note)
+    DisclosureGroup("Додаткові параметри", isExpanded: $extraExpanded) {
+      editorMetadataFields
+      editorAttachmentFields
+    }
+    if savedOperation && !financialLocked {
+      Button("Видалити операцію", role: .destructive) { confirm = true }
+    }
+  }
+  private var editorForm: some View {
+    Form {
+      editorHeaderFields
+      editorAmountFields
+      editorAccountFields
+      editorCategoryFields
+      editorReceiptFields
+      editorPaymentFields
+      editorExtraFields
+    }
+  }
+  private var calculatorSheet: some View {
     NavigationStack {
       Form {
-        if editorStyle != "original" {
-          VStack(alignment: .leading, spacing: 8) {
-            Text(o.displayKindTitle).font(.caption).foregroundStyle(.secondary)
-            Text(s.privateAmounts ? "••••" : amount.isEmpty ? "0" : amount).font(editorStyle == "minimal" ? .title2.bold() : .largeTitle.bold()).monospacedDigit()
-            if editorStyle == "bankingPro" { Label(s.accountName(o.account), systemImage: "wallet.pass") }
-            if editorStyle == "smartEntry" { Label("Категорія: " + suggestedCategory(o.note, kind: o.kind, database: s.db), systemImage: "sparkles").font(.caption) }
-          }.frame(maxWidth: .infinity, alignment: editorStyle == "minimal" ? .leading : .center).padding(8)
-        }
-        Picker("Тип", selection: choiceBinding) { ForEach(allowedChoices) { Text($0.title).tag($0) } }
-          .pickerStyle(.menu).disabled(financialLocked)
-        if editorChoice == .legacy { Text("Збережений тип: " + o.kind.title + ". Облік не зміниться, якщо залишити цей тип.").font(.caption).foregroundStyle(.secondary) }
-        if editorChoice == .income { Text("Зарплата, кешбек та інші надходження — категорії одного типу «Дохід».").font(.caption).foregroundStyle(.secondary) }
-        if editorChoice == .withdrawal && o.kind == .movementOut { Text("Банківське списання позначено як зняття готівки. Готівковий рахунок автоматично не поповнюється, щоб не дублювати рух коштів.").font(.caption).foregroundStyle(.secondary) }
-        if editorChoice == .withdrawal && o.kind == .transfer && cashAccounts.isEmpty { Text("Спочатку додай готівковий рахунок.").font(.caption).foregroundStyle(.orange) }
-        if o.kind.needsReview { Text("Не входить у доходи чи витрати до уточнення. Баланс враховує рух коштів.").font(.caption) }
-        FinamiField("Сума, \(entryCurrency)", text: $amount, keyboard: .decimalPad).disabled(financialLocked)
-        if !financialLocked && s.db.preferences?.designEditorKeyboard == true { FinamiDesignKeyboard(amount: $amount, haptics: s.db.preferences?.designEditorHaptics != false) }
-        if !financialLocked && !savedOperation && editorStyle == "quickEntry" && sourceCode == "UAH", let recent = repeatCandidate {
-          Button("Повторити останню ручну операцію") { amount = amountText(recent.amount); entryCurrency = "UAH"; if categories.contains(recent.category) { o.category = recent.category }; o.note = recent.note; tagsText = (recent.tags ?? []).joined(separator: ", "); linkedPaymentID = "" }.font(.caption)
-        }
-        if !financialLocked && editorStyle != "original" {
-          Button("Калькулятор суми") { calculatorInput = ""; calculator = true }.font(.caption)
-        }
-        if editorStyle == "quickEntry" || editorStyle == "bankingPro" {
-          ScrollView(.horizontal, showsIndicators: false) { HStack { ForEach(s.db.accounts.filter { o.sourceBank == nil || $0.code == "UAH" }) { account in
-            Button { o.account = account.id } label: { Label(account.name, systemImage: o.account == account.id ? "checkmark.circle.fill" : "wallet.pass").font(.caption).padding(10).frame(minHeight: 44).background(Color.accentColor.opacity(o.account == account.id ? 0.18 : 0.05), in: RoundedRectangle(cornerRadius: 10)) }.buttonStyle(.plain).disabled(financialLocked)
-          } } }
-        }
-        if o.kind != .transfer && sourceCode == "UAH" && o.sourceBank == nil {
-          Picker("Валюта введення",selection:$entryCurrency){Text("Гривня").tag("UAH");Text("Долар").tag("USD")}.disabled(financialLocked)
-        }
-        if requiresRate { FinamiField("Курс UAH за 1 USD", text: $rate, keyboard: .decimalPad).disabled(financialLocked); if let n=converted { LabeledContent("Сума у гривнях",value:money(n)) } }
-        if supportsExactUAH && (o.kind == .income || o.kind == .receipt) {FinamiField("Фактично отримано UAH (необов’язково)",text:$exactReceived,keyboard:.decimalPad).disabled(financialLocked)}
-        DatePicker("Дата і час", selection: $o.date, displayedComponents: [.date,.hourAndMinute]).disabled(financialLocked)
-        Picker("Рахунок", selection: $o.account) {
-          ForEach(s.db.accounts.filter{o.sourceBank == nil || $0.code == "UAH"}) { Text($0.name).tag($0.id) }
-        }.disabled(financialLocked)
-        if o.kind == .transfer {
-          Picker(editorChoice == .withdrawal ? "Готівковий рахунок" : "Куди", selection: $o.destination) {
-            Text("Вибрати").tag("")
-            ForEach(editorChoice == .withdrawal ? cashAccounts : s.db.accounts) { Text($0.name).tag($0.id) }
-          }.disabled(financialLocked)
-          if sourceCode == "USD" && destinationCode == "UAH" && o.sourceBank == nil {FinamiField("Фактично отримано UAH (необов’язково)",text:$exactReceived,keyboard:.decimalPad).disabled(financialLocked);if exactMode {Text("Сума зарахування має пріоритет над введеним курсом.").font(.caption)}}
-          if let n=received, !o.destination.isEmpty { LabeledContent("Зарахувати",value:currencyMoney(n,destinationCode)) }
-        } else if o.kind.isReportCategory {
-          Picker("Категорія", selection: Binding(get: { o.category }, set: { selectCategory($0) })) {
-            ForEach(categories, id: \.self) { Text($0).tag($0) }
-          }
-          if editorStyle != "original" && editorStyle != "minimal" {
-            let favorites = (s.db.preferences?.designEditorFavorites ?? []).filter { categories.contains($0) }
-            let recent = Array(Set(s.db.operations.suffix(150).filter { $0.kind == o.kind && categories.contains($0.category) }.map(\.category))).sorted()
-            ScrollView(.horizontal, showsIndicators: false) { HStack {
-              ForEach(Array((favorites + recent.filter { !favorites.contains($0) }).prefix(10)), id: \.self) { category in
-                Button { selectCategory(category) } label: { Label(category, systemImage: favorites.contains(category) ? "star.fill" : "clock").font(.caption).padding(8).frame(minHeight:44).background(Color.accentColor.opacity(o.category == category ? 0.18 : 0.05),in: RoundedRectangle(cornerRadius: 8)) }.buttonStyle(.plain)
-              }
-            } }
-            Button(favorites.contains(o.category) ? "Прибрати з обраних" : "Додати категорію в обрані") { s.changeAppearance { p in var list = Set(p.designEditorFavorites ?? []); if list.contains(o.category) { list.remove(o.category) } else { list.insert(o.category) }; p.designEditorFavorites = list.sorted() } }.font(.caption)
-          }
-        }
-        if o.kind == .receipt {
-          Section("Облік зарахування") {
-            Picker("У звітах", selection: Binding(get: { o.receiptTreatment ?? .pending }, set: { setTreatment($0) })) {
-              ForEach(FinamiReceiptTreatment.allCases) { Text($0.title).tag($0) }
-            }.disabled(financialLocked).accessibilityIdentifier("qa.receipt.treatment")
-            if o.receiptTreatment == .reimbursement {
-              TextField("Пошук початкової витрати", text: $compensationSearch)
-              let visible = compensationChoices.filter { $0.id == o.refundOriginalID || compensationSearch.isEmpty || $0.note.localizedCaseInsensitiveContains(compensationSearch) || $0.category.localizedCaseInsensitiveContains(compensationSearch) }
-              Picker("Початкова витрата", selection: Binding(get: { o.refundOriginalID ?? "" }, set: { o.refundOriginalID = $0.isEmpty ? nil : $0 })) {
-                Text("Обрати").tag("")
-                ForEach(Array(visible.prefix(100))) { original in
-                  Text(original.date.formatted(date: .abbreviated,time: .omitted) + " · " + original.category + " · " + (s.db.accounts.contains { $0.id == original.account && $0.hideAmounts == true } ? "••••" : s.visibleMoney(original.amount))).tag(original.id)
-                }
-                if let id = o.refundOriginalID, !visible.prefix(100).contains(where: { $0.id == id }) { Text("Раніше вибрана витрата").tag(id) }
-              }
-              if !compensationValid { Text("Обери витрату UAH, яка ще не була компенсована повністю.").font(.caption).foregroundStyle(.orange) }
-            }
-            Text("Баланс рахунку збільшується завжди. Компенсація зменшує витрати початкової категорії. Позики не створюють договір автоматично.").font(.caption).foregroundStyle(.secondary)
-          }
-        }
-        if let parts=o.groupedBankParts {
-          Section("Звірені надходження") {Text("\(parts.count) банківських рядків. Для зміни суми або рахунку спочатку скасуй групову звірку.").font(.caption);ForEach(Array(parts.enumerated()),id:\.offset){_,part in LabeledContent(part.date.formatted(date:.abbreviated,time:.shortened),value:s.visibleMoney(part.amount))}}
-        } else if let record = linkedRecord {
-          Section("Пов’язаний платіж") {
-            LabeledContent("Оплачено", value: s.db.obligations.first(where: { $0.id == record.paymentID })?.name ?? s.db.subscriptions?.first(where: { $0.id == record.paymentID })?.name ?? "Платіж з історії").accessibilityIdentifier("qa.operation.linked")
-            LabeledContent("Дата оплати",value:record.paidDate.formatted(date:.abbreviated,time:.omitted))
-            if o.kind == .expense, s.db.subscriptions?.contains(where:{$0.id == record.paymentID}) == true,
-               o.category != "📺 Підписки", categories.contains("📺 Підписки") {
-              Button("Встановити категорію «Підписки»") { o.category = "📺 Підписки"; selectedLearningCategory = nil }
-                .accessibilityIdentifier("qa.operation.subscriptionCategory")
-              Text("Збережи категорію без повторної оплати.").font(.caption).foregroundStyle(.secondary)
-            }
-            Text("Ця операція вже оновила графік. Фінансові поля та видалення захищені від випадкової зміни; примітку й категорію можна редагувати.").font(.caption)
-          }
-        } else if editorChoice != .withdrawal && finamiPaymentDebitKind(o.kind) {
-          Section("Пов’язати з платежем") {
-            Picker("Розстрочка, кредит або підписка", selection: $linkedPaymentID) {
-              Text("Не пов’язувати").tag("")
-              ForEach(paymentChoices) { p in Text(p.kind + " · " + p.name + " · " + s.visibleMoney(p.amount, p.currency)).tag(p.id) }
-            }.accessibilityIdentifier("qa.operation.payment")
-            if paymentChoices.isEmpty { Text("Немає активних платежів у валюті цього рахунку.").font(.caption) }
-            if let payment = selectedPayment {
-              Button("Підставити суму платежу") { amount = amountText(payment.amount); entryCurrency = sourceCode }.disabled(o.sourceBank != nil)
-              if nativeAmount != payment.amount { Text(payment.kind == "Розстрочка" ? "Часткова або дострокова оплата: перевір графік банку." : "Сума має дорівнювати плановому платежу.").font(.caption).foregroundStyle(.orange) }
-              if !similarPayments.isEmpty || hasRecentSubscriptionPayment { Toggle("Це окрема нова оплата", isOn: $separatePayment); Text("Є схожа або вже записана оплата. Підтвердь лише якщо це інший платіж.").font(.caption).foregroundStyle(.orange) }
-              Text("Збереження оновить рахунок, залишок договору, наступну дату та нагадування одним записом.").font(.caption)
-              if o.kind == .transfer { Text("Прив’язуй переказ лише якщо це фактична оплата договору, а не звичайне поповнення кредитної картки.").font(.caption).foregroundStyle(.orange) }
-            }
-          }
-        }
-        TextField("Магазин / примітка", text: $o.note)
-        DisclosureGroup("Додаткові параметри", isExpanded: $extraExpanded) {
-        TextField("Теги через кому", text:$tagsText).onChange(of:tagsText) { value in o.tags=finamiCleanTags(value) }
-        if !(o.tags ?? []).isEmpty {Text((o.tags ?? []).map{"#"+$0}.joined(separator:"  ")).font(.caption).foregroundStyle(.secondary)}
-        if let bank = o.sourceBank { LabeledContent("Джерело", value: bank) }
-        if let suffix=o.creditContractSuffix {LabeledContent("Договір",value:"••"+suffix)}
-        if o.bankPostingKnown == true {LabeledContent("Дата постінгу",value:o.bankPostingDate?.formatted(date:.abbreviated,time:.omitted) ?? "Невідомо — звірити з банком")}
-        if let description = o.destinationBankNote { LabeledContent("Опис другої сторони",value:description) }
-        LabeledContent("Джерело запису", value: o.sourceLabel)
-        if let imageID = o.scanImageID { NavigationLink("Вкладений скриншот") { FinamiScanAttachment(imageID: imageID) } }
-        if let n = o.originalAmount, let c = o.originalCurrency { LabeledContent("Оригінальна сума", value: currencyMoney(n,c)) }
-        if let fee = o.bankFee, fee > 0 { LabeledContent("Комісія у виписці", value: money(fee)) }
-        if o.kind == .expense || o.kind == .income || o.kind == .receipt {
-          Button("Визначити категорію") { o.category = suggestedCategory(o.note, kind: o.kind, database: s.db) }
-          Toggle("Запам’ятати категорію для цього продавця", isOn: $learnRule)
-        }
-        }
-        if savedOperation && !financialLocked {
-          Button("Видалити операцію", role: .destructive) { confirm = true }
-        }
-      }.navigationTitle("Операція").navigationBarTitleDisplayMode(.inline).toolbar {
-        ToolbarItem(placement: .cancellationAction) { Button("Скасувати") { dismiss() } }
-        ToolbarItem(placement: .confirmationAction) {
-          Button("Зберегти") { if s.db.preferences?.designEditorConfirm == true { confirmSave = true } else { saveOperation() } }.disabled(o.groupedBankParts == nil && !valid)
-        }
-      }.onAppear {
-        if !initialConfigured {
-          initialConfigured = true
-          extraExpanded = editorStyle == "original"
-          if !savedOperation && o.sourceBank == nil && o.amount == 0 && s.db.preferences?.designEditorLastAccountEnabled == true, let id = s.db.preferences?.designEditorLastAccount, s.db.accounts.contains(where: { $0.id == id }) { o.account = id }
-        }
-        if sourceCode == "USD" {entryCurrency="USD"};if rate.isEmpty {rate=s.db.currencyPreferences?.usdRate ?? ""}
-      }
-      .alert("Підтвердити збереження?", isPresented: $confirmSave) { Button("Зберегти") { saveOperation() }; Button("Скасувати", role: .cancel) {} }
-      .sheet(isPresented: $calculator) { NavigationStack { Form {
         LabeledContent("Початкова сума", value: amount)
         Picker("Дія", selection: $calculatorMode) { ForEach(["+","−","×","÷"],id: \.self) { Text($0).tag($0) } }.pickerStyle(.segmented)
         FinamiField("Друге число", text: $calculatorInput, keyboard: .decimalPad)
         Button("Застосувати") { if let result = FinamiDesignPolicy.calculate(amount, calculatorInput, operation: calculatorMode) { amount = result; calculator = false } }.disabled(FinamiDesignPolicy.calculate(amount, calculatorInput, operation: calculatorMode) == nil)
-      }.navigationTitle("Калькулятор").toolbar { Button("Скасувати") { calculator = false } } } }
+      }.navigationTitle("Калькулятор").toolbar { Button("Скасувати") { calculator = false } }
+    }
+  }
+  private var titledEditor: some View {
+    editorForm.navigationTitle("Операція").navigationBarTitleDisplayMode(.inline).toolbar {
+    ToolbarItem(placement: .cancellationAction) { Button("Скасувати") { dismiss() } }
+    ToolbarItem(placement: .confirmationAction) {
+      Button("Зберегти") { if s.db.preferences?.designEditorConfirm == true { confirmSave = true } else { saveOperation() } }.disabled(o.groupedBankParts == nil && !valid)
+    }
+    }
+  }
+  private var configuredEditor: some View {
+    titledEditor.onAppear {
+    if !initialConfigured {
+      initialConfigured = true
+      extraExpanded = editorStyle == "original"
+      if !savedOperation && o.sourceBank == nil && o.amount == 0 && s.db.preferences?.designEditorLastAccountEnabled == true, let id = s.db.preferences?.designEditorLastAccount, s.db.accounts.contains(where: { $0.id == id }) { o.account = id }
+    }
+    if sourceCode == "USD" {entryCurrency="USD"};if rate.isEmpty {rate=s.db.currencyPreferences?.usdRate ?? ""}
+    }
+    .alert("Підтвердити збереження?", isPresented: $confirmSave) { Button("Зберегти") { saveOperation() }; Button("Скасувати", role: .cancel) {} }
+    .sheet(isPresented: $calculator) { calculatorSheet }
+  }
+  var body: some View {
+    NavigationStack {
+      configuredEditor
       .onChange(of:o.account) { _ in entryCurrency=sourceCode; linkedPaymentID=""; separatePayment=false; if editorChoice == .withdrawal && o.kind == .transfer && !cashAccounts.contains(where: { $0.id == o.destination }) { o.destination = cashAccounts.first(where: { $0.code == sourceCode })?.id ?? cashAccounts.first?.id ?? "" } }
       .onChange(of:linkedPaymentID) { _ in separatePayment=false }
       .onChange(of:amount) { _ in separatePayment=false }
