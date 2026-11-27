@@ -365,14 +365,17 @@ struct FinamiReportReviewList: View {
     let account: String?
     let maskAmounts: Bool
     var includeInbox = false
+    var inboxOnly = false
     @State private var edited: Operation?
     @State private var capture: CapturedPayment?
     private var entries: [Operation] {
+        guard !inboxOnly else { return [] }
         let selected = Set(ids)
         return s.db.operations.filter { (includeInbox || selected.contains($0.id)) && (includeInbox ? $0.needsCaptureAttention : $0.requiresReview) && (account == nil || $0.account == account) }.sorted { $0.date > $1.date }
     }
     var body: some View {
         List {
+            if !inboxOnly {
             Section { Text("Оберіть операцію та уточніть її тип або категорію. Дохід — лише справжнє надходження, а не переказ власних коштів або кредит.").font(.caption) }
             Section {
                 if entries.isEmpty && (!includeInbox || s.capturePending.isEmpty) { Text("Усі операції уточнено").foregroundStyle(.secondary) }
@@ -382,8 +385,9 @@ struct FinamiReportReviewList: View {
                     }.buttonStyle(.plain).accessibilityIdentifier("qa.review.operation." + o.id)
                 }
             }
-            if includeInbox {
-                Section("Вхідні банківські події") {
+            }
+            if includeInbox || inboxOnly {
+                Section("Вхідні операції (\(s.capturePending.count))") {
                     if s.capturePending.isEmpty { Text("Немає нових повідомлень").foregroundStyle(.secondary) }
                     ForEach(s.capturePending) { e in
                         Button { capture = e } label: {
@@ -391,14 +395,17 @@ struct FinamiReportReviewList: View {
                                 Text(e.merchant.isEmpty ? e.source : e.merchant)
                                 Text(maskAmounts || s.privateAmounts || e.account.isEmpty || s.db.accounts.first(where: { $0.id == e.account })?.hideAmounts == true ? "••••" : s.visibleMoney(e.minor, e.currency)).font(.caption)
                                 Text(e.account.isEmpty ? "Обрати рахунок" : s.accountName(e.account)).font(.caption).foregroundStyle(.secondary)
+                                Text(e.date.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary)
+                                if s.captureMatch(e) { Label(s.captureRepeat(e) ? "Повтор повідомлення" : "Можливий дублікат", systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange) }
                             }
-                        }.buttonStyle(.plain)
+                        }.buttonStyle(.plain).accessibilityIdentifier("qa.inbox.event." + e.id)
                     }
                     if let warning = s.captureWarning { Text(warning).font(.caption).foregroundStyle(.orange) }
-                    Button("Оновити чергу") { s.refreshCaptures(auto: false) }
+                    Button("Оновити чергу") { s.refreshCaptures(auto: false) }.accessibilityIdentifier("qa.inbox.refresh")
                 }
             }
-        }.navigationTitle("Уточнення операцій")
+        }.navigationTitle(inboxOnly ? "Вхідні операції" : "Уточнення операцій")
+            .onAppear { if includeInbox || inboxOnly { s.refreshCaptures(auto: false) } }
             .sheet(item: $edited) { OpEditor(original: $0) }
             .sheet(item: $capture) { CaptureReview(event: $0) }
     }

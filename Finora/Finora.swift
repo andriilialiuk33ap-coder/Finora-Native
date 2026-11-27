@@ -551,6 +551,10 @@ struct DataFile: FileDocument {
         if ProcessInfo.processInfo.arguments.contains("--finami-qa"), ProcessInfo.processInfo.arguments.contains("--finami-qa-reset") {
           if manager.fileExists(atPath:file.path) { try manager.removeItem(at:file) }
           try? manager.removeItem(at:settingsFile)
+          // Clean only the synthetic queue entry, never a real captured payment.
+          if let folder = try? CaptureInbox.folder() {
+            try? manager.removeItem(at: folder.appendingPathComponent("00000000-0000-4000-8000-000000000068.json"))
+          }
         }
         #endif
         try manager.createDirectory(at:file.deletingLastPathComponent(),withIntermediateDirectories:true)
@@ -571,6 +575,11 @@ struct DataFile: FileDocument {
             loaded.operations = [-2,-1,0].map { offset in
                 Operation(kind:.expense,amount:10000,date:cal.date(byAdding:.month,value:offset,to:Date().addingTimeInterval(-86400)) ?? Date(),category:"📺 Підписки",note:"QA Streaming",account:"qa-recurring")
             }
+          }
+          if ProcessInfo.processInfo.arguments.contains("--finami-qa-inbox-fixture") {
+            loaded.accounts.append(Account(id: "qa-inbox-card", name: "QA Inbox Card"))
+            let event = CapturedPayment(id: "00000000-0000-4000-8000-000000000068", account: "qa-inbox-card", currency: "UAH", minor: 12345, merchant: "QA Inbox Shop", source: "Apple Pay", incoming: false, clearPurchase: true)
+            try CaptureInbox.enqueue(event, in: CaptureInbox.folder())
           }
           if ProcessInfo.processInfo.arguments.contains("--finami-qa-home-review-fixture") {
             loaded.accounts.append(Account(id:"qa-review-account",name:"QA Review"))
@@ -1401,7 +1410,7 @@ struct More: View {
       FinamiMenuGroup("Банки") {
         NavigationLink { FinamiImportHub() } label: { FinamiMenuLabel(title: "Імпорт, експорт та перевірка", icon: "tray.full.fill", color: .indigo) }.accessibilityIdentifier("qa.smart.hub")
         NavigationLink { FinamiReconciliation() } label: { FinamiMenuLabel(title: "Розумна звірка рахунків", icon: "checkmark.circle.trianglebadge.exclamationmark", color: .cyan) }
-        NavigationLink { AutomationCenter() } label: { FinamiMenuLabel(title: "Автоматизація · Apple Pay / SMS (\(s.capturePending.count))", icon: "bolt.fill", color: .orange) }
+        NavigationLink { AutomationCenter() } label: { FinamiMenuLabel(title: "Автоматизація · Apple Pay / SMS", icon: "bolt.fill", color: .orange) }
       }
       FinamiMenuGroup("Система") {
         NavigationLink { FinamiWidgetsSettings() } label: { FinamiMenuLabel(title: "Віджети iPhone", icon: "square.grid.2x2", color: .teal) }

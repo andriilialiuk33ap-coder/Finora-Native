@@ -21,6 +21,7 @@ struct FinamiGlobalSearch: View {
             Section("Функції та налаштування") {
                 if matches("категорії категорія витрати доходи іконки categories category") { NavigationLink("Категорії витрат та доходів"){Categories()}.accessibilityIdentifier("qa.search.categories") }
                 if matches("звірка звірити баланс залишок кредит використано reconcile balance") { NavigationLink("Звірити баланс рахунку"){FinamiBalanceView(initialMode:"anchor")}.accessibilityIdentifier("qa.search.reconcile") }
+                if matches("вхідні операції транзакції inbox банківські події") { NavigationLink("Вхідні операції") { FinamiReportReviewList(ids: [], account: nil, maskAmounts: s.privateAmounts, inboxOnly: true) } }
                 if matches("автоматизація apple pay sms банківські повідомлення") { NavigationLink("Автоматизація"){AutomationCenter()} }
                 if matches("головна огляд блоки dashboard") { NavigationLink("Блоки головної"){DashboardSettings()} }
                 if matches("usdt біржа зарплата комісія") { NavigationLink("Журнал USDT"){FinamiExchangeDiaryView()} }

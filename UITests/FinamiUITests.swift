@@ -6,7 +6,8 @@ final class FinamiUITests: XCTestCase {
         continueAfterFailure = false
         app = XCUIApplication()
         app.launchArguments = ["--finami-qa", "--finami-qa-reset"]
-        let fixtures = ["testHomeReviewOpensMatchingOperations":"--finami-qa-home-review-fixture",
+        let fixtures = ["testIncomingOperationsFromJournal":"--finami-qa-inbox-fixture",
+                        "testHomeReviewOpensMatchingOperations":"--finami-qa-home-review-fixture",
                         "testHomeAccountTemplateAndRightPersist":"--finami-qa-home-accounts-fixture",
                         "testAllUpcomingPaymentsAndArchive":"--finami-qa-upcoming-fixture",
                         "testAccountReportFieldsIndependentAndPersist":"--finami-qa-reports-fixture",
@@ -259,8 +260,23 @@ final class FinamiUITests: XCTestCase {
         let fixture = app.buttons[fixtureID]
         for _ in 0..<8 { if fixture.exists && fixture.isHittable { break }; app.swipeUp() }
         visible(fixture); XCTAssertTrue(fixture.isHittable); fixture.tap()
-        let review = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", "qa.scan.review.")).firstMatch
-        XCTAssertTrue(review.waitForExistence(timeout: 45)); review.tap()
+        // The result action is pinned outside the lazy List, so successful OCR
+        // does not depend on the list's current scroll position.
+        let review = app.descendants(matching: .any).matching(identifier: "qa.scan.open.single").firstMatch
+        let failed = app.descendants(matching: .any).matching(identifier: "qa.scan.failed").firstMatch
+        let deadline = ProcessInfo.processInfo.systemUptime + 60
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            if (review.exists && review.isHittable) || failed.exists { break }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+        }
+        guard review.exists && review.isHittable else {
+            capture(screenshot + "-review-missing")
+            let tree = XCTAttachment(string: app.debugDescription)
+            tree.name = screenshot + "-accessibility"; tree.lifetime = .keepAlways; add(tree)
+            XCTFail("OCR did not expose a tappable result. Error status: \(failed.exists)")
+            return
+        }
+        review.tap()
         visible(app.navigationBars["Перевірка розстрочки"])
         let fields = [("Загальний кредит", expected[0]), ("Поточний залишок", expected[1]), ("Щомісячний платіж", expected[2])]
         for (label, expected) in fields {
@@ -282,6 +298,24 @@ final class FinamiUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: sixth)], timeout: 8), .completed)
         visible(app.staticTexts["Усього: 5"])
         capture("upcoming-all-and-archive")
+    }
+    func testIncomingOperationsFromJournal() {
+        tabButton("Операції").tap()
+        let inbox = app.descendants(matching: .any).matching(identifier: "qa.operations.inbox").firstMatch
+        for _ in 0..<6 { if inbox.exists && inbox.isHittable { break }; app.swipeUp() }
+        visible(inbox); XCTAssertTrue(inbox.isHittable); inbox.tap()
+        visible(app.navigationBars["Вхідні операції"])
+        let event = app.buttons["qa.inbox.event.00000000-0000-4000-8000-000000000068"]
+        visible(event); event.tap(); visible(app.navigationBars["Перевірка платежу"])
+        visible(app.staticTexts["QA Inbox Shop"])
+        let discard = app.buttons["Відхилити подію"]
+        for _ in 0..<8 { if discard.exists && discard.isHittable { break }; app.swipeUp() }
+        visible(discard); discard.tap()
+        let confirm = app.buttons["Відхилити"].firstMatch
+        visible(confirm); confirm.tap()
+        visible(app.navigationBars["Вхідні операції"])
+        XCTAssertTrue(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: event)], timeout: 15) == .completed)
+        capture("operations-inbox-resolved")
     }
     func testHomeReviewOpensMatchingOperations() {
         let open = app.descendants(matching: .any).matching(identifier: "qa.dashboard.review.open").firstMatch

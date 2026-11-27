@@ -175,7 +175,7 @@ struct FinamiReconciliation: View {
                 NavigationLink("Ввести контрольний баланс банку") { FinamiBalanceView(initialMode:"anchor") }
                 NavigationLink("Перенести записи або об’єднати обмін") { FinamiBalanceView() }
                 NavigationLink("Перевірити схожі операції") { FinamiNextReviewView() }
-                NavigationLink("Вхідні банківські події (\(s.capturePending.count))") { AutomationCenter() }
+                NavigationLink("Вхідні банківські події (\(s.capturePending.count))") { FinamiReportReviewList(ids: [], account: nil, maskAmounts: s.privateAmounts, inboxOnly: true) }
                 NavigationLink("Звірити зі скриншота") { FinamiScanView(initialMode: .balance) }
                 Text("Доступний залишок із банківського повідомлення зберігається як довідка. Він може включати кредит або блокування коштів. Finami не змінює баланс без підтвердження.").font(.caption)
             }

@@ -117,7 +117,6 @@ struct AutomationCenter: View {
     @Environment(\.openURL) var openURL
     @State private var account=""
     @State private var copied=false
-    @State private var review: CapturedPayment?
     @State private var sample="Оплата 125,50 UAH; Магазин: ATБ; Баланс 1000 UAH"
     @State private var testResult=""
     @AppStorage("finami.lastShortcutCheck") private var lastShortcutCheck: Double = 0
@@ -158,12 +157,10 @@ struct AutomationCenter: View {
             walletBindingSection
             connectionSection
             autoSection
-            inboxSection
             guideSection
             testSection
         }.navigationTitle("Автоматизація")
             .onAppear {if account.isEmpty {account=s.db.accounts.first(where:{$0.id != cash})?.id ?? s.db.accounts.first?.id ?? ""};s.refreshCaptures()}
-            .sheet(item:$review){CaptureReview(event:$0)}
             .alert("Не вдалося відкрити Команди", isPresented: $openFailed) { Button("OK", role: .cancel) {} } message: { Text("Відкрий системний застосунок Команди вручну.") }
     }
     private var walletBindingSection: some View {
@@ -284,24 +281,6 @@ struct AutomationCenter: View {
             Text("Спочатку обидва вимкнені. Перевірте одну реальну покупку, потім увімкніть потрібний режим. Події зберігаються Командами без відкриття Finami. Обробка виконується при доступному фоновому запуску iOS або при наступному відкритті після розблокування. Невідомий магазин отримує категорію «Без категорії». Повторні повідомлення ніколи не додаються автоматично, навіть після перезапуску. Схожі платежі, доларові суми та неоднозначні рухи залишаються на перевірку. Не вмикайте одночасно кілька джерел для однієї картки без звірки.").font(.caption)
         }
     }
-    private var inboxSection: some View {
-        Section("3. Вхідні операції (\(s.capturePending.count))") {
-            Button("Оновити чергу") {s.refreshCaptures()}
-            if let warning=s.captureWarning {Text(warning).foregroundStyle(.orange)}
-            if s.capturePending.isEmpty {Text("Немає нових операцій").foregroundStyle(.secondary)}
-            ForEach(s.capturePending){e in
-                Button {review=e} label:{
-                    VStack(alignment:.leading,spacing:5){
-                        Text(e.merchant.isEmpty ? e.source:e.merchant).foregroundStyle(.primary).font(.headline)
-                        Text(s.visibleMoney(e.minor,e.currency)).font(.title3.bold())
-                        Text(s.accountName(e.account)+" · "+e.date.formatted(date:.abbreviated,time:.shortened)).font(.caption)
-                        if e.account.isEmpty { Label("Невідомий або неоднозначний рахунок", systemImage: "questionmark.circle").foregroundStyle(.orange).font(.caption) }
-                        if s.captureMatch(e) {Label(s.captureRepeat(e) ? "Повтор повідомлення" : "Можливий дублікат",systemImage:"exclamationmark.triangle").foregroundStyle(.orange).font(.caption)}
-                    }
-                }
-            }
-        }
-    }
     private var guideSection: some View {
         Section("Покрокові інструкції") {
             NavigationLink {AutomationGuide(title:"Apple Pay / Wallet",steps:AutomationGuide.wallet)} label:{IzanamiLabel(title:"Apple Pay — налаштувати",icon:"wallet.pass.fill",color:.blue)}
@@ -402,14 +381,14 @@ struct AutomationGuide: View {
         "Натисніть Далі → Нова порожня автоматизація → Додати дію. Знайдіть Finami: Apple Pay (пошук Finami). Якщо дія не відображається, відкрийте Finami після встановлення, закрийте й знову відкрийте Команди. Спробуйте запустити Finami: перевірка зв’язку; це безпечний тест, не покупка.",
         "У Amount / Сума вставте змінну Shortcut Input / Вхідні дані команди. Торкніться змінної ще раз і виберіть властивість Amount, а не весь об’єкт. Merchant / Продавець — та сама змінна, властивість Merchant. Якщо поле продавця недоступне, введіть Apple Pay.",
         "У Account code вставте скопійований код. У Currency впишіть UAH або USD відповідно до фактичної валюти суми. Для оплати в іншій валюті залиште автоматичне збереження вимкненим і звіряйте суму списання з банком. Не підставляйте курс навмання.",
-        "Збережіть автоматизацію. При наступній звичайній покупці відкрийте Finami → Ще → Автоматизація → Вхідні операції. Звірте суму та картку. Після успішного тесту за бажанням увімкніть Apple Pay без підтвердження.",
+        "Збережіть автоматизацію. При наступній звичайній покупці відкрийте Finami → Операції → Вхідні операції. Звірте суму та картку. Після успішного тесту за бажанням увімкніть Apple Pay без підтвердження.",
         "Повторіть для кожної картки. Wallet-тригер не гарантує облік онлайн-покупок, фізичних карток, Apple Watch або завершення банківського списання. Звіряйте з випискою; помилкову подію відхиліть або виправте операцію."]
     static let messages=[
         "У банку увімкніть саме SMS про проведені операції, якщо банк пропонує їх. Не використовуйте SMS з кодами безпеки. Застосунок не читає історію SMS.",
         "У Finami → Ще → Автоматизація виберіть картку, скопіюйте її код. Спочатку перевірте знеособлений приклад повідомлення в тесті розпізнавання.",
         "Команди → Автоматизація → + → Повідомлення (Message). Вкажіть справжнього відправника банківських SMS, а також фільтр тексту для покупок або останніх цифр потрібної картки. Не обирайте всі повідомлення. Увімкніть негайний запуск, якщо доступний.",
         "Нова порожня автоматизація → Додати дію → Finami: Bank message. У Message text передайте Shortcut Input → Content / Текст. У Account code вставте код відповідної картки. Збережіть.",
-        "При наступному SMS відкрийте Finami → Автоматизація → Вхідні операції. Спочатку звірте вручну. Якщо формат стабільно розпізнається, увімкніть Однозначні покупки з SMS.",
+        "При наступному SMS відкрийте Finami → Операції → Вхідні операції. Спочатку звірте вручну. Якщо формат стабільно розпізнається, увімкніть Однозначні покупки з SMS.",
         "Приклад: Оплата 125,50 UAH; Магазин: ATБ; Баланс 1000 UAH. Розпізнається сума оплати, а не баланс. Якщо є кілька сум, незрозуміла валюта, OTP або відмова — дія не запише транзакцію. Внесіть підтверджений платіж вручну або імпортуйте виписку.",
         "Для різних карток використовуйте різні фільтри. SMS можуть бути платними або недоступними у вашому банку. Перекази, поповнення й погашення підтверджуйте окремо."]
     static let notifications=[

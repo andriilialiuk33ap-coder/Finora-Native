@@ -133,11 +133,25 @@ struct FinamiScanView: View {
     @State private var selections: [PhotosPickerItem] = []
     @State private var photos: [ScanPhoto] = []
     @State private var busy = false
+    @State private var singleReview = false
     @State private var errors: [String] = []
     @State private var manualText = ""
     @State private var chosenBank = ""
     init(initialMode: FinamiScanMode = .transactions) { _mode = State(initialValue: initialMode) }
     var body: some View {
+        VStack(spacing: 0) {
+            scanStatus
+            scanList
+        }
+        .navigationTitle("Finami Scan")
+        .navigationDestination(isPresented: $singleReview) {
+            if let photo = photos.first { reviewDestination(photo) }
+        }
+        .onChange(of: selections) { items in
+            loadSelections(items)
+        }
+    }
+    private var scanList: some View {
         List {
             Section {
                 VStack(alignment: .leading, spacing: 10) {
@@ -145,7 +159,7 @@ struct FinamiScanView: View {
                     Text("Finami Scan").font(.title.bold())
                     Text("Додай скриншот банку. Перевір розпізнані дані перед збереженням.").foregroundStyle(.secondary)
                 }.padding(.vertical, 12)
-                Picker("Тип імпорту", selection: $mode) { ForEach(FinamiScanMode.allCases) { Text($0.rawValue).tag($0) } }.pickerStyle(.menu)
+                Picker("Тип імпорту", selection: $mode) { ForEach(FinamiScanMode.allCases) { Text($0.rawValue).tag($0) } }.pickerStyle(.menu).disabled(busy)
                 if mode == .installment {
                     Picker("Банк для OCR", selection: $chosenBank) {
                         Text("Автоматично").tag("")
@@ -161,7 +175,6 @@ struct FinamiScanView: View {
                     Button("QA: ПУМБ — нульовий внесок") { runQAImage(pumb: true) }.disabled(busy).accessibilityIdentifier("qa.scan.fixture.pumb.zero")
                 }
                 #endif
-                if busy { ProgressView("Розпізнавання на пристрої…") }
                 DisclosureGroup("Резервний імпорт тексту") {
                     Text("Якщо фото не читається, скопіюй текст з фото через Live Text і встав сюди. Перевір дані перед збереженням.").font(.caption)
                     TextEditor(text: $manualText).frame(minHeight: 110).accessibilityLabel("Текст зі скриншота")
@@ -186,9 +199,7 @@ struct FinamiScanView: View {
 
                     ForEach(photos) { photo in
                         NavigationLink {
-                            if mode == .transactions { ScanTransactionsReview(photo: photo) }
-                            else if mode == .installment { ScanInstallmentReview(photo: photo) }
-                            else { ScanBalanceReview(photo: photo) }
+                            reviewDestination(photo)
                         } label: {
                             VStack(alignment: .leading, spacing: 5) {
                                 Label(photo.bank ?? "Банк не визначено", systemImage: "doc.text.viewfinder")
@@ -209,7 +220,9 @@ struct FinamiScanView: View {
                 Text("Vision читає текст локально. Не всі банки мають однаковий формат. Нерозпізнані дати, суми та категорії можна ввести вручну. Збереження виконується тільки після підтвердження.")
                 Text("Не додавай знімки з PIN, CVV чи повними номерами карток. Збережені вкладення входять до JSON-копії та можуть залишитися у старих резервних копіях.")
             }.font(.caption).foregroundStyle(.secondary)
-        }.navigationTitle("Finami Scan").onChange(of: selections) { items in
+        }
+    }
+    private func loadSelections(_ items: [PhotosPickerItem]) {
             guard !items.isEmpty, !busy else { return }
             busy = true; errors = []
             Task { @MainActor in
@@ -230,7 +243,49 @@ struct FinamiScanView: View {
                     } catch { errors.append("Фото \(index + 1): \(error.localizedDescription)") }
                 }
             }
+    }
+    // Keep the result of a single import visible even when the list's review
+    // section has not been materialized by SwiftUI. Same destination for both
+    // entry points; never bypass the actual OCR pipeline or confirmation form.
+    @ViewBuilder private var scanStatus: some View {
+        if busy {
+            ProgressView("Розпізнавання на пристрої…")
+                .accessibilityIdentifier("qa.scan.processing")
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12).background(.regularMaterial)
+        } else if photos.count == 1, let photo = photos.first {
+            VStack(alignment: .leading, spacing: 6) {
+                Button { singleReview = true } label: {
+                    HStack {
+                        Image(systemName: "doc.text.viewfinder")
+                        Text("Відкрити та перевірити").fontWeight(.semibold)
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                    }.frame(minHeight: 44).contentShape(Rectangle())
+                }.buttonStyle(.plain).accessibilityIdentifier("qa.scan.open.single")
+                Text("\(photo.lines.count) рядків · \(mode.rawValue)")
+                    .font(.caption).foregroundStyle(.secondary)
+                if let warning = photo.warning {
+                    Text(warning).font(.caption).foregroundStyle(.orange)
+                }
+                if !errors.isEmpty { Text("Не всі фото оброблено. Деталі — у списку нижче.").font(.caption).foregroundStyle(.orange) }
+            }.padding(.horizontal, 16).padding(.vertical, 8).background(.regularMaterial)
+        } else if !errors.isEmpty {
+            Label("Не вдалося обробити фото. Перевір повідомлення у списку нижче.", systemImage: "exclamationmark.triangle")
+                .font(.caption).foregroundStyle(.orange)
+                .accessibilityIdentifier("qa.scan.failed")
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12).background(.regularMaterial)
+        } else if photos.count > 1 {
+            Text("Оброблено фото: \(photos.count). Перевір їх у списку або об’єднай фото одного договору.")
+                .font(.caption).frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12).background(.regularMaterial)
         }
+    }
+    @ViewBuilder private func reviewDestination(_ photo: ScanPhoto) -> some View {
+        if mode == .transactions { ScanTransactionsReview(photo: photo) }
+        else if mode == .installment { ScanInstallmentReview(photo: photo) }
+        else { ScanBalanceReview(photo: photo) }
     }
     private func mergedPhoto() -> ScanPhoto {
         let merged = finamiMergeInstallments(photos.map { photo in

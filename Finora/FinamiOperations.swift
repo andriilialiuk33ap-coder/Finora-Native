@@ -125,6 +125,27 @@ struct Operations: View {
       }
     }.modifier(FinamiCardStyle(tint:.teal))
   }
+  private var incomingSection: some View {
+    NavigationLink {
+      FinamiReportReviewList(ids: [], account: nil, maskAmounts: s.privateAmounts, inboxOnly: true)
+    } label: {
+      HStack(spacing: 12) {
+        FinamiIconTile(icon: "tray.and.arrow.down.fill", tint: .orange, side: 40)
+        VStack(alignment: .leading, spacing: 4) {
+          Text("Вхідні операції").font(.headline)
+          Text(s.capturePending.isEmpty ? "Немає нових операцій" : "Потребують перевірки: \(s.capturePending.count)")
+            .font(.caption).foregroundStyle(.secondary)
+          if s.captureWarning != nil { Text("Є попередження черги").font(.caption).foregroundStyle(.orange) }
+        }
+        Spacer(minLength: 0)
+        Text(String(s.capturePending.count)).font(.headline.monospacedDigit()).foregroundStyle(.orange)
+        Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
+      }.padding(12).frame(minHeight: 44).contentShape(Rectangle())
+    }.buttonStyle(.plain).modifier(FinamiCardStyle(tint: .orange))
+      .accessibilityElement(children: .combine)
+      .accessibilityIdentifier("qa.operations.inbox")
+      .accessibilityValue(String(s.capturePending.count))
+  }
   var body: some View {
     let values: [Operation] = searchPending ? [] : filtered
     let displayedValues = Array(values.prefix(pageSize))
@@ -145,6 +166,7 @@ struct Operations: View {
           TextField("Магазин, категорія, сума", text: $search).accessibilityIdentifier("qa.operations.search")
           if !search.isEmpty { Button { search = "" } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain).accessibilityLabel("Очистити пошук") }
         }.padding(12).modifier(FinamiCardStyle(tint: .teal))
+        incomingSection
         HStack {
           Picker("Тип", selection: filterBinding) { Text("Усі типи").tag("all"); ForEach(Kind.allCases) { Text($0.title).tag($0.rawValue) }; Text("Зняття готівки").tag("cashWithdrawal") }.pickerStyle(.menu)
           Spacer(minLength: 0)
