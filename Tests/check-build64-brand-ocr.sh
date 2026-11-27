@@ -4,6 +4,9 @@ cd "$(dirname "$0")/.."
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 cat > "$tmp/main.swift" <<'SWIFT'
 import Foundation
+#if canImport(CoreGraphics)
+import CoreGraphics
+#endif
 func check(_ test: @autoclosure () -> Bool, _ label: String) { precondition(test(), label); print("PASS: " + label) }
 let names: [(String, FinamiBrand)] = [("ПУМБ кредит",.pumb),("MONOBANK black",.mono),("Приват24",.privat),("А-Банк",.abank),("Onlyy.One Spotify",.spotify),("NETFLIX.COM",.netflix),("SILPO 0342",.silpo),("АТБ-МАРКЕТ",.atb),("YouTube Premium",.youtube),("iCloud+",.icloud)]
 for (text, brand) in names { check(FinamiBrand.match(text) == brand, "brand alias " + brand.rawValue) }

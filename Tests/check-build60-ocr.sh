@@ -4,6 +4,9 @@ cd "$(dirname "$0")/.."
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 cat > "$tmp/main.swift" <<'SWIFT'
 import Foundation
+#if canImport(CoreGraphics)
+import CoreGraphics
+#endif
 func check(_ b: @autoclosure () -> Bool, _ name: String) { precondition(b(), name); print("PASS: " + name) }
 let p = FinamiScanParser.self
 func r(_ text: String, _ x: Double, _ y: Double, _ w: Double = 0.27, _ h: Double = 0.025) -> ScanTextRegion {

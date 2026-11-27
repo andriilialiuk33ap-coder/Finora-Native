@@ -4,6 +4,9 @@ cd "$(dirname "$0")/.."
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 cat > "$tmp/main.swift" <<'SWIFT'
 import Foundation
+#if canImport(CoreGraphics)
+import CoreGraphics
+#endif
 func check(_ b: @autoclosure () -> Bool, _ label: String) { precondition(b(), label); print("PASS: " + label) }
 let suite = "finami.ocr.geometry.test." + UUID().uuidString
 let defaults = UserDefaults(suiteName: suite)!
