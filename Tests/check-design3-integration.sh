@@ -39,6 +39,31 @@ check(changed.designStyle(for: "upcoming") == "paymentTimeline" && changed.desig
 check(changed.hideAmounts == true && changed.collapsedInstallments == ["private"], "preset does not change privacy or individual collapsed cards")
 changed.restoreFinamiStyle(["template":"Bank"])
 check(changed.cardTemplate == "Bank" && changed.designStyle(for: "upcoming") == "paymentTimeline", "old preset retains unsaved component settings")
+var audit = AppearancePreferences(); audit.hideAmounts = true; audit.designLayout = "grid"; audit.modernAccountGrid = true
+for right in ["art","photo","expenses","credit","actions","last","count","none"] {
+    audit.designLayout = "grid"; audit.modernAccountGrid = true
+    audit.selectHomeAccountRight(right)
+    check(audit.finamiLayout == "cards" && audit.homeAccountRight == right && audit.hideAmounts == true,"right panel activates full cards: " + right)
+}
+audit.selectHomeAccountRight(""); check(audit.homeAccountRight == nil,"automatic right side restored")
+for template in ["premium","detailed","compact","physical"] {
+    audit.selectGlobalAccountVariant("creditRing"); audit.designLayout = "list"
+    audit.selectHomeAccountTemplate(template)
+    check(audit.homeAccountLayout == template && audit.finamiLayout == "cards" && audit.designStyle(for:"accounts") == "original","legacy account template overrides shared variant: " + template)
+}
+audit.setDesignAccountStyle("auroraCard",for:"personal")
+for variant in FinamiDesignPolicy.componentOptions["accounts"]! {
+    audit.designLayout = "grid"; audit.selectGlobalAccountVariant(variant)
+    check(audit.finamiLayout == "cards" && audit.designAccountStyle(for:"ordinary") == variant && audit.designAccountStyle(for:"personal") == "auroraCard","global variant and personal override: " + variant)
+}
+audit.theme = "Crimson"
+for accent in FinamiDesignPolicy.accents {
+    audit.selectFinamiAccent(accent)
+    let roundTrip = try JSONDecoder().decode(AppearancePreferences.self,from:JSONEncoder().encode(audit))
+    check(roundTrip.theme == "Preset" && roundTrip.designAccent == accent && roundTrip.hideAmounts == true,"shared accent survives persistence: " + accent)
+}
+audit.selectFinamiAccent("preset"); check(audit.designAccent == nil && audit.theme == "Preset","accent resets to design without legacy conflict")
+
 SWIFT
 swiftc -swift-version 5 -warnings-as-errors Finora/FinamiDesignPolicy.swift "$tmp/Models.swift" "$tmp/main.swift" -o "$tmp/test"
 "$tmp/test"

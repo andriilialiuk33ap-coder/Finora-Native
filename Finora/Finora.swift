@@ -592,6 +592,11 @@ struct DataFile: FileDocument {
             loaded.accounts = [Account(id:"qa-design-credit",name:"QA Credit Card",opening:-10000,accountType:"credit",creditLimit:100000),Account(id:"qa-design-debit",name:"QA Debit",opening:50000,accountType:"debit")]
             var p=AppearancePreferences();p.modernAccountGrid=true;p.designLayout="grid";p.accountsMode="all";loaded.preferences=p
           }
+          if ProcessInfo.processInfo.arguments.contains("--finami-qa-home-accounts-fixture") {
+            loaded.accounts = [Account(id:"qa-home-account",name:"QA Home Account",opening:50000,accountType:"debit")]
+            var p = AppearancePreferences(); p.modernAccountGrid = true; p.designLayout = "grid"; loaded.preferences = p
+            loaded.dashboard = [.init(kind:.accounts,enabled:true,size:.medium)]
+          }
           if ProcessInfo.processInfo.arguments.contains("--finami-qa-upcoming-fixture") {
             loaded.obligations = (1...6).map { i in Obligation(id: "qa-upcoming-" + String(i), kind: .installment, name: "QA payment " + String(i), target: 100000, monthly: 10000, due: Date().addingTimeInterval(Double(i) * 86400)) }
             loaded.dashboard = [.init(kind: .obligations, enabled: true, size: .large)]
@@ -903,6 +908,7 @@ struct Root: View {
   @State private var authError = ""
   @AppStorage("finami.widgets.shareAmounts") private var widgetShare = false
   @State private var tab = 0
+  @State private var tabResets = Array(repeating: 0, count: 5)
   @State private var widgetAdd = false
   @State private var widgetCalendar = false
   @State private var widgetPlanning = false
@@ -927,20 +933,20 @@ struct Root: View {
       } else {
         VStack(spacing: 0) {
         TabView(selection: $tab) {
-          NavigationStack { if store.db.preferences?.simpleHome == true { FinamiSimpleHome() } else { CustomDashboard() } }.toolbar(.hidden, for: .tabBar).tabItem { Label(store.db.preferences?.homeTitle ?? "Головна", systemImage: "house.fill") }.tag(0)
+          NavigationStack { if store.db.preferences?.simpleHome == true { FinamiSimpleHome() } else { CustomDashboard() } }.toolbar(.hidden, for: .tabBar).tabItem { Label(store.db.preferences?.homeTitle ?? "Головна", systemImage: "house.fill") }.id("tab-0-\(tabResets[0])").tag(0)
           NavigationStack { Operations().toolbar { NavigationLink { FinamiGlobalSearch() } label: { Image(systemName:"magnifyingglass") }.accessibilityLabel("Пошук Finami") } }.toolbar(.hidden, for: .tabBar).tabItem {
             Label("Операції", systemImage: "arrow.left.arrow.right")
-          }.tag(1)
+          }.id("tab-1-\(tabResets[1])").tag(1)
           NavigationStack { Accounts().toolbar { NavigationLink { FinamiGlobalSearch() } label: { Image(systemName:"magnifyingglass") }.accessibilityLabel("Пошук Finami") } }.toolbar(.hidden, for: .tabBar).tabItem {
             Label("Рахунки", systemImage: "wallet.pass.fill")
-          }.tag(2)
-          NavigationStack { if store.privateAmounts { FinamiPrivacyNotice() } else { Reports().toolbar { NavigationLink { FinamiGlobalSearch() } label: { Image(systemName:"magnifyingglass") }.accessibilityLabel("Пошук Finami") } } }.toolbar(.hidden, for: .tabBar).tabItem { Label("Звіти", systemImage: "chart.bar.xaxis") }.tag(3)
-          NavigationStack { More() }.toolbar(.hidden, for: .tabBar).tabItem { Label("Ще", systemImage: "ellipsis.circle") }.tag(4)
+          }.id("tab-2-\(tabResets[2])").tag(2)
+          NavigationStack { if store.privateAmounts { FinamiPrivacyNotice() } else { Reports().toolbar { NavigationLink { FinamiGlobalSearch() } label: { Image(systemName:"magnifyingglass") }.accessibilityLabel("Пошук Finami") } } }.toolbar(.hidden, for: .tabBar).tabItem { Label("Звіти", systemImage: "chart.bar.xaxis") }.id("tab-3-\(tabResets[3])").tag(3)
+          NavigationStack { More() }.toolbar(.hidden, for: .tabBar).tabItem { Label("Ще", systemImage: "ellipsis.circle") }.id("tab-4-\(tabResets[4])").tag(4)
         }.toolbar(.hidden, for: .tabBar)
           .frame(maxWidth: .infinity, maxHeight: .infinity)
           // Reserve layout space rather than overlaying a nested bottom inset.
           if !keyboardVisible {
-            FinamiFusionCrystal(selection: $tab, homeTitle: store.db.preferences?.homeTitle ?? "Головна", accent: navigationAccent, lowEffects: store.db.preferences?.designLowEffects == true)
+            FinamiFusionCrystal(selection: $tab, homeTitle: store.db.preferences?.homeTitle ?? "Головна", accent: navigationAccent, lowEffects: store.db.preferences?.designLowEffects == true, onReselect: { index in tabResets[index] += 1 })
           }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in keyboardVisible = true }

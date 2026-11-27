@@ -33,6 +33,14 @@ struct ScanInstallmentDraft {
     var monthly: Int64?
     var due: Date?
     var foreignCurrency = false
+    var pumbParts = false
+    var paymentCount: Int?
+    var paidCount: Int?
+    var nextAmount: Int64?
+    var bankNextDue: Date?
+    var finalDue: Date?
+    var opened: Date?
+    var monthlyEstimated = false
 }
 enum FinamiScanParser {
     static let number = #"[+−-]?\s*(?:\d{1,3}(?:[ \u00A0\u202F]\d{3})+|\d+)(?:[,.]\d{1,2})?"#
@@ -207,15 +215,114 @@ enum FinamiScanParser {
     }
     static func installmentCandidates(_ lines: [String]) -> [String] {
         var seen = Set<String>()
-        return lines.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { line in
+        let expanded = lines.flatMap { line -> [String] in
+            let amounts = matches("(?<![\\d.,])(?:" + number + "\\s*" + currency + ")(?!\\d)", in: line)
+            let dateTokens = matches(datePattern, in: line)
+            if amounts.count > 1 || dateTokens.count > 1 { return amounts + dateTokens }
+            return [line]
+        }
+        return expanded.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { line in
             !line.isEmpty && seen.insert(line).inserted && (installmentAmount(line) != nil || installmentDate(line) != nil)
         }
     }
     static func installmentCandidateAmount(_ text: String) -> Int64? {
         guard let m = installmentAmount(text), m.currency != "USD", m.minor >= 0 else { return nil }; return m.minor
     }
+    // PUMB "Сплачуйте частинами": the large unlabelled contract amount is
+    // followed by the issue date and progress, then a two-column payment card.
+    // A zero upcoming charge is NOT the regular instalment.
+    static func pumbParts(_ lines: [String], regions: [ScanTextRegion] = []) -> ScanInstallmentDraft? {
+        let rows = lines.map(bankClean).filter { !$0.isEmpty }
+        let low = rows.map { $0.lowercased() }
+        let joined = low.joined(separator: "\n")
+        let title = joined.contains("сплачуйте частинами")
+        let progressPattern = #"(?i)(?:внесено|сплачено)\s+(\d{1,3})\s+(?:з|із|їз|из|of)\s+(\d{1,3})\s+(?:щомісячних\s+)?платеж"#
+        guard title || (joined.contains("оформлено") && joined.contains("наступний платіж") && (joined.contains("залишилося") || joined.contains("залишилось")) && !matches(progressPattern, in: joined).isEmpty) else { return nil }
+        var d = ScanInstallmentDraft()
+        d.pumbParts = true
+        d.name = "ПУМБ · Сплачуйте частинами"
+        d.foreignCurrency = rows.contains { hasUnsupportedCurrency($0) || !matches(#"(?i)(?:\bUSD\b|\$)"#, in: $0).isEmpty }
+        let markedPattern = "(?<![\\d.,])(?:" + number + "\\s*" + currency + ")(?!\\d)"
+        func amounts(_ text: String) -> [Int64] {
+            matches(markedPattern, in: text).compactMap { token in
+                guard let m = money(token), m.currency == "UAH", m.minor >= 0 else { return nil }; return m.minor
+            }
+        }
+        func dates(_ text: String) -> [Date] { matches(datePattern, in: text).compactMap { bankDate($0) } }
+        func single<T: Hashable>(_ values: [T]) -> T? { Set(values).count == 1 ? values.first : nil }
+        let progressRows = rows.indices.filter { !matches(progressPattern, in: rows[$0]).isEmpty }
+        if let index = progressRows.first, progressRows.count == 1 {
+            let fragment = matches(progressPattern, in: rows[index]).first ?? ""
+            let counts = matches(#"\d{1,3}"#, in: fragment).compactMap(Int.init)
+            if counts.count == 2, counts[1] > 0, counts[0] <= counts[1] {
+                d.paidCount = counts[0]; d.paymentCount = counts[1]
+            }
+            // Only the header above the progress belongs to the contract total.
+            // A competing amount in this area invalidates the assumption.
+            d.total = single(rows[..<index].flatMap(amounts).filter { $0 > 0 })
+        }
+        if let issue = low.firstIndex(where: { $0.contains("оформлено") }) {
+            d.opened = single(dates(rows[issue]))
+            if progressRows.isEmpty, d.total == nil, issue > 0, let value = single(amounts(rows[issue-1])), value > 0 { d.total = value }
+        }
+        let nextLabels = low.indices.filter { low[$0].contains("наступний платіж") }
+        let restLabels = low.indices.filter { low[$0].contains("залишилося") || low[$0].contains("залишилось") }
+        if nextLabels.count == 1, restLabels.count == 1, let l = nextLabels.first, let r = restLabels.first {
+            if l == r, let nextRange = low[l].range(of: "наступний платіж"), let restRange = low[l].range(of: "залишил"), nextRange.lowerBound < restRange.lowerBound {
+                // Vision often merges each pair of cells into one line.
+                let stop = min(rows.count, l + 5)
+                let card = rows[l..<stop].prefix { !$0.lowercased().contains("внести платіж") && !$0.lowercased().contains("сплатити повністю") && !$0.lowercased().contains("самостійно") }
+                let values = card.flatMap(amounts)
+                let datesFound = card.flatMap(dates)
+                if values.count == 2 { d.nextAmount = values[0]; d.remaining = values[1] }
+                if datesFound.count == 2 { d.bankNextDue = datesFound[0]; d.finalDue = datesFound[1] }
+            } else if l != r {
+                func cell(_ index: Int, other: Int) -> ([Int64], [Date]) {
+                    let end = min(rows.count, index + 3, other > index ? other : rows.count)
+                    let cell = rows[index..<end].prefix { !$0.lowercased().contains("внести платіж") && !$0.lowercased().contains("сплатити повністю") }
+                    return (cell.flatMap(amounts), cell.flatMap(dates))
+                }
+                let a = cell(l, other: r), b = cell(r, other: l)
+                d.nextAmount = single(a.0); d.remaining = single(b.0)
+                d.bankNextDue = single(a.1); d.finalDue = single(b.1)
+            }
+        }
+        // Use column alignment if the text rows were emitted in an unexpected order.
+        func spatialCell(_ predicate: (String) -> Bool) -> (Int64?, Date?) {
+            let labels = regions.filter { predicate($0.text.lowercased()) }
+            guard labels.count == 1, let label = labels.first else { return (nil, nil) }
+            let below = regions.filter { candidate in
+                let overlap = min(label.bounds.maxX, candidate.bounds.maxX) - max(label.bounds.minX, candidate.bounds.minX)
+                return candidate.bounds.midY < label.bounds.midY && label.bounds.midY - candidate.bounds.midY <= 0.10 && overlap >= min(label.bounds.width, candidate.bounds.width) * 0.25
+            }
+            return (single(below.flatMap { amounts($0.text) }), single(below.flatMap { dates($0.text) }))
+        }
+        let a = spatialCell { $0.trimmingCharacters(in: .whitespaces) == "наступний платіж" }
+        let b = spatialCell { ["залишилося", "залишилось"].contains($0.trimmingCharacters(in: .whitespaces)) }
+        func reconcile<T: Equatable>(_ x: T?, _ y: T?) -> T? { if let x, let y, x != y { return nil }; return x ?? y }
+        d.nextAmount = reconcile(d.nextAmount, a.0); d.remaining = reconcile(d.remaining, b.0)
+        d.bankNextDue = reconcile(d.bankNextDue, a.1); d.finalDue = reconcile(d.finalDue, b.1)
+        if let total = d.total, let remaining = d.remaining, remaining > total { d.remaining = nil }
+        // Exact equal-payment inference only if the independently read remaining
+        // balance and progress agree. No rounding or arbitrary interest assumptions.
+        if let total = d.total, let remaining = d.remaining, let count = d.paymentCount, let paid = d.paidCount, total > 0,
+           total % Int64(count) == 0, total / Int64(count) * Int64(count - paid) == remaining {
+            d.monthly = total / Int64(count)
+            d.monthlyEstimated = true
+        }
+        // The existing ledger's due means the first *nonzero* charge. Do not
+        // schedule a fictitious payment on a zero-charge date.
+        if let amount = d.nextAmount, let remaining = d.remaining {
+            if amount > 0 && amount <= remaining { d.due = d.bankNextDue }
+            else if amount == 0, remaining > 0, let paid = d.paidCount, let count = d.paymentCount, count - paid == 1,
+                    let next = d.bankNextDue, let final = d.finalDue, final > next { d.due = final }
+            else if remaining == 0 { d.due = d.finalDue ?? d.bankNextDue }
+        }
+        return d
+    }
     static func installment(_ input: [String], reference: Date = Date(), regions: [ScanTextRegion] = []) -> ScanInstallmentDraft {
         let lines = input.map(bankClean).filter { !$0.isEmpty }
+        if let pumb = pumbParts(lines, regions: regions) { return pumb }
         let plan = purchasePlan(lines, reference: reference)
         var draft = ScanInstallmentDraft()
         draft.foreignCurrency = lines.contains(where: hasUnsupportedCurrency)
@@ -442,6 +549,15 @@ func finamiMergeInstallments(_ drafts: [ScanInstallmentDraft]) -> FinamiInstallm
     result.monthly = unique(drafts.compactMap(\.monthly), "Наступний платіж")
     result.due = unique(drafts.compactMap(\.due), "Дата")
     result.foreignCurrency = drafts.contains { $0.foreignCurrency }
+    result.pumbParts = drafts.contains { $0.pumbParts }
+    result.paymentCount = unique(drafts.compactMap(\.paymentCount), "Кількість платежів")
+    result.paidCount = unique(drafts.compactMap(\.paidCount), "Сплачено платежів")
+    result.nextAmount = unique(drafts.compactMap(\.nextAmount), "Найближчий внесок")
+    result.bankNextDue = unique(drafts.compactMap(\.bankNextDue), "Найближча дата банку")
+    result.finalDue = unique(drafts.compactMap(\.finalDue), "Кінцева дата")
+    result.opened = unique(drafts.compactMap(\.opened), "Дата оформлення")
+    result.monthlyEstimated = drafts.contains { $0.monthlyEstimated } && result.monthly != nil
+    if result.pumbParts && (!conflicts.isEmpty && (result.nextAmount == nil || result.bankNextDue == nil || result.finalDue == nil)) { result.due = nil }
     return FinamiInstallmentMerge(draft: result, conflicts: conflicts)
 }
 struct FinamiScheduleRow: Codable, Identifiable, Hashable {

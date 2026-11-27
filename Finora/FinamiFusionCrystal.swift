@@ -7,6 +7,7 @@ struct FinamiFusionCrystal: View {
     let homeTitle: String
     let accent: Color
     var lowEffects = false
+    var onReselect: (Int) -> Void = { _ in }
     @Environment(\.colorScheme) private var scheme
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -39,7 +40,7 @@ struct FinamiFusionCrystal: View {
         let label = tabs[index].0
         let shape = RoundedRectangle(cornerRadius: 15, style: .continuous)
         return Button {
-            guard selection != index else { return }
+            guard selection != index else { onReselect(index); return }
             if reduceMotion || opaque { selection = index }
             else { withAnimation(.easeInOut(duration: 0.16)) { selection = index } }
         } label: {

@@ -181,9 +181,6 @@ struct AppearanceView: View {
                 Toggle("Щомісячний платіж",isOn:Binding(get:{s.db.preferences?.modernPaymentMonthly ?? true},set:{binding(\.modernPaymentMonthly).wrappedValue=$0}))
                 Toggle("Залишок боргу в платежах",isOn:Binding(get:{s.db.preferences?.modernPaymentRemaining ?? false},set:{binding(\.modernPaymentRemaining).wrappedValue=$0}))
             }
-            Section("Попередні 10 стилів") {
-                ForEach(FinamiDesign.allCases.filter{!FinamiDesign.featured.contains($0) && !FinamiDesign.revolution.contains($0) && !FinamiDesign.simplicity.contains($0)}) { preset in designRow(preset) }
-            }
             Section("Картки та приватність") {
                 Picker("Шаблон карток",selection:Binding(get:{s.db.preferences?.cardTemplate ?? "За дизайном"},set:{binding(\.cardTemplate).wrappedValue=$0})) {ForEach(FinamiCardTemplate.allCases){Text($0.rawValue).tag($0.rawValue)}}
                 Toggle("Приховувати суми",isOn:Binding(get:{s.privateAmounts},set:{binding(\.hideAmounts).wrappedValue=$0}))
@@ -191,13 +188,7 @@ struct AppearanceView: View {
                 Toggle("Показувати витрати",isOn:Binding(get:{s.db.preferences?.showExpenses ?? true},set:{binding(\.showExpenses).wrappedValue=$0}))
                 Toggle("Без діаграм на огляді",isOn:Binding(get:{s.db.preferences?.noCharts ?? true},set:{binding(\.noCharts).wrappedValue=$0}))
             }
-            Section("Акцент") {
-                ForEach(IzanamiTheme.all) { theme in
-                    Button { binding(\.theme).wrappedValue = theme.name } label: {
-                        HStack { Circle().fill(theme.color).frame(width: 28, height: 28); Text(theme.name); Spacer(); if (s.db.preferences ?? .init()).theme == theme.name { Image(systemName: "checkmark.circle.fill") } }.frame(maxWidth:.infinity,alignment:.leading).contentShape(Rectangle())
-                    }.frame(maxWidth:.infinity,alignment:.leading).contentShape(Rectangle()).buttonStyle(.plain)
-                }
-            }
+            Section("Акцент") { FinamiAccentPicker() }
             Picker("Режим", selection: binding(\.mode)) { Text("За дизайном").tag("preset"); Text("Системний").tag("system"); Text("Темний").tag("dark"); Text("Світлий").tag("light") }
             Picker("Шрифт", selection: binding(\.font)) { Text("За дизайном").tag("preset"); Text("Системний").tag("default"); Text("Rounded").tag("rounded"); Text("Serif").tag("serif"); Text("Monospaced").tag("monospaced") }
             Toggle("Великі іконки", isOn: binding(\.largeIcons))
@@ -398,6 +389,11 @@ struct CustomDashboard: View {
         ScrollView {
             LazyVStack(spacing: (s.db.preferences ?? .init()).finamiSpacing) {
                 MonthControl(date: $date, dashboardStyle: true)
+                if !items.contains(where: { $0.kind == .review }) {
+                    NavigationLink { FinamiReportReviewList(ids: [], account: nil, maskAmounts: true, includeInbox: true) } label: {
+                        Label("Потребують уточнення: \(s.db.operations.filter { $0.needsCaptureAttention }.count + s.capturePending.count)", systemImage: "exclamationmark.bubble")
+                    }
+                }
                 if items.isEmpty { Panel { Text("Немає видимих блоків"); Button("Налаштувати огляд") { configure = true } } }
                 ForEach(rows.map { FinamiDashboardRow(items: $0) }) { entry in
                     HStack(alignment: .top, spacing: 12) {
@@ -477,7 +473,7 @@ struct DashboardTile: View {
                 HStack(alignment:.center,spacing:8) {
                     FinamiIconTile(icon:item.kind.icon,tint:color,side:36)
                     tileTitle.frame(maxWidth:.infinity,alignment:.leading)
-                    Button { accountSettings = true } label: { Image(systemName:"slider.horizontal.3").frame(width:44,height:44) }.buttonStyle(.plain).accessibilityLabel("Налаштування карток рахунків")
+                    Button { accountSettings = true } label: { Image(systemName:"slider.horizontal.3").frame(width:44,height:44) }.buttonStyle(.plain).accessibilityLabel("Налаштування карток рахунків").accessibilityIdentifier("qa.home.accounts.settings")
                     privacyButton
                 }.padding(.horizontal, 4).padding(.vertical, 2)
             } else {
@@ -496,7 +492,7 @@ struct DashboardTile: View {
         .sheet(item:$paymentDetails) { FinamiPaymentDetails(payment:$0).environment(\.finamiMask, masked || (s.db.preferences?.designHiddenSubscriptions ?? []).contains($0.id)) }
         .sheet(isPresented:$accountSettings) { NavigationStack { FinamiHomeAccountsSettings().toolbar { ToolbarItem(placement:.cancellationAction) { Button("Готово") { accountSettings = false } } } } }
     }
-    private var reviewOperations: [Operation] { ops.filter { $0.needsCaptureAttention } }
+    private var reviewOperations: [Operation] { s.db.operations.filter { $0.needsCaptureAttention } }
     private var reviewCount: Int { reviewOperations.count + s.capturePending.count }
     private var reviewDestination: some View {
         FinamiReportReviewList(ids: reviewOperations.map(\.id), account: nil, maskAmounts: masked, includeInbox: true)

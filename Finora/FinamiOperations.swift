@@ -141,6 +141,11 @@ struct Operations: View {
           }
         }.padding(16).modifier(FinamiCardStyle(tint: .teal))
         HStack {
+          Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+          TextField("Магазин, категорія, сума", text: $search).accessibilityIdentifier("qa.operations.search")
+          if !search.isEmpty { Button { search = "" } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain).accessibilityLabel("Очистити пошук") }
+        }.padding(12).modifier(FinamiCardStyle(tint: .teal))
+        HStack {
           Picker("Тип", selection: filterBinding) { Text("Усі типи").tag("all"); ForEach(Kind.allCases) { Text($0.title).tag($0.rawValue) }; Text("Зняття готівки").tag("cashWithdrawal") }.pickerStyle(.menu)
           Spacer(minLength: 0)
           Button { operationSettings = true } label: { Label(activeFilters == 0 ? "Фільтри" : "Фільтри (\(activeFilters))", systemImage: "line.3.horizontal.decrease.circle") }.buttonStyle(.bordered)
@@ -163,7 +168,7 @@ struct Operations: View {
           Button("Показати ще (\(values.count - displayedValues.count))") { pageSize += 150 }.frame(maxWidth: .infinity).buttonStyle(.bordered)
         }
       }.padding()
-    }.background(finamiScreenBackground(s.db.preferences)).searchable(text: $search, prompt: "Магазин, категорія, сума").navigationTitle("Операції")
+    }.background(finamiScreenBackground(s.db.preferences)).navigationTitle("Операції")
       .task(id: searchTerm) {
         let term = searchTerm
         if !term.isEmpty {

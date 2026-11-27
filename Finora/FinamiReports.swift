@@ -369,7 +369,7 @@ struct FinamiReportReviewList: View {
     @State private var capture: CapturedPayment?
     private var entries: [Operation] {
         let selected = Set(ids)
-        return s.db.operations.filter { selected.contains($0.id) && (includeInbox ? $0.needsCaptureAttention : $0.requiresReview) && (account == nil || $0.account == account) }.sorted { $0.date > $1.date }
+        return s.db.operations.filter { (includeInbox || selected.contains($0.id)) && (includeInbox ? $0.needsCaptureAttention : $0.requiresReview) && (account == nil || $0.account == account) }.sorted { $0.date > $1.date }
     }
     var body: some View {
         List {
@@ -382,8 +382,9 @@ struct FinamiReportReviewList: View {
                     }.buttonStyle(.plain).accessibilityIdentifier("qa.review.operation." + o.id)
                 }
             }
-            if includeInbox && (!s.capturePending.isEmpty || s.captureWarning != nil) {
+            if includeInbox {
                 Section("Вхідні банківські події") {
+                    if s.capturePending.isEmpty { Text("Немає нових повідомлень").foregroundStyle(.secondary) }
                     ForEach(s.capturePending) { e in
                         Button { capture = e } label: {
                             VStack(alignment: .leading, spacing: 4) {

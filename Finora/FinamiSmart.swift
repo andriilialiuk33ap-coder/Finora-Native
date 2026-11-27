@@ -30,8 +30,6 @@ final class FinamiNotificationDelegate: NSObject, UIApplicationDelegate, UNUserN
 struct FinamiImportHub: View {
     @EnvironmentObject private var s: Store
     @State private var voice = false
-    @State private var event: CapturedPayment?
-    @State private var operation: Operation?
     var body: some View {
         List {
             Section("Додати дані") {
@@ -45,27 +43,12 @@ struct FinamiImportHub: View {
             }
             Section("Експорт і резервні копії") { NavigationLink("PDF, Excel, CSV, календар") { FinamiExportView() }; NavigationLink("JSON та відновлення") { Settings() } }
             Section("Якість обліку") { NavigationLink("Аудит фінансової бази") { FinamiAuditView() }; NavigationLink("Правила категоризації") { FinamiRulesView() } }
-            Section("Вхідні · \(s.capturePending.count)") {
-                if s.capturePending.isEmpty { Text("Немає нових повідомлень").foregroundStyle(.secondary) }
-                ForEach(s.capturePending) { e in
-                    Button { event = e } label: { VStack(alignment: .leading) { Text(e.merchant.isEmpty ? e.source : e.merchant); Text(s.visibleMoney(e.minor,e.currency)).font(.caption); Text(e.account.isEmpty ? "Обери рахунок" : s.accountName(e.account)).font(.caption).foregroundStyle(.secondary) } }
-                }
-                if let warning = s.captureWarning { Text(warning).foregroundStyle(.orange) }
-                Button("Оновити вхідні") { s.refreshCaptures(auto: false) }
-            }
-            Section("Потребують уточнення") {
-                let pending = s.db.operations.filter { $0.requiresReview }.sorted { $0.date > $1.date }
-                if pending.isEmpty { Text("Усе уточнено").foregroundStyle(.secondary) }
-                ForEach(pending) { o in Button { operation = o } label: { VStack(alignment: .leading) { Text(o.note.isEmpty ? o.displayKindTitle : o.note); Text(s.visibleMoney(o.amount)).font(.caption) } } }
-            }
             Section("Відновлення") {
                 NavigationLink("Історія та скасування імпорту") { BankImportHistory() }
                 NavigationLink("Локальні попередні копії") { SnapshotView() }
             }
-        }.navigationTitle("Імпорт та експорт").onAppear { s.refreshCaptures(auto: false) }
+        }.navigationTitle("Імпорт та експорт")
         .sheet(isPresented: $voice) { FinamiVoice() }
-        .sheet(item: $event) { CaptureReview(event: $0) }
-        .sheet(item: $operation) { OpEditor(original: $0) }
     }
 }
 struct FinamiDiagnostics: View {

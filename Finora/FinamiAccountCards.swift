@@ -117,8 +117,9 @@ struct FinamiHomeAccountCard: View {
             let variant = s.db.preferences?.designAccountStyle(for: a.id)
             let legacy = accountStyle(a.cardOptions?.style ?? s.db.preferences?.homeAccountLayout)
             let preferredStyle: HomeAccountStyle = variant == "bankingSplit" || variant == "creditRing" ? .detailed : variant == "auroraCard" ? .physical : legacy
-            let style: HomeAccountStyle = dashboardSize == .small ? .compact : preferredStyle
-            let selectedRight: HomeAccountRight = dashboardSize == .small ? .none : accountRight(a.cardOptions?.right ?? s.db.preferences?.homeAccountRight, style: style)
+            let style: HomeAccountStyle = preferredStyle
+            let explicitRight = a.cardOptions?.right ?? s.db.preferences?.homeAccountRight
+            let selectedRight: HomeAccountRight = dashboardSize == .small && (explicitRight ?? "").isEmpty ? .none : accountRight(explicitRight, style: style)
             let right: HomeAccountRight = mode == "own" && selectedRight == .credit ? .art : selectedRight
             let excludedFields: Set<String> = mode == "own" ? ["limit", "used", "available"] : mode == "credit" ? ["own"] : []
             let preferredFields = Set(a.cardOptions?.fields ?? s.db.preferences?.homeAccountFields ?? HomeAccountField.defaults).subtracting(excludedFields)
@@ -176,8 +177,8 @@ struct FinamiHomeAccountCard: View {
     private func card(_ a: Account, style: HomeAccountStyle, right: HomeAccountRight, fields: Set<String>, activity: AccountActivity, tint: Color, variant: String?) -> some View {
         VStack(alignment: .leading, spacing: dashboardSize == .small ? 6 : dashboardSize == .large ? 15 : style == .compact ? 8 : 12) {
             header(a, fields: fields, tint: tint)
-            if variant == "auroraCard" && dashboardSize != .small {
-                HStack { Image(systemName: "creditcard.fill").font(.title3); Spacer(); Text(isMasked(a) ? "••••" : a.lastFour.map { "•••• " + $0 } ?? a.code).font(.caption.monospacedDigit()) }
+            if variant == "auroraCard" || style == .physical {
+                HStack { Image(systemName: "creditcard.fill").font(.title3); Spacer(); Text(isMasked(a) ? "••••" : a.lastFour.map { "•••• " + $0 } ?? a.code).font(.caption.monospacedDigit()).accessibilityIdentifier("qa.account.physical." + a.id) }
                     .foregroundStyle(tint).padding(10).background(tint.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
                     .accessibilityHidden(isMasked(a))
             }
@@ -329,9 +330,7 @@ struct FinamiHomeAccountCard: View {
 struct FinamiHomeAccountsSettings: View {
     @EnvironmentObject private var s: Store
     private var accounts: [Account] { finamiOrderedAccounts(s.db.accounts) }
-    private func preference<T>(_ key: WritableKeyPath<AppearancePreferences, T?>, fallback: T) -> Binding<T> {
-        Binding(get: { (s.db.preferences ?? .init())[keyPath: key] ?? fallback }, set: { value in s.changeAppearance { p in p[keyPath: key] = value } })
-    }
+    @State private var resetOverrides = false
     private func field(_ field: HomeAccountField) -> Binding<Bool> {
         Binding(get: { (s.db.preferences?.homeAccountFields ?? HomeAccountField.defaults).contains(field.rawValue) }, set: { enabled in
             s.changeAppearance { p in var values = p.homeAccountFields ?? HomeAccountField.defaults; values.removeAll { $0 == field.rawValue }; if enabled { values.append(field.rawValue) }; p.homeAccountFields = values }
@@ -341,19 +340,38 @@ struct FinamiHomeAccountsSettings: View {
         List {
             Section("Загальний стиль") {
                 FinamiComponentStylePicker(component: "accounts", title: "Design 3.0")
-                Picker("Шаблон", selection: Binding(get: { accountStyle(s.db.preferences?.homeAccountLayout).rawValue }, set: { v in s.changeAppearance { p in p.homeAccountLayout = v; p.designLayout = "cards"; p.modernAccountGrid = false; p.setDesignStyle("original", for: "accounts") } })) {
+                Picker("Шаблон", selection: Binding(get: { accountStyle(s.db.preferences?.homeAccountLayout).rawValue }, set: { v in s.changeAppearance { p in p.selectHomeAccountTemplate(v) } })) {
                     ForEach(HomeAccountStyle.allCases) { Text($0.title).tag($0.rawValue) }
-                }
-                Picker("Права частина", selection: preference(\.homeAccountRight, fallback: "")) {
+                }.pickerStyle(.menu).accessibilityIdentifier("qa.home.accounts.template")
+                Picker("Права частина", selection: Binding(get: { s.db.preferences?.homeAccountRight ?? "" }, set: { value in s.changeAppearance { p in p.selectHomeAccountRight(value) } })) {
                     Text("За шаблоном").tag(""); ForEach(HomeAccountRight.allCases) { Text($0.title).tag($0.rawValue) }
-                }
-                Text("Шаблон перемикає рахунки на повні картки; сітку можна повернути у Design Lab. Індивідуальні стилі мають пріоритет. Права частина налаштовується окремо.").font(.caption).foregroundStyle(.secondary)
+                }.pickerStyle(.menu).accessibilityIdentifier("qa.home.accounts.right")
+                Text("Шаблон, Design 3.0 та права частина перемикають рахунки на повні картки. У сітці й списку права частина не відображається. Індивідуальні налаштування мають пріоритет.").font(.caption).foregroundStyle(.secondary)
+                Button("Застосувати загальний вигляд до всіх") { resetOverrides = true }
+            }
+            if let a = accounts.first(where: { $0.hiddenInOverview != true }) {
+                Section("Попередній перегляд") { FinamiHomeAccountCard(accountID: a.id, date: Date(), fallbackTint: .teal).environment(\.finamiMask, true) }
             }
             Section("Показники за замовчуванням") { ForEach(HomeAccountField.allCases) { f in Toggle(f.title, isOn: field(f)) } }
             Section("Закріплені") { accountRows(accounts.filter { $0.cardOptions?.pinned == true }, pinned: true) }
             Section("Інші рахунки") { accountRows(accounts.filter { $0.cardOptions?.pinned != true }, pinned: false) }
             Section { Text("Натисни «Редагувати», щоб змінити порядок у кожній групі. Персональне оформлення має пріоритет над загальними налаштуваннями. Історія й залишки не змінюються.").font(.caption) }
         }.navigationTitle("Мої рахунки").toolbar { EditButton() }
+        .confirmationDialog("Скинути індивідуальні шаблони та праві частини?", isPresented: $resetOverrides, titleVisibility: .visible) {
+            Button("Застосувати до всіх") {
+                s.change { d in
+                    var p = d.preferences ?? .init()
+                    for i in d.accounts.indices {
+                        var options = d.accounts[i].cardOptions ?? .init()
+                        options.style = nil; options.right = nil
+                        d.accounts[i].cardOptions = options
+                        p.setDesignAccountStyle(nil, for: d.accounts[i].id)
+                    }
+                    p.designLayout = "cards"; p.modernAccountGrid = false; d.preferences = p
+                }
+            }
+            Button("Скасувати", role: .cancel) {}
+        } message: { Text("Фото, показники, кольори, порядок і фінансові дані залишаться без змін.") }
     }
     @ViewBuilder private func accountRows(_ rows: [Account], pinned: Bool) -> some View {
         if rows.isEmpty { Text("Немає рахунків").foregroundStyle(.secondary) }
@@ -407,7 +425,9 @@ struct FinamiHomeAccountSettings: View {
                             else { p.setDesignAccountStyle(nil, for: a.id) }
                         }
                     })) { Text("Загальний").tag(""); ForEach(HomeAccountStyle.allCases) { Text($0.title).tag($0.rawValue) } }
-                    Picker("Права частина", selection: selection(\.right)) { Text("Загальна").tag(""); ForEach(HomeAccountRight.allCases) { Text($0.title).tag($0.rawValue) } }
+                    Picker("Права частина", selection: Binding(get: { options.right ?? "" }, set: { value in
+                        update { $0.right = value.isEmpty ? nil : value }; s.changeAppearance { p in p.designLayout = "cards"; p.modernAccountGrid = false }
+                    })) { Text("Загальна").tag(""); ForEach(HomeAccountRight.allCases) { Text($0.title).tag($0.rawValue) } }
                     Picker("Акцент", selection: selection(\.accent)) { Text("Автоматично").tag(""); ForEach(IzanamiTheme.all) { theme in Label(theme.name, systemImage: "circle.fill").foregroundStyle(theme.color).tag(theme.name) } }
                     if !a.isCredit { Text("Кредитні показники відображаються лише для кредитних рахунків.").font(.caption).foregroundStyle(.secondary) }
                 }
@@ -433,7 +453,7 @@ struct FinamiHomeAccountSettings: View {
                     defer { photoLoading = false; photo = nil }
                     guard let data = try? await item.loadTransferable(type: Data.self),
                           let jpeg = await Task.detached(priority:.userInitiated, operation:{finamiThumbnailJPEG(data,maxPixels:640)}).value else { photoError = true; return }
-                    update { $0.photo = jpeg; $0.right = "photo" }
+                    update { $0.photo = jpeg; $0.right = "photo" }; s.changeAppearance { p in p.designLayout = "cards"; p.modernAccountGrid = false }
                 }
             }
             .alert("Не вдалося завантажити фото", isPresented: $photoError) { Button("Гаразд", role: .cancel) {} }

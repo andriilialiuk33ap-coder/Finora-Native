@@ -8,6 +8,8 @@ func finamiDesignAccent(_ key: String?) -> Color? {
     case "rose": return .pink
     case "violet": return .purple
     case "silver": return .gray
+    case "red": return .red
+    case "cyan": return .cyan
     default: return nil
     }
 }
@@ -69,7 +71,10 @@ struct FinamiComponentStylePicker: View {
         }, set: { value in
             s.changeAppearance { prefs in
                 if let id = accountID { prefs.setDesignAccountStyle(value.isEmpty ? nil : value, for: id) }
-                else { prefs.setDesignStyle(value.isEmpty ? nil : value, for: component) }
+                else {
+                    if component == "accounts" { prefs.selectGlobalAccountVariant(value) }
+                    else { prefs.setDesignStyle(value.isEmpty ? nil : value, for: component) }
+                }
             }
         })) {
             if accountID != nil { Text("Загальний стиль").tag("") }
@@ -149,10 +154,7 @@ struct FinamiDesignLab: View {
                     ForEach(FinamiCardTemplate.allCases) { Text($0.rawValue).tag($0.rawValue) }
                 }.accessibilityIdentifier("qa.design.template")
                 Text("Загальний шаблон діє на блоки без персонального оформлення. Aurora Balance — стиль за дизайном для верхньої картки.").font(.caption).foregroundStyle(.secondary)
-                Picker("Акцент",selection:Binding(get:{p.designAccent ?? "preset"},set:{v in s.changeAppearance { $0.designAccent=v == "preset" ? nil : v }})) {
-                    Text("За стилем").tag("preset")
-                    ForEach(FinamiDesignPolicy.accents,id:\.self) { key in Label(key,systemImage:"circle.fill").foregroundStyle(finamiDesignAccent(key) ?? .primary).tag(key) }
-                }
+                FinamiAccentPicker()
                 HStack { Text("Радіус карток");Spacer();Text("\(p.designRadius ?? Int(design.corner)) pt").monospacedDigit() }
                 Slider(value:Binding(get:{Double(FinamiDesignPolicy.radius(p.designRadius ?? Int(design.corner)))},set:{v in s.changeAppearance { $0.designRadius=Int(v) }}),in:0...30,step:2)
                 Button("Радіус за стилем") { s.changeAppearance { $0.designRadius=nil } }
@@ -181,5 +183,32 @@ struct FinamiDesignLab: View {
             Button("Видалити",role:.destructive) { if let name=pendingDelete { s.changeAppearance { $0.designPresets?.removeValue(forKey:name) } };pendingDelete=nil }
             Button("Скасувати",role:.cancel) { pendingDelete=nil }
         }
+    }
+}
+
+// Both appearance screens edit the same setting. Selecting the preset also
+// clears the older theme override; an existing legacy theme remains readable.
+struct FinamiAccentPicker: View {
+    @EnvironmentObject private var s: Store
+    private var selection: Binding<String> {
+        Binding(get: {
+            let p = s.db.preferences ?? .init()
+            return p.designAccent ?? (p.theme == "Preset" ? "preset" : "legacy")
+        }, set: { value in
+            guard value != "legacy" else { return }
+            s.changeAppearance { p in p.selectFinamiAccent(value) }
+        })
+    }
+    var body: some View {
+        Picker("Акцент", selection: selection) {
+            Text("За стилем").tag("preset")
+            if selection.wrappedValue == "legacy" { Text("Попередній акцент").tag("legacy") }
+            ForEach(FinamiDesignPolicy.accents, id: \.self) { key in
+                Label(title(key), systemImage: "circle.fill").foregroundStyle(finamiDesignAccent(key) ?? .primary).tag(key)
+            }
+        }.accessibilityIdentifier("qa.design.accent")
+    }
+    private func title(_ key: String) -> String {
+        ["gold":"Золотий", "blue":"Синій", "emerald":"Смарагдовий", "rose":"Рожевий", "violet":"Фіолетовий", "silver":"Срібний", "red":"Червоний", "cyan":"Бірюзовий"][key] ?? key
     }
 }

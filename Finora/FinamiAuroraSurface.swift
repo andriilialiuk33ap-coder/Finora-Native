@@ -8,6 +8,7 @@ struct FinamiAuroraSurface: ViewModifier {
     let tint: Color
     func body(content: Content) -> some View {
         let p = s.db.preferences ?? .init()
+        let tint = finamiDesignAccent(p.designAccent) ?? self.tint
         let radius = CGFloat(p.designRadius.map { FinamiDesignPolicy.radius($0) } ?? 23)
         let shape = RoundedRectangle(cornerRadius: radius)
         content.background {

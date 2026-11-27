@@ -4,7 +4,7 @@ import Foundation
 enum FinamiDesignPolicy {
     static let layouts = ["grid", "list", "cards"]
     static let dashboards = ["compact", "premium", "analytics"]
-    static let accents = ["gold", "blue", "emerald", "rose", "violet", "silver"]
+    static let accents = ["gold", "blue", "emerald", "rose", "violet", "silver", "red", "cyan"]
     static func radius(_ value: Int) -> Int { min(30, max(0, value)) }
     static func layout(_ value: String?, legacyGrid: Bool?) -> String {
         if let value, layouts.contains(value) { return value }
@@ -238,5 +238,27 @@ extension AppearancePreferences {
     mutating func setDesignReportStyle(_ style: String?, block: String) {
         guard FinamiDesignPolicy.reportBlocks.contains(block) else { return }; if let style, FinamiDesignPolicy.validatedStyle(style, component: "reports") == nil { return }
         var styles = designReportBlockStyles ?? [:]; styles[block] = style; designReportBlockStyles = styles
+    }
+}
+
+extension AppearancePreferences {
+    // Right-side controls need the full layout, rather than silently doing nothing in a grid.
+    mutating func selectHomeAccountRight(_ value: String) {
+        guard value.isEmpty || ["art","photo","expenses","credit","actions","last","count","none"].contains(value) else { return }
+        homeAccountRight = value.isEmpty ? nil : value
+        designLayout = "cards"; modernAccountGrid = false
+    }
+    mutating func selectHomeAccountTemplate(_ value: String) {
+        guard ["premium","detailed","compact","physical"].contains(value) else { return }
+        homeAccountLayout = value; designLayout = "cards"; modernAccountGrid = false
+        setDesignStyle("original", for: "accounts")
+    }
+    mutating func selectGlobalAccountVariant(_ value: String) {
+        guard FinamiDesignPolicy.validatedStyle(value, component: "accounts") != nil else { return }
+        setDesignStyle(value, for: "accounts"); designLayout = "cards"; modernAccountGrid = false
+    }
+    mutating func selectFinamiAccent(_ value: String) {
+        guard value == "preset" || FinamiDesignPolicy.accents.contains(value) else { return }
+        theme = "Preset"; designAccent = value == "preset" ? nil : value
     }
 }

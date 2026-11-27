@@ -63,13 +63,17 @@ struct FinamiSimpleHome: View {
             actions
             let review = s.db.operations.filter { $0.needsCaptureAttention }
             let count = review.count + s.capturePending.count
-            if count > 0 {
+            Group {
                 NavigationLink { FinamiReportReviewList(ids: review.map(\.id), account: nil, maskAmounts: masked, includeInbox: true) } label: {
                     FinamiCollapsedDashboardCard(title: "Необхідна увага", summary: "\(count) · Відкрити операції", icon: "exclamationmark.bubble.fill", tint: .orange, template: nil)
                 }.buttonStyle(.plain)
             }
             Text("Рахунки").font(.headline)
-            FinamiCompactAccountsGrid(accounts:accountList,mode:"all",date:Date(),onAccountsScreen:false,forceList:true).environment(\.finamiMask,masked)
+            if p.finamiLayout == "cards" {
+                ForEach(accountList) { a in FinamiHomeAccountCard(accountID: a.id, date: Date(), fallbackTint: .teal).environment(\.finamiMask, masked) }
+            } else {
+                FinamiCompactAccountsGrid(accounts:accountList,mode:"all",date:Date()).environment(\.finamiMask,masked)
+            }
             if !s.upcomingPayments.isEmpty {
                 NavigationLink { FinamiAllUpcomingPayments(maskAmounts: masked) } label:{ HStack {Text("Найближчі платежі").font(.headline);Spacer();Image(systemName:"chevron.right")} }.buttonStyle(.plain)
                 if p.designStyle(for: "upcoming") != nil || p.componentSizes?["upcoming"] != nil || p.designUpcomingFields != nil {

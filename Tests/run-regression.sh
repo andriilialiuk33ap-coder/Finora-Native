@@ -22,6 +22,7 @@ bash Tests/check-build63-receipts.sh
 bash Tests/check-build63-layout.sh
 bash Tests/check-build64-brand-ocr.sh
 bash Tests/check-build64-ocr-geometry.sh
+bash Tests/check-build67-ocr.sh
 python3 Tests/check-build64-assets.py
 bash Tests/check-load-database.sh
 bash Tests/check-encryption-macos.sh

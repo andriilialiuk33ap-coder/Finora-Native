@@ -11,6 +11,13 @@ struct FinamiGlobalSearch: View {
     private func matches(_ text:String)->Bool { FinamiSearchPolicy.matches(term, text: text) }
     var body: some View {
         List {
+            Section {
+                HStack {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField("Рахунок, продавець, функція", text: $query).accessibilityIdentifier("qa.search.field")
+                    if !query.isEmpty { Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.borderless).accessibilityLabel("Очистити пошук") }
+                }.frame(minHeight: 44)
+            }
             Section("Функції та налаштування") {
                 if matches("категорії категорія витрати доходи іконки categories category") { NavigationLink("Категорії витрат та доходів"){Categories()}.accessibilityIdentifier("qa.search.categories") }
                 if matches("звірка звірити баланс залишок кредит використано reconcile balance") { NavigationLink("Звірити баланс рахунку"){FinamiBalanceView(initialMode:"anchor")}.accessibilityIdentifier("qa.search.reconcile") }
@@ -51,7 +58,7 @@ struct FinamiGlobalSearch: View {
                     }
                 }
             } else { Text("Шукай назви рахунків, продавців, платежів та функцій. Суми можна шукати, якщо вони не приховані.").font(.caption).foregroundStyle(.secondary) }
-        }.navigationTitle("Пошук Finami").searchable(text:$query,placement:.navigationBarDrawer(displayMode:.always),prompt:"Рахунок, продавець, функція")
+        }.navigationTitle("Пошук Finami")
          .task(id: term) {
              let value = term
              if value.isEmpty { settledQuery = ""; return }
