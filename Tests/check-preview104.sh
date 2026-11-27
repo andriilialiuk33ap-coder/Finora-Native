@@ -10,7 +10,7 @@ typealias F = FinamiAccountReportField
 let old = Data(#"{"theme":"Crimson","mode":"system","font":"default","largeIcons":true,"glow":true}"#.utf8)
 var p = try JSONDecoder().decode(AppearancePreferences.self, from: old)
 check(p.reportsAccountFields == nil && F.selected(account: "pumb", preferences: p.reportsAccountFields) == F.allCases, "legacy preferences preserve detailed reports")
-check(F.allCases.count == 12 && Set(F.allCases.map(\.rawValue)).count == 12, "12 unique independent report fields")
+check(F.allCases.count == 13 && Set(F.allCases.map(\.rawValue)).count == 13, "13 unique independent report fields")
 p.reportsAccountFields = F.updating(p.reportsAccountFields, account: "pumb", fields: F.compact)
 check(F.selected(account: "pumb", preferences: p.reportsAccountFields) == [.expense, .income], "compact preset shows only expense and income")
 check(F.selected(account: "otp", preferences: p.reportsAccountFields) == F.allCases, "other account retains detailed settings")

@@ -200,10 +200,16 @@ final class FinamiUITests: XCTestCase {
         visible(app.buttons["Показати власний баланс"]); visible(app.buttons["Приховати кредитний баланс"])
     }
     func testRealVisionOCRPopulatesInstallmentFields() {
+        assertInstallmentImage(fixtureID: "qa.scan.fixture.installment", screenshot: "ocr-populated")
+    }
+    func testRealVisionOCRPopulatesTwoColumnInstallmentFields() {
+        assertInstallmentImage(fixtureID: "qa.scan.fixture.installment.columns", screenshot: "ocr-columns-populated")
+    }
+    private func assertInstallmentImage(fixtureID: String, screenshot: String) {
         let scan = app.buttons["qa.home.scan"]
         visible(scan); XCTAssertTrue(scan.isHittable, "Home scan button must not be covered by navigation")
         scan.tap(); visible(app.navigationBars["Finami Scan"])
-        let fixture = app.buttons["qa.scan.fixture.installment"]
+        let fixture = app.buttons[fixtureID]
         for _ in 0..<8 { if fixture.exists && fixture.isHittable { break }; app.swipeUp() }
         visible(fixture); XCTAssertTrue(fixture.isHittable); fixture.tap()
         let review = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", "qa.scan.review.")).firstMatch
@@ -215,7 +221,7 @@ final class FinamiUITests: XCTestCase {
             for _ in 0..<15 { if field.exists && field.isHittable { break }; app.swipeUp() }
             visible(field); XCTAssertEqual(field.value as? String, expected)
         }
-        capture("ocr-populated")
+        capture(screenshot)
     }
     func testAllUpcomingPaymentsAndArchive() {
         let all = app.descendants(matching: .any).matching(identifier: "qa.upcoming.all.all").firstMatch

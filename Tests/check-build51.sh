@@ -10,7 +10,7 @@ let outgoing = FinamiOperationChoice.options(bankIncoming:false,current:.expense
 let incoming = FinamiOperationChoice.options(bankIncoming:true,current:.reviewCredit)
 let manual = FinamiOperationChoice.options(bankIncoming:nil,current:.expense)
 check(outgoing == [.expense,.transfer,.withdrawal,.repayment,.reviewDebit],"simplified outgoing choices")
-check(incoming == [.income,.transfer,.refund,.reviewCredit],"one income choice; review stays distinct")
+check(incoming == [.income,.receipt,.transfer,.refund,.reviewCredit],"one income choice; review stays distinct")
 check(manual.filter{$0 == .transfer}.count == 1 && !manual.contains(.legacy),"one transfer; no new credit draw/top-up")
 check(FinamiOperationChoice.options(bankIncoming:true,current:.legacy).contains(.legacy),"legacy credit type remains editable without coercion")
 check(FinamiOperationChoice.legacy.ledgerKind(bankIncoming:true,existing:.creditDraw) == .creditDraw && FinamiOperationChoice.legacy.ledgerKind(bankIncoming:true,existing:.creditRepaymentIncoming) == .creditRepaymentIncoming,"existing credit classifications preserved")
