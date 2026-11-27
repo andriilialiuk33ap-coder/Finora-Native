@@ -65,12 +65,12 @@ func finamiMonthInsights(_ operations:[Operation], ending:Date, months:Int=12, c
     for o in operations where o.date<=ending {
         guard let start=calendar.dateInterval(of:.month,for:o.date)?.start,var row=result[start] else{continue}
         row.count += 1
-        if o.kind == .income {row.income += o.amount}
+        row.income += o.incomeValue
         row.expense += o.expenseValue
         if o.kind == .refund {row.refunds += o.amount}
-        if o.kind == .unclassifiedCredit {row.unclassifiedIn += o.amount}
+        if o.kind == .unclassifiedCredit || (o.kind == .receipt && o.requiresReview && !o.countsAsIncome) {row.unclassifiedIn += o.amount}
         if o.kind == .unclassifiedDebit {row.unclassifiedOut += o.amount}
-        if o.kind.needsReview {row.review += 1}
+        if o.requiresReview {row.review += 1}
         if o.kind == .expense && ["Без категорії","Інше"].contains(o.category) {row.uncategorized += 1}
         result[start]=row
     }

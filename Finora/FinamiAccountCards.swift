@@ -152,7 +152,7 @@ struct FinamiHomeAccountCard: View {
     }
     private func header(_ a: Account, fields: Set<String>, tint: Color) -> some View {
         HStack(spacing: 8) {
-            FinamiIconTile(icon: accountArtIcon(a), tint: tint, side: 38)
+            FinamiBrandTile(name: a.bankName ?? a.name, icon: accountArtIcon(a), tint: tint, side: 38, banksOnly: true)
             Button { route = .history } label: {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(a.name).font(.headline).foregroundStyle(.primary).fixedSize(horizontal: false, vertical: true)
@@ -497,7 +497,7 @@ struct FinamiCompactAccountsGrid: View {
         return (label,isHidden(a,field:key) ? "••••" : s.visibleMoney(amount,a.code))
     }
     private func icon(_ a:Account) -> some View {
-        FinamiIconTile(icon:accountArtIcon(a),tint:accountTint(a,fallback:.teal),side:32)
+        FinamiBrandTile(name:a.bankName ?? a.name,icon:accountArtIcon(a),tint:accountTint(a,fallback:.teal),side:32,banksOnly:true)
     }
     private func markers(_ a:Account) -> some View {
         HStack(spacing:4) {

@@ -59,6 +59,7 @@ struct AppearancePreferences: Codable {
     var designRadius: Int? = nil
     var designLowEffects: Bool? = nil
     var designPresets: [String: [String: String]]? = nil
+    var dashboardLayoutPresets: [String: Data]? = nil
     var collapsedDashboard: [String]? = nil
     var hideEmptyDashboard: Bool? = nil
     var collapsedMenu: [String]? = nil
@@ -220,6 +221,7 @@ enum OperationSort: String, CaseIterable {
 }
 func ruleKey(_ note: String, kind: Kind) -> String { kind.rawValue + ":" + note.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
 func suggestedCategory(_ note: String, kind: Kind, database: Database) -> String {
+    if kind == .receipt { return finamiIntelligentCategory(note, kind: kind, allowed: database.availableReceiptCategories, learned: database.merchantRules ?? [:]) }
     let hidden = kind == .income ? database.hiddenIncomeCategories ?? [] : database.hiddenExpenseCategories ?? []
     let allowed = (kind == .income ? database.incomeCategories : database.expenseCategories).filter { !hidden.contains($0) }
     return finamiIntelligentCategory(note, kind: kind, allowed: allowed, learned: database.merchantRules ?? [:])
@@ -329,6 +331,7 @@ struct DashboardSettings: View {
     func modify(_ id: String, _ action: (inout DashboardItem)->Void) { s.change { d in var all = DashboardItem.merged(d.dashboard); if let i = all.firstIndex(where: { $0.id == id }) { action(&all[i]) }; d.dashboard = all } }
     var body: some View {
         List {
+            NavigationLink("Мої конфігурації головної") { FinamiDashboardPresetsView() }
             NavigationLink("Змінити порядок видимих блоків") { FinamiOrderEditor(target: .dashboard, closeButton: false) }
             Toggle("Швидкі дії на головній", isOn: Binding(get: { s.db.preferences?.qualityQuickActions != false }, set: { value in s.changeAppearance { $0.qualityQuickActions = value } }))
             Section("Увімкни потрібні блоки. Через «Редагувати» перетягни їх у новий порядок. Компактні блоки займають менше місця; рахунки, баланси та платежі залишаються на всю ширину для читабельності.") {
@@ -909,7 +912,7 @@ struct CurrencySettings: View {
             Section("Поточний курс") { FinamiField("UAH за 1 USD", text: $rate, keyboard: .decimalPad);Text("Використовується для оцінки залишків і довідкового відображення. Старі операції зберігають власний курс.").font(.caption) }
             Picker("Відображення огляду",selection:$display){Text("Гривня").tag("UAH");Text("Долар (еквівалент)").tag("USD");Text("Обидві").tag("dual")}
             Button("Зберегти"){s.change{$0.currencyPreferences=CurrencyPreferences(usdRate:rate,display:display)}}.disabled(fxRate(rate)==nil)
-            Section("Операції цього місяця за оригінальною валютою") {ForEach(["UAH","USD"],id:\.self){code in let ops=s.month(Date()).filter{($0.originalCurrency ?? "UAH")==code}; LabeledContent("Дохід \(code)",value:s.visibleMoney(ops.filter{$0.kind == .income}.reduce(0){$0+($1.originalAmount ?? $1.amount)},code)); LabeledContent("Витрати \(code)",value:s.visibleMoney(ops.filter{$0.kind == .expense}.reduce(0){$0+($1.originalAmount ?? $1.amount)},code))}}
+            Section("Операції цього місяця за оригінальною валютою") {ForEach(["UAH","USD"],id:\.self){code in let ops=s.month(Date()).filter{($0.originalCurrency ?? "UAH")==code}; LabeledContent("Дохід \(code)",value:s.visibleMoney(ops.filter{$0.countsAsIncome}.reduce(0){$0+($1.originalAmount ?? $1.amount)},code)); LabeledContent("Витрати \(code)",value:s.visibleMoney(ops.filter{$0.kind == .expense}.reduce(0){$0+($1.originalAmount ?? $1.amount)},code))}}
             Section("Окремі залишки") {ForEach(["UAH","USD"],id:\.self){code in LabeledContent(code,value:s.visibleMoney(s.db.accounts.filter{$0.code==code}.reduce(0){$0+s.nativeBalance($1)},code))}}
             Text("Щоб записати доларовий дохід, створи рахунок USD або вибери USD при введенні операції на рахунку UAH. Для обміну обери переказ між рахунками різних валют і фактичний курс.").font(.caption)
         }.navigationTitle("Валюти та курси").onAppear {rate=s.db.currencyPreferences?.usdRate ?? "";display=s.db.currencyPreferences?.display ?? "dual"}

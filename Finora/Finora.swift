@@ -38,15 +38,16 @@ func monthName(_ d: Date) -> String {
   d.formatted(.dateTime.month(.wide).year().locale(Locale(identifier: "uk_UA")))
 }
 enum Kind: String, Codable, CaseIterable, Identifiable {
-  case expense, income, transfer, creditDraw, creditRepayment, creditRepaymentIncoming, movementIn, movementOut, refund, unclassifiedCredit, unclassifiedDebit
+  case expense, income, transfer, creditDraw, creditRepayment, creditRepaymentIncoming, movementIn, movementOut, refund, unclassifiedCredit, unclassifiedDebit, receipt
   var id: String { rawValue }
-  var incoming: Bool { [.income,.creditDraw,.creditRepaymentIncoming,.movementIn,.refund,.unclassifiedCredit].contains(self) }
+  var incoming: Bool { [.income,.creditDraw,.creditRepaymentIncoming,.movementIn,.refund,.unclassifiedCredit,.receipt].contains(self) }
   var needsReview: Bool { self == .unclassifiedCredit || self == .unclassifiedDebit }
-  var isReportCategory: Bool { self == .income || self == .expense || self == .refund }
+  var isReportCategory: Bool { self == .income || self == .expense || self == .refund || self == .receipt }
   var title: String {
     switch self {
     case .expense: return "Витрата"
     case .income: return "Дохід"
+    case .receipt: return "Зарахування коштів"
     case .transfer: return "Переказ коштів"
     case .creditDraw: return "Отримання кредиту"
     case .creditRepayment: return "Погашення кредиту"
@@ -61,12 +62,13 @@ enum Kind: String, Codable, CaseIterable, Identifiable {
 }
 // Editor choices are deliberately separate from persisted ledger classifications.
 enum FinamiOperationChoice: String, CaseIterable, Identifiable {
-  case expense, income, transfer, withdrawal, repayment, refund, reviewCredit, reviewDebit, legacy
+  case expense, income, transfer, withdrawal, repayment, refund, reviewCredit, reviewDebit, legacy, receipt
   var id: String { rawValue }
   var title: String {
     switch self {
     case .expense: return "Витрата"
     case .income: return "Дохід"
+    case .receipt: return "Зарахування коштів"
     case .transfer: return "Переказ коштів"
     case .withdrawal: return "Зняття готівки"
     case .repayment: return "Погашення кредиту"
@@ -80,6 +82,7 @@ enum FinamiOperationChoice: String, CaseIterable, Identifiable {
     switch kind {
     case .expense: return .expense
     case .income: return .income
+    case .receipt: return .receipt
     case .transfer, .movementOut: return withdrawal ? .withdrawal : .transfer
     case .movementIn: return .transfer
     case .creditRepayment: return .repayment
@@ -92,9 +95,9 @@ enum FinamiOperationChoice: String, CaseIterable, Identifiable {
   static func options(bankIncoming: Bool?, current: Self) -> [Self] {
     var values: [Self]
     switch bankIncoming {
-    case true?: values = [.income, .transfer, .refund, .reviewCredit]
+    case true?: values = [.income, .receipt, .transfer, .refund, .reviewCredit]
     case false?: values = [.expense, .transfer, .withdrawal, .repayment, .reviewDebit]
-    case nil: values = [.expense, .income, .transfer, .withdrawal, .repayment, .refund, .reviewCredit, .reviewDebit]
+    case nil: values = [.expense, .income, .receipt, .transfer, .withdrawal, .repayment, .refund, .reviewCredit, .reviewDebit]
     }
     if !values.contains(current) { values.append(current) }
     return values
@@ -103,6 +106,7 @@ enum FinamiOperationChoice: String, CaseIterable, Identifiable {
     switch self {
     case .expense: return .expense
     case .income: return .income
+    case .receipt: return .receipt
     case .transfer:
       if [.transfer, .movementIn, .movementOut].contains(existing) { return existing }
       return bankIncoming.map { $0 ? .movementIn : .movementOut } ?? .transfer
@@ -112,6 +116,29 @@ enum FinamiOperationChoice: String, CaseIterable, Identifiable {
     case .reviewCredit: return .unclassifiedCredit
     case .reviewDebit: return .unclassifiedDebit
     case .legacy: return existing
+    }
+  }
+}
+// A receipt is a confirmed external inflow, not an own-account transfer.
+// Missing treatment is intentionally undecided and never counted as income.
+enum FinamiReceiptTreatment: String, Codable, CaseIterable, Identifiable {
+  case pending, income, neutral, reimbursement
+  var id: String { rawValue }
+  var title: String {
+    switch self {
+    case .pending: return "Визначити пізніше"
+    case .income: return "Врахувати в доходах"
+    case .neutral: return "Не враховувати в доходах"
+    case .reimbursement: return "Компенсувати попередню витрату"
+    }
+  }
+  static let unlinkedChoices: [Self] = [.pending, .income, .neutral]
+  static let categories = ["👤 Переказ від іншої людини", "🎁 Подарунок", "👪 Допомога", "🤝 Повернення боргу", "🍽️ Компенсація витрат", "💵 Отримані позикові кошти", "Інші зарахування", "Без категорії"]
+  static func suggestion(_ category: String) -> Self {
+    switch category {
+    case "🎁 Подарунок", "👪 Допомога": return .income
+    case "🤝 Повернення боргу": return .neutral
+    default: return .pending
     }
   }
 }
@@ -198,7 +225,13 @@ struct Operation: Codable, Identifiable, Equatable {
   var tags: [String]? = nil
   // Optional for backward-compatible decoding; the underlying transfer accounting stays unchanged.
   var cashWithdrawal: Bool? = nil
-  var needsCaptureAttention: Bool { kind.needsReview || (captureSource != nil && (kind == .expense || kind == .income) && category == "Без категорії") }
+  var receiptTreatment: FinamiReceiptTreatment? = nil
+  var receiptExpenseCategory: String? = nil
+  var isReimbursement: Bool { kind == .receipt && receiptTreatment == .reimbursement && refundOriginalID != nil && receiptExpenseCategory != nil }
+  var countsAsIncome: Bool { kind == .income || (kind == .receipt && receiptTreatment == .income) }
+  var incomeValue: Int64 { countsAsIncome ? amount : 0 }
+  var requiresReview: Bool { kind.needsReview || (kind == .receipt && (receiptTreatment == nil || receiptTreatment == .pending || (receiptTreatment == .reimbursement && !isReimbursement) || category == "Без категорії")) }
+  var needsCaptureAttention: Bool { requiresReview || (captureSource != nil && (kind == .expense || kind == .income) && category == "Без категорії") }
   var displayKindTitle: String { cashWithdrawal == true && (kind == .transfer || kind == .movementOut) ? "Зняття готівки" : kind.title }
   var signedNative: Int64 { kind.incoming ? (sourceMinor ?? amount) : -(sourceMinor ?? amount) }
   // Only count an embedded fee separately when it is demonstrably part of a non-expense debit.
@@ -213,8 +246,8 @@ struct Operation: Codable, Identifiable, Equatable {
     if importBatch != nil { return "Імпорт" }
     return "Ручний / невідоме джерело"
   }
-  var expenseValue: Int64 { kind == .expense ? amount : kind == .refund ? -amount : neutralFee }
-  var expenseGroup: String { kind == .expense || kind == .refund ? category : "🏦 Комісії" }
+  var expenseValue: Int64 { kind == .expense ? amount : kind == .refund || isReimbursement ? -amount : neutralFee }
+  var expenseGroup: String { if isReimbursement { return receiptExpenseCategory ?? "Без категорії" }; return kind == .expense || kind == .refund ? category : "🏦 Комісії" }
 }
 // Derived, in-memory ledger index. Never persisted or used as a source of truth.
 struct FinamiLedgerIndex {
@@ -276,10 +309,10 @@ struct AccountActivity {
     history = operations.filter { $0.account == account.id || ($0.kind == .transfer && $0.destination == account.id) }.sorted { $0.date == $1.date ? $0.id < $1.id : $0.date > $1.date }
     let period = history.filter { calendar.isDate($0.date, equalTo: month, toGranularity: .month) }
     count = period.count
-    income = period.filter { $0.account == account.id && $0.kind == .income }.reduce(0) { $0 + ($1.sourceMinor ?? $1.amount) }
+    income = period.filter { $0.account == account.id && $0.countsAsIncome }.reduce(0) { $0 + ($1.sourceMinor ?? $1.amount) }
     spending = period.filter { $0.account == account.id }.reduce(0) { total, o in
       if o.kind == .expense { return total + (o.sourceMinor ?? o.amount) }
-      if o.kind == .refund { return total - (o.sourceMinor ?? o.amount) }
+      if o.kind == .refund || o.isReimbursement { return total - (o.sourceMinor ?? o.amount) }
       return total + (account.code == "UAH" ? o.neutralFee : 0)
     }
   }
@@ -374,6 +407,8 @@ struct Database: Codable {
   var obligations: [Obligation] = []
   var expenseCategories = expenseDefaults
   var incomeCategories = incomeDefaults
+  var receiptCategories: [String]? = nil
+  var availableReceiptCategories: [String] { receiptCategories ?? FinamiReceiptTreatment.categories }
   var budget: Int64 = 0
   var limits: [String: Int64] = [:]
   var dashboard: [DashboardItem]? = nil
@@ -575,19 +610,40 @@ struct DataFile: FileDocument {
     loading = false
   }
   @discardableResult func change(_ update: (inout Database) -> Void) -> Bool {
+    guard let (copy, newlyCaptured) = prepareChange(update) else { return false }
+    let saved = write(copy)
+    if saved && newlyCaptured > 0 { FinamiSavedNotification.post(count: newlyCaptured) }
+    return saved
+  }
+  // Batch actions may encode an immutable candidate away from the main actor.
+  // Commit is still serialized on the Store, with a revision check after suspension.
+  @discardableResult func changeInBackground(_ update: (inout Database) -> Void) async -> Bool {
+    let version = mutationVersion
+    guard let (copy, newlyCaptured) = prepareChange(update) else { return false }
+    var revised = copy; revised.appearanceRevision = UUID().uuidString
+    let candidate = revised
+    do {
+      let data = try await Task.detached(priority: .userInitiated) { try JSONEncoder().encode(candidate) }.value
+      guard ready, !Task.isCancelled, version == mutationVersion else { error = "Дані змінилися під час підготовки. Повтори дію."; return false }
+      let saved = commit(candidate, data: data)
+      if saved && newlyCaptured > 0 { FinamiSavedNotification.post(count: newlyCaptured) }
+      return saved
+    } catch { self.error = "Не вдалося підготувати запис: " + error.localizedDescription; return false }
+  }
+  private func prepareChange(_ update: (inout Database) -> Void) -> (Database, Int)? {
     guard ready else {
       error = "Запис заблоковано. Віднови базу з копії."
-      return false
+      return nil
     }
     var copy = db
     update(&copy)
     guard finamiLinkedOperationsPreserved(before: db, after: copy) else {
       error = "Операція пов’язана з оплаченим платежем. Зміна суми, рахунку, дати, типу або видалення заблоковані, щоб не порушити графік."
-      return false
+      return nil
     }
-    guard finamiSynchronizeRefundLinks(&copy.operations) else {error="Повернення пов’язано з покупкою. Спочатку перевір або відв’яжи повернення.";return false}
+    guard finamiSynchronizeRefundLinks(&copy.operations) else {error="Повернення пов’язано з покупкою. Спочатку перевір або відв’яжи повернення.";return nil}
     if !finamiGroupedTransfersPreserved(before:db.operations,after:copy.operations) {
-      guard copy.reconciliationUndo == nil,let data=db.reconciliationUndo,let undo=try? JSONDecoder().decode(FinamiBalanceUndo.self,from:data),undo.restore(current:db.operations)==copy.operations else {error="Груповий переказ захищено. Спочатку скасуй звірку.";return false}
+      guard copy.reconciliationUndo == nil,let data=db.reconciliationUndo,let undo=try? JSONDecoder().decode(FinamiBalanceUndo.self,from:data),undo.restore(current:db.operations)==copy.operations else {error="Груповий переказ захищено. Спочатку скасуй звірку.";return nil}
     }
     if db.operations != copy.operations, db.reconciliationUndo == copy.reconciliationUndo {copy.reconciliationUndo=nil}
     if let images = copy.scanImages {
@@ -599,11 +655,7 @@ struct DataFile: FileDocument {
       let oldIDs = Set(db.operations.map(\.id))
       newlyCaptured = copy.operations.filter { $0.captureSource != nil && !oldIDs.contains($0.id) }.count
     }
-    let saved = write(copy)
-    if saved && newlyCaptured > 0 && copy.capturePreferences?.notifySaved == true {
-      FinamiSavedNotification.post(count: newlyCaptured)
-    }
-    return saved
+    return (copy, newlyCaptured)
   }
   @discardableResult func changeAppearance(_ update: (inout AppearancePreferences) -> Void) -> Bool {
     guard ready else { error = "Запис заблоковано. Віднови базу з копії."; return false }
@@ -670,6 +722,7 @@ struct DataFile: FileDocument {
   }
   func totals(_ operations: [Operation], _ kind: Kind) -> Int64 {
     if kind == .expense {return operations.reduce(0) { $0 + $1.expenseValue }}
+    if kind == .income {return operations.reduce(0) { $0 + $1.incomeValue }}
     return operations.reduce(0) { $0 + ($1.kind == kind ? $1.amount : 0) }
   }
   func month(_ date: Date) -> [Operation] {
@@ -1307,6 +1360,7 @@ struct More: View {
         NavigationLink { FinamiExchangeDiaryView() } label: { FinamiMenuLabel(title:"Журнал USDT",icon:"arrow.left.arrow.right",color:.green) }.accessibilityIdentifier("qa.next.usdt")
         }
       FinamiMenuGroup("Планування") {
+        NavigationLink { FinamiBrandSettings() } label: { FinamiMenuLabel(title: "Brand Icons", icon: "photo.on.rectangle", color: .purple) }
         NavigationLink { FinamiPlanningView() } label: { FinamiMenuLabel(title: "Розумне планування", icon: "chart.line.uptrend.xyaxis", color: .teal) }.accessibilityIdentifier("qa.planning.open")
         NavigationLink { FinamiCreditCenter() } label: { FinamiMenuLabel(title: "Кредитний центр", icon: "creditcard.fill", color: .orange) }
         NavigationLink { FinamiEnvelopesView() } label: { FinamiMenuLabel(title: "Віртуальні конверти", icon: "envelope.fill", color: .green) }
@@ -1460,6 +1514,7 @@ struct Obligations: View {
         } label: {
           VStack(alignment: .leading, spacing: 8) {
             HStack {
+              if kind == .installment { FinamiBrandTile(name: o.name, icon: "creditcard.fill", tint: .indigo, side: 30, paymentStyle: true) }
               Text(o.name).bold()
               Spacer()
               Text(visibleMoney(o.remaining))
@@ -1658,6 +1713,7 @@ struct Categories: View {
   var body: some View {
     List {
       Picker("Тип", selection: $income) { Text("Витрати").tag(false); Text("Доходи").tag(true) }.pickerStyle(.segmented)
+      NavigationLink("Категорії зарахувань") { FinamiReceiptCategoriesView() }
       if !income { Button("Додати стандартні категорії") { s.change { d in for c in expenseDefaults where !d.expenseCategories.contains(c) { d.expenseCategories.append(c) } } } }
       ForEach(cats, id: \.self) { c in
         HStack {
@@ -1751,7 +1807,7 @@ struct Insights: View {
             HStack { Text(candidate.merchant).lineLimit(2); Spacer(); Text(s.db.accounts.first(where:{$0.id == candidate.account})?.hideAmounts == true ? "••••" : s.visibleMoney(candidate.amount,candidate.currency)).font(.subheadline.bold()) }
           }
           if !increases.isEmpty { NavigationLink("Перевірити тарифи підписок") { SubscriptionsView() } }
-          let review = s.db.operations.filter { $0.kind.needsReview }.count + s.capturePending.count
+          let review = s.db.operations.filter { $0.requiresReview }.count + s.capturePending.count
           Text("Потребують уточнення: \(review)").font(.subheadline)
           NavigationLink("Виявлення підписок") { FinamiRecurringSuggestionsView() }
           NavigationLink("Звірити залишки") { FinamiReconciliation() }

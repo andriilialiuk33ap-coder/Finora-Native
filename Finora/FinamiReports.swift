@@ -167,6 +167,7 @@ struct Reports: View {
         if t.creditDraw != 0 { movementLine("Отримано кредиту", t.creditDraw, masked: masked) }
         if t.creditTopUp != 0 { movementLine("Поповнення кредитки", t.creditTopUp, masked: masked) }
         if t.creditRepayment != 0 { movementLine("Погашення кредиту", t.creditRepayment, masked: masked) }
+        if t.neutralReceipts != 0 { movementLine("Зарахування поза доходами", t.neutralReceipts, tint: .blue, masked: masked) }
         if t.unclassifiedIn != 0 { movementLine("Неуточнені надходження", t.unclassifiedIn, tint: .orange, masked: masked) }
         if t.unclassifiedOut != 0 { movementLine("Неуточнені списання", t.unclassifiedOut, tint: .orange, masked: masked) }
     }
@@ -368,7 +369,7 @@ struct FinamiReportReviewList: View {
     @State private var capture: CapturedPayment?
     private var entries: [Operation] {
         let selected = Set(ids)
-        return s.db.operations.filter { selected.contains($0.id) && (includeInbox ? $0.needsCaptureAttention : $0.kind.needsReview) && (account == nil || $0.account == account) }.sorted { $0.date > $1.date }
+        return s.db.operations.filter { selected.contains($0.id) && (includeInbox ? $0.needsCaptureAttention : $0.requiresReview) && (account == nil || $0.account == account) }.sorted { $0.date > $1.date }
     }
     var body: some View {
         List {

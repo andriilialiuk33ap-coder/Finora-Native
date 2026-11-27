@@ -15,7 +15,7 @@ func finamiAuditIssues(operations: [Operation], accounts: [Account], records: [F
     }
     let keys = operations.flatMap { o in ([o.bankKey,o.destinationBankKey].compactMap{$0} + (o.groupedBankParts ?? []).map(\.key)).filter{!$0.isEmpty}.map{($0,o.id)} }
     for (key,rows) in Dictionary(grouping:keys,by:{$0.0}) where rows.count > 1 { result.append(.init(id:"key-"+key,title:"Повтор банківського ключа",detail:"Перевір виписку; нічого не видалено.",operationIDs:rows.map{$0.1})) }
-    let candidates = operations.filter{$0.kind.needsReview && $0.amount > 0}
+    let candidates = operations.filter{$0.requiresReview && $0.amount > 0}
     let groups = Dictionary(grouping:candidates) { o in "\(o.amount)|\(o.date.timeIntervalSince1970)|\(finamiMerchantKey(o.note))" }
     for (key,rows) in groups where rows.contains(where:{$0.kind == .unclassifiedCredit}) && rows.contains(where:{$0.kind == .unclassifiedDebit}) {
         let same = Set(rows.map(\.account)).count == 1

@@ -3,6 +3,7 @@ import PhotosUI
 import Vision
 import CryptoKit
 import ImageIO
+import CoreImage
 import UIKit
 
 enum FinamiScanMode: String, CaseIterable, Identifiable {
@@ -16,19 +17,25 @@ private struct ScanPhoto: Identifiable {
     var warning: String? = nil
     var mergedDraft: ScanInstallmentDraft? = nil
     var sourceIDs: [String]? = nil
-    var bank: String? { FinamiScanParser.bank(lines.joined(separator: "\n")) }
+    var bankHint: String? = nil
+    var ocrRegions: [ScanTextRegion] = []
+    var bank: String? { FinamiScanParser.bank(lines.joined(separator: "\n")) ?? bankHint }
 }
 private enum ScanFailure: LocalizedError {
     case image, empty
     var errorDescription: String? { self == .image ? "Не вдалося відкрити фото або воно перевищує 25 МБ." : "Текст не знайдено. Спробуй чіткіший скриншот." }
 }
-private func recognizeScan(_ data: Data, knownDigest: String? = nil, installment: Bool = false) throws -> ScanPhoto {
+private func recognizeScan(_ data: Data, knownDigest: String? = nil, installment: Bool = false, bankHint: String? = nil) throws -> ScanPhoto {
     guard data.count <= 25_000_000, let source = CGImageSourceCreateWithData(data as CFData, nil) else { throw ScanFailure.image }
     let options: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceThumbnailMaxPixelSize: 3000]
     guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { throw ScanFailure.image }
     let request = VNRecognizeTextRequest()
     request.recognitionLevel = .accurate
     request.usesLanguageCorrection = true
+    if installment {
+        request.minimumTextHeight = 0.006
+        request.customWords = ["розстрочка", "залишилось", "залишок", "щомісячний", "платіж", "погашення", "грн", "ПУМБ"]
+    }
     let available = (try? request.supportedRecognitionLanguages()) ?? []
     let preferred = ["uk-UA", "en-US", "ru-RU"].filter { available.contains($0) }
     if !preferred.isEmpty { request.recognitionLanguages = preferred }
@@ -59,32 +66,65 @@ private func recognizeScan(_ data: Data, knownDigest: String? = nil, installment
         }
         return groups.map { $0.sorted { $0.0.minX < $1.0.minX }.map { $0.1 }.joined(separator: " ") }
     }
+    func regionsFor(_ request: VNRecognizeTextRequest) -> [ScanTextRegion] {
+        (request.results ?? []).flatMap { observation -> [ScanTextRegion] in
+            guard let candidate = observation.topCandidates(1).first else { return [] }
+            let ranges = FinamiScanParser.installmentSubregionRanges(candidate.string)
+            let parts = ranges.compactMap { range -> ScanTextRegion? in
+                guard let box = try? candidate.boundingBox(for: range) else { return nil }
+                return ScanTextRegion(text: String(candidate.string[range]), bounds: box.boundingBox)
+            }
+            if !ranges.isEmpty && parts.count == ranges.count { return parts }
+            return [ScanTextRegion(text: candidate.string, bounds: observation.boundingBox)]
+        }
+    }
+    func installmentDraft(_ request: VNRecognizeTextRequest, lines: [String]) -> ScanInstallmentDraft {
+        let regions = regionsFor(request)
+        let bank = FinamiScanParser.bank(lines.joined(separator: "\n")) ?? bankHint
+        let rules = FinamiOCRProfiles.rules(bank)
+        let normalized = lines.map { FinamiOCRProfiles.rewrite($0, rules: rules) }
+        let normalizedRegions = regions.map { ScanTextRegion(text: FinamiOCRProfiles.rewrite($0.text, rules: rules), bounds: $0.bounds) }
+        return FinamiScanParser.installment(normalized, regions: normalizedRegions)
+    }
     var lines = rows(recognized)
     var mergedDraft: ScanInstallmentDraft?
     if installment {
-        let first = FinamiScanParser.installment(lines)
-        if first.total == nil || first.remaining == nil || first.monthly == nil || first.name.isEmpty || first.due == nil {
+        var drafts = [installmentDraft(recognized, lines: lines)]
+        func incomplete(_ d: ScanInstallmentDraft) -> Bool { d.total == nil || d.remaining == nil || d.monthly == nil || d.due == nil }
+        func appendPass(_ cg: CGImage, correction: Bool) {
             let alternate = VNRecognizeTextRequest()
             alternate.recognitionLevel = .accurate
-            alternate.usesLanguageCorrection = false
+            alternate.usesLanguageCorrection = correction
+            alternate.minimumTextHeight = 0.004
             if !preferred.isEmpty { alternate.recognitionLanguages = preferred }
-            if (try? VNImageRequestHandler(cgImage: image, options: [:]).perform([alternate])) != nil {
+            if (try? VNImageRequestHandler(cgImage: cg, options: [:]).perform([alternate])) != nil {
                 let extra = rows(alternate)
-                if !extra.isEmpty && extra != lines {
-                    let merged = finamiMergeInstallments([first, FinamiScanParser.installment(extra)])
-                    mergedDraft = merged.draft
+                if !extra.isEmpty {
+                    drafts.append(installmentDraft(alternate, lines: extra))
                     var seen = Set(lines)
                     lines += extra.filter { seen.insert($0).inserted }
-                    if !merged.conflicts.isEmpty { warning = "OCR: суперечливі поля залишено для перевірки: " + merged.conflicts.joined(separator: ", ") }
                 }
             }
+        }
+        if incomplete(drafts[0]) { appendPass(image, correction: false) }
+        if incomplete(finamiMergeInstallments(drafts).draft) {
+            // Bounded grayscale contrast pass, preserving the original orientation.
+            let enhanced = CIImage(cgImage: image).applyingFilter("CIColorControls", parameters: ["inputSaturation": 0.0, "inputContrast": 1.35])
+            let context = CIContext(options: [.cacheIntermediates: false])
+            if let cg = context.createCGImage(enhanced, from: enhanced.extent) { appendPass(cg, correction: false) }
+        }
+        let merged = finamiMergeInstallments(drafts)
+        mergedDraft = merged.draft
+        if !merged.conflicts.isEmpty { warning = "OCR: суперечливі поля залишено для перевірки: " + merged.conflicts.joined(separator: ", ") }
+        if let detected = FinamiScanParser.bank(lines.joined(separator: "\n")), let bankHint, detected != bankHint {
+            warning = (warning.map { $0 + " · " } ?? "") + "Знайдено інший банк: " + detected + ". Перевір договір."
         }
     }
     if lines.isEmpty && warning == nil { warning = "Текст не знайдено. Можна заповнити чернетку вручну." }
     let previewOptions: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceThumbnailMaxPixelSize: 1600]
     let jpeg = CGImageSourceCreateThumbnailAtIndex(source, 0, previewOptions as CFDictionary).flatMap { UIImage(cgImage: $0).jpegData(compressionQuality: 0.7) }
     let digest = knownDigest ?? SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-    return ScanPhoto(id: digest, lines: lines, image: jpeg, warning: warning, mergedDraft: mergedDraft)
+    return ScanPhoto(id: digest, lines: lines, image: jpeg, warning: warning, mergedDraft: mergedDraft, bankHint: bankHint, ocrRegions: installment ? regionsFor(recognized) : [])
 }
 struct FinamiScanView: View {
     @EnvironmentObject private var s: Store
@@ -94,6 +134,7 @@ struct FinamiScanView: View {
     @State private var busy = false
     @State private var errors: [String] = []
     @State private var manualText = ""
+    @State private var chosenBank = ""
     init(initialMode: FinamiScanMode = .transactions) { _mode = State(initialValue: initialMode) }
     var body: some View {
         List {
@@ -104,10 +145,18 @@ struct FinamiScanView: View {
                     Text("Додай скриншот банку. Перевір розпізнані дані перед збереженням.").foregroundStyle(.secondary)
                 }.padding(.vertical, 12)
                 Picker("Тип імпорту", selection: $mode) { ForEach(FinamiScanMode.allCases) { Text($0.rawValue).tag($0) } }.pickerStyle(.menu)
+                if mode == .installment {
+                    Picker("Банк для OCR", selection: $chosenBank) {
+                        Text("Автоматично").tag("")
+                        ForEach(FinamiOCRProfiles.banks, id: \.self) { Text($0).tag($0) }
+                    }.disabled(busy)
+                    NavigationLink("Вивчені підписи OCR") { FinamiOCRRulesView() }
+                }
                 PhotosPicker(selection: $selections, maxSelectionCount: 10, matching: .images) { Label("Обрати скриншоти", systemImage: "photo.on.rectangle.angled") }.disabled(busy)
                 #if DEBUG && targetEnvironment(simulator)
                 if ProcessInfo.processInfo.arguments.contains("--finami-qa") {
                     Button("QA: тестове фото розстрочки") { runQAImage() }.disabled(busy).accessibilityIdentifier("qa.scan.fixture.installment")
+                    Button("QA: розстрочка у двох колонках") { runQAImage(stacked: true) }.disabled(busy).accessibilityIdentifier("qa.scan.fixture.installment.columns")
                 }
                 #endif
                 if busy { ProgressView("Розпізнавання на пристрої…") }
@@ -119,7 +168,7 @@ struct FinamiScanView: View {
                         guard !text.isEmpty, text.count <= 40_000 else { return }
                         let lines = text.components(separatedBy: .newlines).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
                         let digest = SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
-                        if !photos.contains(where: { $0.id == digest }) { photos.append(ScanPhoto(id: digest, lines: lines, image: nil)) }; manualText = ""
+                        if !photos.contains(where: { $0.id == digest }) { photos.append(ScanPhoto(id: digest, lines: lines, image: nil, bankHint: chosenBank.isEmpty ? nil : chosenBank)) }; manualText = ""
                     }.disabled(busy || manualText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || manualText.count > 40_000)
                 }
                 if !photos.isEmpty { Button("Очистити список") { photos = []; errors = [] }.disabled(busy) }
@@ -169,10 +218,11 @@ struct FinamiScanView: View {
                         guard data.count <= 25_000_000 else { throw ScanFailure.image }
                         let known = Set(photos.map(\.id))
                         let isInstallment = mode == .installment
+                        let hint: String? = isInstallment && !chosenBank.isEmpty ? chosenBank : nil
                         let photo = try await Task.detached(priority: .userInitiated) { () throws -> ScanPhoto? in
                             let digest = SHA256.hash(data:data).map { String(format:"%02x",$0) }.joined()
                             guard !known.contains(digest) else { return nil }
-                            return try recognizeScan(data, knownDigest:digest, installment: isInstallment)
+                            return try recognizeScan(data, knownDigest:digest, installment: isInstallment, bankHint: hint)
                         }.value
                         if let photo, !photos.contains(where: { $0.id == photo.id }) { photos.append(photo) }
                     } catch { errors.append("Фото \(index + 1): \(error.localizedDescription)") }
@@ -181,18 +231,35 @@ struct FinamiScanView: View {
         }
     }
     private func mergedPhoto() -> ScanPhoto {
-        let merged = finamiMergeInstallments(photos.map { $0.mergedDraft ?? FinamiScanParser.installment($0.lines) })
+        let merged = finamiMergeInstallments(photos.map { photo in
+            let rules = FinamiOCRProfiles.rules(photo.bank)
+            return photo.mergedDraft ?? FinamiScanParser.installment(photo.lines.map { FinamiOCRProfiles.rewrite($0, rules: rules) })
+        })
+        let banks = Set(photos.compactMap(\.bank))
         let ids = photos.map(\.id).sorted()
         let id = SHA256.hash(data: Data(ids.joined(separator: "|").utf8)).map { String(format: "%02x", $0) }.joined()
-        return ScanPhoto(id: id, lines: photos.flatMap(\.lines), image: nil, warning: merged.conflicts.isEmpty ? "Перевір, що всі фото належать одному договору." : "Суперечливі поля: " + merged.conflicts.joined(separator: ", "), mergedDraft: merged.draft, sourceIDs: ids)
+        return ScanPhoto(id: id, lines: photos.flatMap(\.lines), image: nil, warning: merged.conflicts.isEmpty ? "Перевір, що всі фото належать одному договору." : "Суперечливі поля: " + merged.conflicts.joined(separator: ", "), mergedDraft: merged.draft, sourceIDs: ids, bankHint: banks.count == 1 ? banks.first : nil)
     }
     #if DEBUG && targetEnvironment(simulator)
-    private func runQAImage() {
+    private func runQAImage(stacked: Bool = false) {
         mode = .installment; busy = true; photos = []; errors = []
         let format = UIGraphicsImageRendererFormat(); format.scale = 1; format.opaque = true
         let size = CGSize(width: 1000, height: 1250)
         let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
             UIColor.white.setFill(); context.fill(CGRect(origin: .zero, size: size))
+            if stacked {
+                let attrs: [NSAttributedString.Key: Any] = [.font: UIFont.systemFont(ofSize: 38), .foregroundColor: UIColor.black]
+                let rows: [(String, CGFloat, CGFloat)] = [
+                    ("ПУМБ", 45, 35), ("Назва: Тестовий телефон", 45, 115),
+                    ("Загальна сума", 45, 250), ("Залишилось", 550, 250),
+                    ("30 000,00 ₴", 45, 310), ("15 000,00 ₴", 550, 310),
+                    ("Щомісячний платіж", 45, 500), ("2 500,00 ₴", 45, 560),
+                    ("Дата наступного платежу", 45, 750), ("07.12.2026", 45, 810),
+                    ("Вносьте платіж до 18:00", 45, 990)
+                ]
+                for (text, x, y) in rows { (text as NSString).draw(at: CGPoint(x:x, y:y), withAttributes:attrs) }
+                return
+            }
             let text = ["Тестовий телефон", "Розстрочка на 30 000 ₴", "6 із 12", "Платежів сплачено", "Подивитися графік платежів", "7 грудня", "2 500 ₴", "Наступний платіж"]
             let attrs: [NSAttributedString.Key: Any] = [.font: UIFont.systemFont(ofSize: 48), .foregroundColor: UIColor.black]
             for (i, line) in text.enumerated() { (line as NSString).draw(at: CGPoint(x: 45, y: 35 + i*125), withAttributes: attrs) }
@@ -259,7 +326,7 @@ private struct ScanTransactionsReview: View {
     @State private var message = ""
     @State private var commonAccount = ""
     @State private var initialized = false
-    private let kinds: [Kind] = [.expense,.income,.refund,.creditDraw,.creditRepayment,.creditRepaymentIncoming,.movementIn,.movementOut,.unclassifiedCredit,.unclassifiedDebit]
+    private let kinds: [Kind] = [.expense,.income,.receipt,.refund,.creditDraw,.creditRepayment,.creditRepaymentIncoming,.movementIn,.movementOut,.unclassifiedCredit,.unclassifiedDebit]
     init(photo: ScanPhoto) {
         self.photo = photo
         let parsed = FinamiScanParser.transactions(photo.lines)
@@ -293,6 +360,7 @@ private struct ScanTransactionsReview: View {
     }
     private func valid(_ row: ScanTransactionEdit) -> Bool { row.chosen && blockers(row).isEmpty }
     private func categories(_ row: ScanTransactionEdit) -> [String] {
+        if row.kind == .receipt { return s.db.availableReceiptCategories }
         let incoming = row.kind == .income
         let list = incoming ? s.db.incomeCategories : s.db.expenseCategories
         let hidden = incoming ? s.db.hiddenIncomeCategories : s.db.hiddenExpenseCategories
@@ -405,8 +473,13 @@ private struct ScanInstallmentReview: View {
     @State private var keepSchedule = false
     private var scheduleRows: [FinamiScheduleRow] { finamiScheduleRows(photo.lines) }
     @State private var sourceAssignment = "total"
+    @State private var learnLabels = false
+    @State private var training: [FinamiOCRField: String] = [:]
+    @State private var geometryTraining: [FinamiOCRField: ScanTextRegion] = [:]
+    private let positionSuggestions: [FinamiOCRField: Int64]
     init(photo: ScanPhoto) {
-        self.photo = photo; let d = photo.mergedDraft ?? FinamiScanParser.installment(photo.lines)
+        self.photo = photo; let rules = FinamiOCRProfiles.rules(photo.bank); let d = photo.mergedDraft ?? FinamiScanParser.installment(photo.lines.map { FinamiOCRProfiles.rewrite($0, rules: rules) })
+        positionSuggestions = FinamiOCRLayoutMemory.suggestions(bank: photo.bank, regions: photo.ocrRegions)
         _name = State(initialValue: d.name); _total = State(initialValue: d.total.map(amountText) ?? "")
         _remaining = State(initialValue: d.remaining.map(amountText) ?? ""); _monthly = State(initialValue: d.monthly.map(amountText) ?? "")
         _due = State(initialValue: d.due ?? Date()); foreign = d.foreignCurrency; recognizedDue = d.due != nil
@@ -436,6 +509,23 @@ private struct ScanInstallmentReview: View {
                 if exact { Label("Скриншот вже пов’язаний з іншим договором. Вибери його для оновлення.", systemImage: "exclamationmark.triangle").foregroundStyle(.orange) }
                 else if similar { Toggle("Це інший договір, не дубль", isOn: $duplicateOverride) }
             }
+            Section("Дані договору · UAH") {
+                let filled = [total, remaining, monthly].filter { !$0.isEmpty }.count
+                Label("Заповнено сум: \(filled) із 3", systemImage: filled == 3 ? "checkmark.circle" : "exclamationmark.circle").font(.caption).foregroundStyle(filled == 3 ? Color.green : Color.orange)
+                FinamiField("Назва", text: $name)
+                FinamiField("Загальний кредит", text: $total, keyboard: .decimalPad)
+                FinamiField("Поточний залишок", text: $remaining, keyboard: .decimalPad)
+                FinamiField("Щомісячний платіж", text: $monthly, keyboard: .decimalPad)
+                if let t = bankMinor(total), let r = bankMinor(remaining), t >= r, r >= 0 { LabeledContent("Вже погашено", value: s.visibleMoney(t-r)) }
+                DatePicker("Наступний платіж", selection: $due)
+                Toggle("Дату перевірено", isOn: $dateChecked)
+                if foreign { Text("Виявлено іноземну валюту. Модель розстрочок поки підтримує лише гривню; імпорт цього договору заблоковано.").foregroundStyle(.orange) }
+                Toggle("Я перевірив усі дані", isOn: $checked)
+                if photo.bank != nil && photo.sourceIDs == nil {
+                    Toggle("Запам’ятати виправлені підписи та позиції", isOn: $learnLabels)
+                    Text("Підписи й позиції запам’ятовуються лише після підтвердження. Позиції працюють на екрані з тією самою структурою. Суми не зберігаються у правилах.").font(.caption).foregroundStyle(.secondary)
+                }
+            }
             Section("Розпізнано зі скриншота") {
                 Text("Заповнено \([name, total, remaining, monthly].filter { !$0.isEmpty }.count) із 4 текстових полів. \(recognizedDue ? "Дату знайдено." : "Дату потрібно вибрати вручну.")").font(.caption)
                 if photo.lines.isEmpty { Text("Vision не повернув текст. Спробуй інший скриншот або введи дані вручну.").foregroundStyle(.orange) }
@@ -452,16 +542,31 @@ private struct ScanInstallmentReview: View {
                     Text("Обери поле, потім натисни потрібну суму. Якщо скриншот не містить підпису або решти даних, додай фото з деталями договору. Суми без чіткого підпису не підставляються навмання.").font(.caption).foregroundStyle(.secondary)
                 }
             }
-            Section("Дані договору · UAH") {
-                FinamiField("Назва", text: $name)
-                FinamiField("Загальний кредит", text: $total, keyboard: .decimalPad)
-                FinamiField("Поточний залишок", text: $remaining, keyboard: .decimalPad)
-                FinamiField("Щомісячний платіж", text: $monthly, keyboard: .decimalPad)
-                if let t = bankMinor(total), let r = bankMinor(remaining), t >= r, r >= 0 { LabeledContent("Вже погашено", value: s.visibleMoney(t-r)) }
-                DatePicker("Наступний платіж", selection: $due)
-                Toggle("Дату перевірено", isOn: $dateChecked)
-                if foreign { Text("Виявлено іноземну валюту. Модель розстрочок поки підтримує лише гривню; імпорт цього договору заблоковано.").foregroundStyle(.orange) }
-                Toggle("Я перевірив усі дані", isOn: $checked)
+            if !positionSuggestions.isEmpty {
+                Section("Вивчені позиції · перевір перед використанням") {
+                    ForEach(FinamiOCRField.allCases, id: \.rawValue) { field in
+                        if let value = positionSuggestions[field] {
+                            Button { setAmount(value, field: field) } label: { LabeledContent(field.canonical, value: amountText(value)) }
+                        }
+                    }
+                    Text("Підказки з попереднього підтвердженого макета. Не замінюють перевірку даних.").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if let field = FinamiOCRField(rawValue: sourceAssignment), !photo.ocrRegions.isEmpty, photo.sourceIDs == nil {
+                let candidates = photo.ocrRegions.filter { FinamiOCRLayoutMemory.amount($0) != nil }
+                if !candidates.isEmpty {
+                    Section("Суми на зображенні · " + field.canonical) {
+                        ForEach(Array(candidates.enumerated()), id: \.offset) { entry in
+                            let region = entry.element
+                            if let value = FinamiOCRLayoutMemory.amount(region) {
+                                Button { setAmount(value, field: field); geometryTraining[field] = region; training.removeValue(forKey: field) } label: {
+                                    LabeledContent(amountText(value), value: "x \(Int(region.bounds.midX * 100))% · y \(Int((1 - region.bounds.midY) * 100))%")
+                                }
+                            }
+                        }
+                        Text("Обери відповідну суму за позицією на скриншоті. За ввімкненого навчання запам’ятаємо місце лише для такого макета.").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
             }
             if !scheduleRows.isEmpty {
                 Section("Графік зі скриншота") {
@@ -495,7 +600,13 @@ private struct ScanInstallmentReview: View {
         if sourceAssignment == "name" { name = bankRedact(line); return }
         if sourceAssignment == "due" { if let d = FinamiScanParser.nextPaymentDate(line) { due = d; dateChecked = false }; return }
         guard let amount = FinamiScanParser.installmentCandidateAmount(line) else { return }
+        if let field = FinamiOCRField(rawValue: sourceAssignment) { training[field] = line; geometryTraining.removeValue(forKey: field) }
         switch sourceAssignment { case "total": total = amountText(amount); case "remaining": remaining = amountText(amount); case "monthly": monthly = amountText(amount); default: break }
+    }
+    private func setAmount(_ value: Int64, field: FinamiOCRField) {
+        checked = false; duplicateOverride = false
+        training.removeValue(forKey: field); geometryTraining.removeValue(forKey: field)
+        switch field { case .total: total = amountText(value); case .remaining: remaining = amountText(value); case .monthly: monthly = amountText(value) }
     }
     private func save() {
         guard valid, let t = bankMinor(total), let r = bankMinor(remaining), let m = bankMinor(monthly) else { return }
@@ -521,6 +632,15 @@ private struct ScanInstallmentReview: View {
             if attach, let image = photo.image { var images = d.scanImages ?? [:]; images[photo.id] = image; d.scanImages = images }
             var reminders = d.reminders ?? []; let ids = Set(changed.map(\.id)); reminders.removeAll { ids.contains($0.id) }; reminders.append(contentsOf: changed); d.reminders = reminders
         }) {
+            if learnLabels, photo.sourceIDs == nil, let bank = photo.bank {
+                let finalValues: [FinamiOCRField: Int64] = [.total: t, .remaining: r, .monthly: m]
+                for (field, raw) in training where FinamiScanParser.installmentCandidateAmount(raw) == finalValues[field] {
+                    FinamiOCRProfiles.learn(bank: bank, raw: raw, field: field)
+                }
+                for (field, region) in geometryTraining where FinamiOCRLayoutMemory.amount(region) == finalValues[field] {
+                    FinamiOCRLayoutMemory.learn(bank: bank, regions: photo.ocrRegions, chosen: region, field: field)
+                }
+            }
             let reminders = changed
             Task { @MainActor in
                 for item in reminders {

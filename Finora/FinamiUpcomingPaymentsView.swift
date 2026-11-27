@@ -30,6 +30,7 @@ struct FinamiAllUpcomingPayments: View {
                 ForEach(payments) { p in
                     Button { selected = p } label: {
                         HStack {
+                            if let data = s.db.paymentPhotos?[p.id], let image = FinamiImageCache.shared.image(data) { Image(uiImage: image).resizable().scaledToFill().frame(width: 36, height: 36).clipShape(RoundedRectangle(cornerRadius: 8)) } else { FinamiBrandTile(name: p.name, icon: p.subscription ? "repeat" : "creditcard.fill", tint: .indigo, side: 36) }
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(p.name).font(.headline)
                                 Text(p.kind + " · " + p.date.formatted(date: .abbreviated, time: .omitted)).font(.caption).foregroundStyle(.secondary)

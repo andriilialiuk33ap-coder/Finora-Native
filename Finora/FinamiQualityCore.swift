@@ -12,7 +12,7 @@ struct FinamiDashboardMetrics {
         var categories: [String: Int64] = [:]
         var recent: [Operation] = []
         for operation in operations {
-            if operation.kind == .income { income += operation.amount }
+            income += operation.incomeValue
             let value = operation.expenseValue
             expense += value
             if value != 0 { categories[operation.expenseGroup, default: 0] += value }

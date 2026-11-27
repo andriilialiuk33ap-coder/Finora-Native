@@ -18,6 +18,11 @@ struct ScanBalanceDraft {
     var net: ScanMoney?
     var limit: ScanMoney?
 }
+// Normalized Vision coordinates (origin at bottom left). Foundation-only for tests.
+struct ScanTextRegion {
+    let text: String
+    let bounds: CGRect
+}
 struct ScanInstallmentDraft {
     var name = ""
     var total: Int64?
@@ -160,9 +165,9 @@ enum FinamiScanParser {
     }
     // Only explicitly labelled, unambiguous amounts are filled automatically.
     private static let installmentLabels: [[String]] = [
-        ["загальний кредит", "загальна сума кредиту", "сума кредиту", "сума договору", "загальна сума", "початкова сума", "вартість покупки", "сума покупки", "сума розстрочки", "повна вартість", "сума фінансування", "тіло кредиту початкове", "початкова сума кредиту", "сума розстрочки за договором", "розстрочка на", "повна сума кредиту", "загальна вартість покупки"],
-        ["залишок боргу", "поточний залишок", "залишок розстрочки", "залишилося сплатити", "залишилось сплатити", "залишок заборгованості", "залишок до сплати", "залишок кредиту", "залишок суми кредиту", "залишок основного боргу", "непогашена сума", "сума до повного погашення", "залишок до погашення", "залишилось погасити", "залишилося погасити", "залишок за договором", "залишок до повного погашення", "залишок до кінця розстрочки", "залишок тіла кредиту", "залишилось виплатити", "залишилося виплатити"],
-        ["щомісячний платіж", "регулярний платіж", "сума наступного платежу", "сума платежу", "платіж на місяць", "платіж щомісяця", "щомісячна оплата", "розмір платежу", "наступний платіж", "черговий платіж", "обов'язковий платіж", "щомісячний внесок", "платіж на місяць", "сума щомісячного платежу", "розмір щомісячного платежу", "щомісячна сума", "сума регулярного платежу"],
+        ["загальний кредит", "загальна сума кредиту", "сума кредиту", "сума договору", "загальна сума", "початкова сума", "вартість покупки", "сума покупки", "сума розстрочки", "повна вартість", "сума фінансування", "тіло кредиту початкове", "початкова сума кредиту", "сума розстрочки за договором", "розстрочка на", "повна сума кредиту", "загальна вартість покупки", "загальна сума розстрочки", "початкова сума розстрочки", "вартість товару"],
+        ["залишок боргу", "поточний залишок", "залишок розстрочки", "залишилося сплатити", "залишилось сплатити", "залишок заборгованості", "залишок до сплати", "залишок кредиту", "залишок суми кредиту", "залишок основного боргу", "непогашена сума", "сума до повного погашення", "залишок до погашення", "залишилось погасити", "залишилося погасити", "залишок за договором", "залишок до повного погашення", "залишок до кінця розстрочки", "залишок тіла кредиту", "залишилось виплатити", "залишилося виплатити", "залишок платежів у гривнях", "сума залишку", "залишок за розстрочкою"],
+        ["щомісячний платіж", "регулярний платіж", "сума наступного платежу", "сума платежу", "платіж на місяць", "платіж щомісяця", "щомісячна оплата", "розмір платежу", "наступний платіж", "черговий платіж", "обов'язковий платіж", "щомісячний внесок", "платіж на місяць", "сума щомісячного платежу", "розмір щомісячного платежу", "щомісячна сума", "сума регулярного платежу", "щомісячний платіж за розстрочкою", "сума щомісячної оплати", "платіж за місяць"],
         ["наступний платіж", "дата платежу", "дата наступного платежу", "сплатити до", "наступне списання", "дата списання", "дата чергового платежу", "черговий платіж", "наступна оплата", "дата оплати", "дата щомісячного платежу", "дата внесення платежу"],
         ["вже сплачено", "вже погашено", "сплачено всього", "погашено всього", "сума погашеного основного боргу", "погашено основного боргу"]
     ]
@@ -206,7 +211,7 @@ enum FinamiScanParser {
     static func installmentCandidateAmount(_ text: String) -> Int64? {
         guard let m = installmentAmount(text), m.currency != "USD", m.minor >= 0 else { return nil }; return m.minor
     }
-    static func installment(_ input: [String], reference: Date = Date()) -> ScanInstallmentDraft {
+    static func installment(_ input: [String], reference: Date = Date(), regions: [ScanTextRegion] = []) -> ScanInstallmentDraft {
         let lines = input.map(bankClean).filter { !$0.isEmpty }
         let plan = purchasePlan(lines, reference: reference)
         var draft = ScanInstallmentDraft()
@@ -279,6 +284,107 @@ enum FinamiScanParser {
             if dates.isEmpty { draft.due = plan.due }
             draft.foreignCurrency = draft.foreignCurrency || plan.foreignCurrency
         }
+        if !regions.isEmpty {
+            let layout = installmentLayout(regions, reference: reference)
+            // Spatial evidence supplements missing fields, never overwrites a
+            // result or resolves explicitly contradictory text values.
+            if draft.total == nil && values[0].isEmpty { draft.total = layout.total }
+            if draft.remaining == nil && values[1].isEmpty { draft.remaining = layout.remaining }
+            if draft.monthly == nil && values[2].isEmpty { draft.monthly = layout.monthly }
+            if draft.due == nil && dates.isEmpty { draft.due = layout.due }
+            draft.foreignCurrency = draft.foreignCurrency || layout.foreignCurrency
+            if let total = draft.total, let remaining = draft.remaining, remaining > total {
+                draft.total = nil; draft.remaining = nil
+            }
+        }
+        return draft
+    }
+    // Vision sometimes returns two columns as a single text observation.
+    // Request per-substring bounding boxes for multi-value or multi-label rows.
+    static func installmentSubregionRanges(_ text: String) -> [Range<String.Index>] {
+        func ranges(_ pattern: String) -> [Range<String.Index>] {
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else { return [] }
+            return regex.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap { Range($0.range, in: text) }
+        }
+        let amountRanges = ranges("(?<![\\d.,])(?:" + number + "\\s*" + currency + "|" + currency + "\\s*" + number + ")(?!\\d)")
+        var fields: [(Int, Range<String.Index>)] = []
+        if !text.lowercased().contains("дата") {
+            for k in 0..<3 {
+                var labels = installmentLabels[k]
+                if k == 1 { labels += ["залишилось", "залишилося", "залишок"] }
+                for label in labels.sorted(by: { $0.count > $1.count }) {
+                    let pattern = "(?<![\\p{L}])" + NSRegularExpression.escapedPattern(for: label) + "(?![\\p{L}])"
+                    for range in ranges(pattern) where !fields.contains(where: { $0.1.overlaps(range) }) {
+                        fields.append((k, range))
+                    }
+                }
+            }
+        }
+        guard amountRanges.count > 1 || Set(fields.map { $0.0 }).count > 1 else { return [] }
+        return (fields.map { $0.1 } + amountRanges).sorted { $0.lowerBound < $1.lowerBound }
+    }
+    // Separate labels and numbers in different columns or stacked cards. Only
+    // use a uniquely associated amount, never a count, date, or free-floating integer.
+    static func installmentLayout(_ regions: [ScanTextRegion], reference: Date = Date()) -> ScanInstallmentDraft {
+        var draft = ScanInstallmentDraft()
+        let clean = regions.map { ScanTextRegion(text: bankClean($0.text), bounds: $0.bounds) }
+        draft.foreignCurrency = clean.contains { hasUnsupportedCurrency($0.text) || money($0.text)?.currency == "USD" }
+        func kind(_ text: String) -> Int? {
+            let low = text.lowercased().replacingOccurrences(of: "’", with: "'").trimmingCharacters(in: CharacterSet(charactersIn: " :"))
+            if low.contains("дата") || low.contains("час") || low.contains("графік") { return nil }
+            if ["залишилось", "залишилося", "залишок", "до сплати залишилось"].contains(low) { return 1 }
+            let kinds = (0..<3).filter { i in installmentLabels[i].contains { low.contains($0) } }
+            return kinds.count == 1 ? kinds.first : nil
+        }
+        func isolatedAmount(_ text: String) -> Int64? {
+            // A split currency observation or a decimal amount is acceptable,
+            // but an isolated integer could be a payment count or card suffix.
+            guard text.range(of: #"^\s*[+−-]?(?:₴\s*)?[\d\s,.]+(?:₴|грн\.?|UAH)?\s*$"#, options: [.regularExpression,.caseInsensitive]) != nil,
+                  !matches(currency, in: text).isEmpty || text.range(of: #"[,.]\d{2}\s*$"#, options: .regularExpression) != nil else { return nil }
+            if matches(currency, in: text).isEmpty && text.range(of: #"^\s*(?:0?[1-9]|[12]\d|3[01])\.(?:0[1-9]|1[0-2])\s*$"#, options: .regularExpression) != nil { return nil }
+            return installmentCandidateAmount(text)
+        }
+        let labels = clean.indices.filter { kind(clean[$0].text) != nil && installmentAmount(clean[$0].text) == nil && nextPaymentDate(clean[$0].text, reference: reference) == nil }
+        let amounts = clean.indices.filter { isolatedAmount(clean[$0].text) != nil }
+        func distance(_ label: CGRect, _ amount: CGRect) -> Double? {
+            let h = max(label.height, amount.height, 0.012)
+            let overlap = min(label.maxX, amount.maxX) - max(label.minX, amount.minX)
+            let gapY = max(0, max(label.minY, amount.minY) - min(label.maxY, amount.maxY))
+            let gapX = max(0, max(label.minX, amount.minX) - min(label.maxX, amount.maxX))
+            if abs(label.midY - amount.midY) <= h * 0.45 && gapX <= 0.55 { return Double(gapX * 0.25 + abs(label.midY - amount.midY)) }
+            if (overlap >= min(label.width, amount.width) * 0.35 || abs(label.minX - amount.minX) < 0.035), gapY <= min(0.065, h * 2.0) { return Double(gapY + abs(label.midX - amount.midX) * 0.12 + 0.015) }
+            return nil
+        }
+        var proposals: [(label: Int, amount: Int)] = []
+        for l in labels {
+            let ranked = amounts.compactMap { a in distance(clean[l].bounds, clean[a].bounds).map { (a, $0) } }.sorted { $0.1 < $1.1 }
+            guard let best = ranked.first, ranked.count == 1 || ranked[1].1 - best.1 > 0.012 else { continue }
+            // A closer label in a different field owns this number instead.
+            let competitors = labels.filter { $0 != l && kind(clean[$0].text) != kind(clean[l].text) }.compactMap { distance(clean[$0].bounds, clean[best.0].bounds) }
+            guard !competitors.contains(where: { $0 <= best.1 + 0.012 }) else { continue }
+            proposals.append((l, best.0))
+        }
+        var values = Array(repeating: Set<Int64>(), count: 3)
+        for pair in proposals {
+            if let k = kind(clean[pair.label].text), let a = isolatedAmount(clean[pair.amount].text) { values[k].insert(a) }
+        }
+        draft.total = values[0].count == 1 ? values[0].first : nil
+        draft.remaining = values[1].count == 1 ? values[1].first : nil
+        draft.monthly = values[2].count == 1 ? values[2].first : nil
+        let dateLabels = clean.indices.filter { i in
+            let low = clean[i].text.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: " :"))
+            return installmentLabels[3].contains(low) && nextPaymentDate(low, reference: reference) == nil
+        }
+        let dateValues = clean.indices.filter { i in
+            let text = clean[i].text
+            return nextPaymentDate(text, reference: reference) != nil && installmentAmount(text) == nil && !text.lowercased().contains("дата")
+        }
+        var foundDates = Set<Date>()
+        for label in dateLabels {
+            let ranked = dateValues.compactMap { i in distance(clean[label].bounds, clean[i].bounds).map { (i, $0) } }.sorted { $0.1 < $1.1 }
+            if let first = ranked.first, ranked.count == 1 || ranked[1].1 - first.1 > 0.012, let date = nextPaymentDate(clean[first.0].text, reference: reference) { foundDates.insert(date) }
+        }
+        if foundDates.count == 1 { draft.due = foundDates.first }
         return draft
     }
     static func balance(_ lines: [String]) -> ScanBalanceDraft {
@@ -346,4 +452,69 @@ func finamiScheduleRows(_ lines: [String], reference: Date = Date()) -> [FinamiS
     return Dictionary(grouping: candidates, by: \.date).values.compactMap { group in
         let set = Set(group); return set.count == 1 ? set.first : nil
     }.sorted { $0.date < $1.date }
+}
+
+// Bank-specific candidate label vocabulary. These are conservative text aliases,
+// not verified bank screenshots or positional templates. Matching requires a
+// known bank and an exact normalized label; no amounts are stored in rules.
+enum FinamiOCRField: String, CaseIterable, Codable {
+    case total, remaining, monthly
+    var canonical: String {
+        switch self { case .total: return "Загальна сума розстрочки"; case .remaining: return "Поточний залишок"; case .monthly: return "Щомісячний платіж" }
+    }
+}
+enum FinamiOCRProfiles {
+    static let banks = ["ПУМБ", "monobank", "ПриватБанк", "А-БАНК", "ОТП", "Sense Bank", "Райффайзен"]
+    static let storageKey = "finami.ocr.labelRules.v1"
+    static func label(_ raw: String) -> String? {
+        let text = bankClean(raw.lowercased().replacingOccurrences(of: "’", with: "'"))
+        // Only an explicit label followed by a single amount, or a label-only row.
+        let amountPattern = "\\s*[:–—-]?\\s*" + FinamiScanParser.number + "\\s*" + FinamiScanParser.currency + "\\s*$"
+        let stripped = text.replacingOccurrences(of: amountPattern, with: "", options: [.regularExpression, .caseInsensitive]).trimmingCharacters(in: CharacterSet(charactersIn: " :–—-"))
+        guard stripped.count >= 5, stripped.count <= 70, stripped.range(of: #"^[\p{L}\s'’-]+$"#, options: .regularExpression) != nil,
+              ["сума", "залиш", "платіж", "платеж", "внесок", "борг", "кредит", "вартість", "погаш", "розстроч"].contains(where: { stripped.contains($0) }),
+              !["дата", "час", "комісі", "відсот", "ліміт", "сплачено", "погашено", "картк", "номер", "кількіст", "простроч", "штраф", "графік"].contains(where: { stripped.contains($0) }) else { return nil }
+        return stripped
+    }
+    static func builtIn(_ bank: String) -> [String: FinamiOCRField] {
+        switch bank {
+        case "ПУМБ": return ["сума оформленої розстрочки": .total, "залишок за тілом кредиту": .remaining, "щомісячний внесок за розстрочкою": .monthly]
+        case "monobank": return ["сума покупки частинами": .total, "залишок за покупкою частинами": .remaining, "платіж частинами щомісяця": .monthly]
+        case "ПриватБанк": return ["сума оплати частинами": .total, "залишок за оплатою частинами": .remaining, "щомісячний внесок за договором": .monthly]
+        case "А-БАНК": return ["загальна сума платежу частинами": .total, "залишок за платежем частинами": .remaining, "щомісячний платіж за договором": .monthly]
+        case "ОТП", "Sense Bank", "Райффайзен": return ["початковий розмір кредиту": .total, "непогашений основний борг": .remaining, "плановий щомісячний внесок": .monthly]
+        default: return [:]
+        }
+    }
+    static func rewrite(_ text: String, rules: [String: FinamiOCRField]) -> String {
+        guard !FinamiScanParser.hasUnsupportedCurrency(text), let key = label(text), let field = rules[key] else { return text }
+        if let amount = FinamiScanParser.money(text), amount.currency == "UAH", amount.minor >= 0 {
+            return field.canonical + ": " + String(amount.minor / 100) + "," + String(format: "%02lld", amount.minor % 100) + " ₴"
+        }
+        guard text.range(of: #"\d"#, options: .regularExpression) == nil else { return text }
+        return field.canonical
+    }
+    static func learned(_ bank: String, defaults: UserDefaults = .standard) -> [String: FinamiOCRField] {
+        guard banks.contains(bank), let data = defaults.data(forKey: storageKey), let rules = try? JSONDecoder().decode([String: [String: FinamiOCRField]].self, from: data) else { return [:] }
+        return rules[bank] ?? [:]
+    }
+    static func rules(_ bank: String?, defaults: UserDefaults = .standard) -> [String: FinamiOCRField] {
+        guard let bank, banks.contains(bank) else { return [:] }
+        return builtIn(bank).merging(learned(bank, defaults: defaults)) { _, personal in personal }
+    }
+    static func learn(bank: String, raw: String, field: FinamiOCRField, defaults: UserDefaults = .standard) {
+        guard banks.contains(bank), let key = label(raw), let amount = FinamiScanParser.money(raw), amount.currency == "UAH", amount.minor >= 0 else { return }
+        if let builtIn = builtIn(bank)[key], builtIn != field { return }
+        // Learning is intentionally conservative: do not remap a known field.
+        for other in FinamiOCRField.allCases where other != field {
+            let probe = FinamiScanParser.installment([raw])
+            if (other == .total && probe.total != nil) || (other == .remaining && probe.remaining != nil) || (other == .monthly && probe.monthly != nil) { return }
+        }
+        var all = defaults.data(forKey: storageKey).flatMap { try? JSONDecoder().decode([String: [String: FinamiOCRField]].self, from: $0) } ?? [:]
+        var rules = all[bank] ?? [:]
+        guard rules.count < 64 || rules[key] != nil else { return }
+        if let prior = rules[key], prior != field { return }
+        rules[key] = field; all[bank] = rules
+        if let data = try? JSONEncoder().encode(all) { defaults.set(data, forKey: storageKey) }
+    }
 }

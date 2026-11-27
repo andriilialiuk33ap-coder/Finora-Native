@@ -9,7 +9,7 @@ struct OperationRow: View {
   @Environment(\.dynamicTypeSize) private var dynamicTypeSize
   private var style: String { s.db.preferences?.designStyle(for: "operations") ?? "classicPremium" }
   private var size: String { s.db.preferences?.designSize(for: "operations") ?? "M" }
-  private var tint: Color { o.kind == .income ? .green : o.kind == .expense ? .orange : .blue }
+  private var tint: Color { (o.kind == .income || o.kind == .receipt) ? .green : o.kind == .expense ? .orange : .blue }
   private var details: some View {
     VStack(alignment:.leading,spacing:3) {
       Text(o.note.isEmpty ? (o.kind == .transfer ? "Переказ" : o.category) : finamiMerchantDisplay(o.note)).font(.subheadline.weight(.semibold)).lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
@@ -21,7 +21,7 @@ struct OperationRow: View {
   private var amounts: some View {
     VStack(alignment:.trailing,spacing:2) {
       Text(amountsMasked ? "••••" : (o.kind == .transfer ? "" : o.kind.incoming ? "+" : "−") + money(o.amount))
-        .font(.subheadline.weight(.semibold)).monospacedDigit().foregroundStyle(o.kind == .income ? Color.green : Color.primary)
+        .font(.subheadline.weight(.semibold)).monospacedDigit().foregroundStyle((o.kind == .income || o.kind == .receipt) ? Color.green : Color.primary)
         .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2).minimumScaleFactor(0.7)
       if let n=o.originalAmount, let code=o.originalCurrency, code != "UAH" { Text(amountsMasked ? "••••" : s.visibleMoney(n,code)).font(.caption).foregroundStyle(.secondary) }
     }
@@ -33,7 +33,7 @@ struct OperationRow: View {
   }
   private var standard: some View {
     HStack(alignment: .top, spacing: style == "compactLedger" ? 7 : 10) {
-      FinamiIconTile(icon: finamiOperationIcon(o), tint: tint, side: tileSize)
+      FinamiBrandTile(name: o.note, icon: finamiOperationIcon(o), tint: tint, side: tileSize, merchantsOnly: true)
       if dynamicTypeSize.isAccessibilitySize {
         VStack(alignment: .leading, spacing: 8) { details; amounts.frame(maxWidth: .infinity, alignment: .leading) }
       } else { details; amounts.layoutPriority(1) }
@@ -44,7 +44,7 @@ struct OperationRow: View {
       switch style {
       case "merchantCards":
         VStack(alignment: .leading, spacing: 8) {
-          HStack { FinamiIconTile(icon: finamiOperationIcon(o), tint: tint, side: tileSize); details }
+          HStack { FinamiBrandTile(name: o.note, icon: finamiOperationIcon(o), tint: tint, side: tileSize, merchantsOnly: true); details }
           Divider()
           amounts.frame(maxWidth: .infinity, alignment: .trailing)
         }.padding(10).background(tint.opacity(0.06), in: RoundedRectangle(cornerRadius: 14))
@@ -68,6 +68,7 @@ struct Operations: View {
   @State private var settledSearch = ""
   @State private var edit: Operation?
   @State private var operationSettings = false
+  @State private var batchCategories = false
   var filter: String { s.db.preferences?.operationsFilter ?? "all" }
   var sort: OperationSort { OperationSort(rawValue:s.db.preferences?.operationsSort ?? "") ?? .newest }
   var filterBinding:Binding<String>{Binding(get:{filter},set:{v in s.changeAppearance { p in p.operationsFilter=v }})}
@@ -183,9 +184,11 @@ struct Operations: View {
       .onChange(of: reviewOnly) { _ in pageSize = 150 }
       .onChange(of: bankFilter) { _ in pageSize = 150 }
       .toolbar {
+        Button { batchCategories = true } label: { Image(systemName: "checklist") }.accessibilityLabel("Масове уточнення")
         Button { operationSettings = true } label: { Image(systemName: "slider.horizontal.3") }.accessibilityLabel("Налаштування операцій")
         Button { edit = Operation(account: s.db.accounts.first?.id ?? cash) } label: { Image(systemName: "plus.circle.fill") }.accessibilityLabel("Додати операцію")
       }.sheet(item: $edit) { OpEditor(original: $0) }
+      .sheet(isPresented: $batchCategories) { FinamiBatchCategoriesView() }
       .sheet(isPresented: $voice) { FinamiVoice() }
       .sheet(isPresented: $scan) { NavigationStack { FinamiScanView().toolbar { ToolbarItem(placement: .cancellationAction) { Button("Закрити") { scan = false } } } } }
       .sheet(isPresented: $operationSettings) {
@@ -213,6 +216,7 @@ struct OpEditor: View {
   @State var amount: String
   @State private var confirm = false
   @State private var learnRule = true
+  @State private var compensationSearch = ""
   @State private var selectedLearningCategory: String? = nil
   @State private var entryCurrency = "UAH"
   @State private var rate = ""
@@ -226,7 +230,7 @@ struct OpEditor: View {
   @State private var calculator = false
   @State private var calculatorInput = ""
   @State private var calculatorMode = "+"
-  private var repeatCandidate: Operation? { s.db.operations.filter { $0.kind == o.kind && $0.account == o.account && $0.sourceBank == nil && $0.bankKey == nil && $0.groupedBankParts == nil && $0.kind != .transfer && $0.entryCurrency != "USD" && $0.amount > 0 }.max { $0.date < $1.date } }
+  private var repeatCandidate: Operation? { s.db.operations.filter { $0.kind != .receipt && $0.kind == o.kind && $0.account == o.account && $0.sourceBank == nil && $0.bankKey == nil && $0.groupedBankParts == nil && $0.kind != .transfer && $0.entryCurrency != "USD" && $0.amount > 0 }.max { $0.date < $1.date } }
   private var linkedRecord: FinamiPaidRecord? { s.paymentLookup.record(for: o.id) }
   private var financialLocked: Bool {linkedRecord != nil || o.groupedBankParts != nil}
   private var savedOperation: Bool { s.db.operations.contains { $0.id == o.id } }
@@ -251,15 +255,15 @@ struct OpEditor: View {
   }
   init(original: Operation) {
     _o = State(initialValue: original)
-    bankIncoming = original.sourceBank != nil && original.kind != .transfer ? original.kind.incoming : nil
+    bankIncoming = (original.sourceBank != nil || original.captureSource != nil || original.scanFingerprint != nil) && original.kind != .transfer ? original.kind.incoming : nil
     _tagsText = State(initialValue: (original.tags ?? []).joined(separator:", "))
     let input = original.entryCurrency == "USD" ? (original.originalAmount ?? original.sourceMinor ?? original.amount) : original.amount
     _amount = State(initialValue: input == 0 ? "" : amountText(input))
     _entryCurrency = State(initialValue: original.entryCurrency ?? "UAH")
     _rate = State(initialValue: original.exchangeRate ?? "")
-    _exactReceived = State(initialValue: original.entryCurrency == "USD" && original.kind == .transfer && original.destinationMinor != nil ? amountText(original.destinationMinor ?? 0) : (original.kind == .income && original.entryCurrency == "USD" && original.originalCurrency == "USD" ? amountText(original.amount):""))
+    _exactReceived = State(initialValue: original.entryCurrency == "USD" && original.kind == .transfer && original.destinationMinor != nil ? amountText(original.destinationMinor ?? 0) : ((original.kind == .income || original.kind == .receipt) && original.entryCurrency == "USD" && original.originalCurrency == "USD" ? amountText(original.amount):""))
   }
-  var categories: [String] { let list = o.kind == .income ? s.db.incomeCategories : s.db.expenseCategories; let hidden = o.kind == .income ? (s.db.hiddenIncomeCategories ?? []) : (s.db.hiddenExpenseCategories ?? []); let available = list.filter { !hidden.contains($0) || $0 == o.category }; return Array(Set(available + ["Без категорії",o.category])).sorted() }
+  var categories: [String] { if o.kind == .receipt { return Array(Set(s.db.availableReceiptCategories + [o.category])).sorted() }; let list = o.kind == .income ? s.db.incomeCategories : s.db.expenseCategories; let hidden = o.kind == .income ? (s.db.hiddenIncomeCategories ?? []) : (s.db.hiddenExpenseCategories ?? []); let available = list.filter { !hidden.contains($0) || $0 == o.category }; return Array(Set(available + ["Без категорії",o.category])).sorted() }
   private var editorChoice: FinamiOperationChoice { .current(o.kind, withdrawal: o.cashWithdrawal == true) }
   private var cashAccounts: [Account] { s.db.accounts.filter { ($0.id == cash || $0.accountType == "cash") && $0.id != o.account } }
   private var choiceBinding: Binding<FinamiOperationChoice> {
@@ -268,6 +272,10 @@ struct OpEditor: View {
       let previous = o.kind
       let next = choice.ledgerKind(bankIncoming: bankIncoming, existing: previous)
       o.kind = next
+      if next != previous {
+        if previous == .receipt { o.refundOriginalID = nil; o.receiptExpenseCategory = nil }
+        o.receiptTreatment = next == .receipt ? .pending : nil
+      }
       o.cashWithdrawal = choice == .withdrawal ? true : nil
       if choice == .withdrawal && next == .transfer { o.destination = cashAccounts.first(where: { $0.code == sourceCode })?.id ?? cashAccounts.first?.id ?? "" }
       if next != .transfer { o.destination = "" }
@@ -286,7 +294,7 @@ struct OpEditor: View {
   }
   var sourceCode:String { s.db.accounts.first(where:{$0.id==o.account})?.code ?? "UAH" }
   var destinationCode:String { s.db.accounts.first(where:{$0.id==o.destination})?.code ?? "UAH" }
-  private var supportsExactUAH:Bool {o.sourceBank == nil && ((o.kind == .transfer && sourceCode == "USD" && destinationCode == "UAH") || (o.kind == .income && sourceCode == "UAH" && entryCurrency == "USD"))}
+  private var supportsExactUAH:Bool {o.sourceBank == nil && ((o.kind == .transfer && sourceCode == "USD" && destinationCode == "UAH") || ((o.kind == .income || o.kind == .receipt) && sourceCode == "UAH" && entryCurrency == "USD"))}
   private var exactMode:Bool {supportsExactUAH && !exactReceived.isEmpty}
   var requiresRate:Bool { entryCurrency == "USD" || (o.kind == .transfer && destinationCode == "USD") }
   var usedRate:Decimal? {if exactMode,let n=bankMinor(amount),n>0,let actual=bankMinor(exactReceived),actual>0{return Decimal(actual)/Decimal(n)};return fxRate(rate)}
@@ -301,20 +309,40 @@ struct OpEditor: View {
     if destinationCode == "USD" {if sourceCode == "USD" {return bankMinor(amount)};guard let r=usedRate else{return nil};return fxMinor(uah,rate:r,divide:true)}
     return uah
   }
+  private var compensationDraft: Operation {
+    var draft = o; draft.amount = converted ?? 0; draft.sourceMinor = nativeAmount; draft.entryCurrency = entryCurrency
+    return draft
+  }
+  private var compensationChoices: [Operation] {
+    guard o.kind == .receipt, o.receiptTreatment == .reimbursement else { return [] }
+    return finamiCompensationChoices(compensationDraft, operations: s.db.operations, accounts: s.db.accounts)
+  }
+  private var compensationValid: Bool {
+    o.kind != .receipt || o.receiptTreatment != .reimbursement || compensationChoices.contains { $0.id == o.refundOriginalID }
+  }
+  private func setTreatment(_ treatment: FinamiReceiptTreatment) {
+    o.receiptTreatment = treatment
+    if treatment != .reimbursement { o.refundOriginalID = nil; o.receiptExpenseCategory = nil }
+  }
   var valid: Bool {
-    paymentSelectionValid && (converted ?? 0)>0 && s.db.accounts.contains { $0.id == o.account } && (!requiresRate || usedRate.map{fxRate(finamiFXRateText($0)) != nil} == true)
+    compensationValid && paymentSelectionValid && (converted ?? 0)>0 && s.db.accounts.contains { $0.id == o.account } && (!requiresRate || usedRate.map{fxRate(finamiFXRateText($0)) != nil} == true)
       && (sourceCode != "USD" || entryCurrency == "USD")
       && (editorChoice != .withdrawal || o.kind != .transfer || cashAccounts.contains { $0.id == o.destination })
       && (o.kind != .transfer || (o.account != o.destination && s.db.accounts.contains { $0.id == o.destination } && (received ?? 0)>0 && entryCurrency == sourceCode))
   }
   private var editorStyle: String { s.db.preferences?.designStyle(for: "editor") ?? "original" }
   private func rememberAccount() { if s.db.preferences?.designEditorLastAccountEnabled == true && o.sourceBank == nil { s.changeAppearance { $0.designEditorLastAccount = o.account } } }
+  private func selectCategory(_ category: String) {
+    o.category = category; selectedLearningCategory = category
+    if o.kind == .receipt && o.receiptTreatment != .reimbursement { setTreatment(FinamiReceiptTreatment.suggestion(category)) }
+  }
   private func saveOperation() {
             if o.groupedBankParts != nil { if s.change({d in if let i=d.operations.firstIndex(where:{$0.id==o.id}) {d.operations[i].note=o.note;d.operations[i].tags=o.tags}}) {dismiss()};return }
             guard let n=converted, let entered=bankMinor(amount), valid else {return}
             o.amount=n
             if o.sourceBank != nil {o.classificationReviewed=true}
             if !o.kind.isReportCategory {o.category="Без категорії"}
+            if o.kind != .receipt { o.receiptTreatment = nil; o.receiptExpenseCategory = nil }
             o.sourceMinor=sourceCode == "USD" ? entered : n
             o.destinationMinor=o.kind == .transfer ? received : nil
             o.entryCurrency=entryCurrency
@@ -328,7 +356,7 @@ struct OpEditor: View {
             if s.change({ d in
               d.operations.removeAll { $0.id == o.id }
               d.operations.append(o)
-              if learnRule && selectedLearningCategory == o.category && o.category != "Без категорії" && (o.kind == .expense || o.kind == .income) && !o.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+              if learnRule && selectedLearningCategory == o.category && o.category != "Без категорії" && (o.kind == .expense || o.kind == .income || o.kind == .receipt) && !o.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 var rules = d.merchantRules ?? [:]; finamiRememberMerchant(o.note, kind: o.kind, category: o.category, rules: &rules); d.merchantRules = rules
               }
             }) {
@@ -370,7 +398,7 @@ struct OpEditor: View {
           Picker("Валюта введення",selection:$entryCurrency){Text("Гривня").tag("UAH");Text("Долар").tag("USD")}.disabled(financialLocked)
         }
         if requiresRate { FinamiField("Курс UAH за 1 USD", text: $rate, keyboard: .decimalPad).disabled(financialLocked); if let n=converted { LabeledContent("Сума у гривнях",value:money(n)) } }
-        if supportsExactUAH && o.kind == .income {FinamiField("Фактично отримано UAH (необов’язково)",text:$exactReceived,keyboard:.decimalPad).disabled(financialLocked)}
+        if supportsExactUAH && (o.kind == .income || o.kind == .receipt) {FinamiField("Фактично отримано UAH (необов’язково)",text:$exactReceived,keyboard:.decimalPad).disabled(financialLocked)}
         DatePicker("Дата і час", selection: $o.date, displayedComponents: [.date,.hourAndMinute]).disabled(financialLocked)
         Picker("Рахунок", selection: $o.account) {
           ForEach(s.db.accounts.filter{o.sourceBank == nil || $0.code == "UAH"}) { Text($0.name).tag($0.id) }
@@ -383,7 +411,7 @@ struct OpEditor: View {
           if sourceCode == "USD" && destinationCode == "UAH" && o.sourceBank == nil {FinamiField("Фактично отримано UAH (необов’язково)",text:$exactReceived,keyboard:.decimalPad).disabled(financialLocked);if exactMode {Text("Сума зарахування має пріоритет над введеним курсом.").font(.caption)}}
           if let n=received, !o.destination.isEmpty { LabeledContent("Зарахувати",value:currencyMoney(n,destinationCode)) }
         } else if o.kind.isReportCategory {
-          Picker("Категорія", selection: Binding(get: { o.category }, set: { o.category = $0; selectedLearningCategory = $0 })) {
+          Picker("Категорія", selection: Binding(get: { o.category }, set: { selectCategory($0) })) {
             ForEach(categories, id: \.self) { Text($0).tag($0) }
           }
           if editorStyle != "original" && editorStyle != "minimal" {
@@ -391,10 +419,30 @@ struct OpEditor: View {
             let recent = Array(Set(s.db.operations.suffix(150).filter { $0.kind == o.kind && categories.contains($0.category) }.map(\.category))).sorted()
             ScrollView(.horizontal, showsIndicators: false) { HStack {
               ForEach(Array((favorites + recent.filter { !favorites.contains($0) }).prefix(10)), id: \.self) { category in
-                Button { o.category = category; selectedLearningCategory = category } label: { Label(category, systemImage: favorites.contains(category) ? "star.fill" : "clock").font(.caption).padding(8).frame(minHeight:44).background(Color.accentColor.opacity(o.category == category ? 0.18 : 0.05),in: RoundedRectangle(cornerRadius: 8)) }.buttonStyle(.plain)
+                Button { selectCategory(category) } label: { Label(category, systemImage: favorites.contains(category) ? "star.fill" : "clock").font(.caption).padding(8).frame(minHeight:44).background(Color.accentColor.opacity(o.category == category ? 0.18 : 0.05),in: RoundedRectangle(cornerRadius: 8)) }.buttonStyle(.plain)
               }
             } }
             Button(favorites.contains(o.category) ? "Прибрати з обраних" : "Додати категорію в обрані") { s.changeAppearance { p in var list = Set(p.designEditorFavorites ?? []); if list.contains(o.category) { list.remove(o.category) } else { list.insert(o.category) }; p.designEditorFavorites = list.sorted() } }.font(.caption)
+          }
+        }
+        if o.kind == .receipt {
+          Section("Облік зарахування") {
+            Picker("У звітах", selection: Binding(get: { o.receiptTreatment ?? .pending }, set: { setTreatment($0) })) {
+              ForEach(FinamiReceiptTreatment.allCases) { Text($0.title).tag($0) }
+            }.disabled(financialLocked).accessibilityIdentifier("qa.receipt.treatment")
+            if o.receiptTreatment == .reimbursement {
+              TextField("Пошук початкової витрати", text: $compensationSearch)
+              let visible = compensationChoices.filter { $0.id == o.refundOriginalID || compensationSearch.isEmpty || $0.note.localizedCaseInsensitiveContains(compensationSearch) || $0.category.localizedCaseInsensitiveContains(compensationSearch) }
+              Picker("Початкова витрата", selection: Binding(get: { o.refundOriginalID ?? "" }, set: { o.refundOriginalID = $0.isEmpty ? nil : $0 })) {
+                Text("Обрати").tag("")
+                ForEach(Array(visible.prefix(100))) { original in
+                  Text(original.date.formatted(date: .abbreviated,time: .omitted) + " · " + original.category + " · " + (s.db.accounts.contains { $0.id == original.account && $0.hideAmounts == true } ? "••••" : s.visibleMoney(original.amount))).tag(original.id)
+                }
+                if let id = o.refundOriginalID, !visible.prefix(100).contains(where: { $0.id == id }) { Text("Раніше вибрана витрата").tag(id) }
+              }
+              if !compensationValid { Text("Обери витрату UAH, яка ще не була компенсована повністю.").font(.caption).foregroundStyle(.orange) }
+            }
+            Text("Баланс рахунку збільшується завжди. Компенсація зменшує витрати початкової категорії. Позики не створюють договір автоматично.").font(.caption).foregroundStyle(.secondary)
           }
         }
         if let parts=o.groupedBankParts {
@@ -439,7 +487,7 @@ struct OpEditor: View {
         if let imageID = o.scanImageID { NavigationLink("Вкладений скриншот") { FinamiScanAttachment(imageID: imageID) } }
         if let n = o.originalAmount, let c = o.originalCurrency { LabeledContent("Оригінальна сума", value: currencyMoney(n,c)) }
         if let fee = o.bankFee, fee > 0 { LabeledContent("Комісія у виписці", value: money(fee)) }
-        if o.kind == .expense || o.kind == .income {
+        if o.kind == .expense || o.kind == .income || o.kind == .receipt {
           Button("Визначити категорію") { o.category = suggestedCategory(o.note, kind: o.kind, database: s.db) }
           Toggle("Запам’ятати категорію для цього продавця", isOn: $learnRule)
         }

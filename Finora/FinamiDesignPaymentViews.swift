@@ -77,7 +77,7 @@ struct FinamiUpcomingDesign: View {
                             if p.designShowsUpcoming("date") && item.showPaymentDate != false && style == "paymentTimeline" { VStack { Text(payment.date.formatted(.dateTime.day())).font(.title3.bold()); Text(payment.date.formatted(.dateTime.month(.abbreviated))).font(.caption2) }.frame(minWidth: 38) }
                             else if p.designShowsUpcoming("image") && item.showPaymentImage != false {
                                 if let data = s.db.paymentPhotos?[payment.id], let image = FinamiImageCache.shared.image(data) { Image(uiImage: image).resizable().scaledToFill().frame(width: 36,height: 36).clipShape(RoundedRectangle(cornerRadius: 8)) }
-                                else { FinamiPaymentGlyph(icon: payment.subscription ? "repeat" : "creditcard.fill", side: 36) }
+                                else { FinamiBrandTile(name: payment.name, icon: payment.subscription ? "repeat" : "creditcard.fill", tint: .indigo, side: 36, paymentStyle: true) }
                             }
                             VStack(alignment: .leading, spacing: 3) {
                                 if p.designShowsUpcoming("name") && item.showPaymentNames != false { Text(payment.name).font(.subheadline.bold()) }
@@ -117,8 +117,7 @@ struct FinamiSubscriptionDesign: View {
             HStack(spacing: 8) {
                 if let data = s.db.paymentPhotos?[record.id], let image = FinamiImageCache.shared.image(data) { Image(uiImage: image).resizable().scaledToFill().frame(width: 34,height: 34).clipShape(RoundedRectangle(cornerRadius: 8)) }
                 else if custom != "auto" { FinamiIconTile(icon: custom, tint: tint, side: compact ? 30 : 40) }
-                else if !brand.0.isEmpty { Text(brand.0).font(.title2.bold()).foregroundStyle(tint).frame(width: compact ? 30 : 40, height: compact ? 30 : 40).background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 10)) }
-                else { FinamiIconTile(icon: "repeat", tint: tint, side: compact ? 30 : 40) }
+                else { FinamiBrandTile(name: record.name, icon: "repeat", tint: tint, side: compact ? 30 : 40) }
                 VStack(alignment: .leading) { Text(record.name).font(.subheadline.bold()); if !collapsed { Text(record.active ? record.next.formatted(date:.abbreviated,time:.omitted) : "Призупинено").font(.caption) } }
                 Spacer(minLength: 4)
                 Text(money(record.amount)).font(.subheadline.bold()).monospacedDigit()

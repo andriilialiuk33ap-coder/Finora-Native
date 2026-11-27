@@ -5,6 +5,8 @@ struct FinamiReportTotals {
     var income: Int64 = 0
     var expense: Int64 = 0
     var refunds: Int64 = 0
+    var receipts: Int64 = 0
+    var neutralReceipts: Int64 = 0
     var transfersIn: Int64 = 0
     var transfersOut: Int64 = 0
     var creditDraw: Int64 = 0
@@ -15,7 +17,7 @@ struct FinamiReportTotals {
     var count = 0
     var review = 0
     var net: Int64 { income - expense }
-    var incoming: Int64 { income + refunds + transfersIn + creditDraw + creditTopUp + unclassifiedIn }
+    var incoming: Int64 { income + neutralReceipts + refunds + transfersIn + creditDraw + creditTopUp + unclassifiedIn }
     // Gross movements are separate from income/expense. For internal transfers,
     // each account sees only its own leg; the aggregate sees both legs once.
     mutating func add(_ o: Operation, account: String? = nil) {
@@ -23,6 +25,10 @@ struct FinamiReportTotals {
         count += 1
         switch o.kind {
         case .income: income += o.amount
+        case .receipt:
+            receipts += o.amount
+            income += o.incomeValue
+            neutralReceipts += o.amount - o.incomeValue
         case .refund: refunds += o.amount
         case .transfer:
             if account == nil || account == o.account { transfersOut += o.amount }
@@ -37,18 +43,19 @@ struct FinamiReportTotals {
         case .expense: break
         }
         expense += o.expenseValue
-        if o.kind.needsReview { review += 1 }
+        if o.requiresReview { review += 1 }
     }
 }
 // Stable per-account display choices, independent of the ledger and report math.
 enum FinamiAccountReportField: String, CaseIterable, Identifiable {
-    case expense, income, refunds, transfersIn, transfersOut, creditDraw, creditTopUp, creditRepayment, unclassifiedIn, unclassifiedOut, net, review
+    case expense, income, refunds, transfersIn, transfersOut, creditDraw, creditTopUp, creditRepayment, unclassifiedIn, unclassifiedOut, net, review, receipts
     var id: String { rawValue }
     var title: String {
         switch self {
         case .expense: return "Чисті витрати"
         case .income: return "Доходи"
         case .refunds: return "Повернення покупок"
+        case .receipts: return "Зарахування (усі)"
         case .transfersIn: return "Вхідні перекази / поповнення"
         case .transfersOut: return "Вихідні перекази / зняття"
         case .creditDraw: return "Отримано кредиту"
@@ -78,6 +85,7 @@ enum FinamiAccountReportField: String, CaseIterable, Identifiable {
         case .expense: return t.expense
         case .income: return t.income
         case .refunds: return t.refunds
+        case .receipts: return t.receipts
         case .transfersIn: return t.transfersIn
         case .transfersOut: return t.transfersOut
         case .creditDraw: return t.creditDraw
@@ -118,7 +126,7 @@ struct FinamiReportSnapshot {
             guard account == nil || o.account == account || (o.kind == .transfer && o.destination == account) else { continue }
             if o.date >= interval.start && o.date < interval.end {
                 totals.add(o, account: account)
-                if o.kind.needsReview { reviewIDs.append(o.id) }
+                if o.requiresReview { reviewIDs.append(o.id) }
                 if o.expenseValue != 0 { categories[o.expenseGroup, default: 0] += o.expenseValue }
                 if account == nil || account == o.account {
                     accounts[o.account, default: FinamiReportTotals()].add(o, account: o.account)

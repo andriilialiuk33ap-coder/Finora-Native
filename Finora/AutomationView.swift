@@ -87,7 +87,7 @@ struct CapturePreferences: Codable {
         guard !(d.captureHandled ?? []).contains(e.id) else { return }
         if let operation, !d.operations.contains(where: { $0.id == e.id }) {
             d.operations.append(operation)
-            if learn && (operation.kind == .expense || operation.kind == .income) && operation.category != "Без категорії" && !e.merchant.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if learn && (operation.kind == .expense || operation.kind == .income || operation.kind == .receipt) && operation.category != "Без категорії" && !e.merchant.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 var rules = d.merchantRules ?? [:]; finamiRememberMerchant(e.merchant, kind: operation.kind, category: operation.category, rules: &rules); d.merchantRules = rules
             }
             if let available = e.reportedAvailable, d.accounts.contains(where: { $0.id == operation.account && $0.code == e.currency }) {
@@ -336,7 +336,8 @@ struct CaptureReview: View {
     @State private var category = ""
     @State private var remember = true
     private var selectedEvent: CapturedPayment { var e = event; e.account = accountID; return e }
-    private var categories: [String] { kind == .income ? s.db.incomeCategories : s.db.expenseCategories }
+    private var categories: [String] { kind == .receipt ? s.db.availableReceiptCategories : kind == .income ? s.db.incomeCategories : s.db.expenseCategories }
+    @State private var receiptTreatment: FinamiReceiptTreatment = .pending
     @State private var confirm=false
     @State private var discard=false
     @State private var separatePayment=false
@@ -362,6 +363,7 @@ struct CaptureReview: View {
                         Picker("Категорія", selection: $category) { Text("Автоматично: " + o.category).tag(""); ForEach(categories, id: \.self) { Text($0).tag($0) } }
                         if !event.merchant.isEmpty { Toggle("Запам’ятати категорію продавця", isOn: $remember) }
                     }
+                    if kind == .receipt { Picker("У звітах", selection: $receiptTreatment) { ForEach(FinamiReceiptTreatment.unlinkedChoices) { Text($0.title).tag($0) } } }
                     if let rate=o.exchangeRate {LabeledContent("Курс UAH/USD (поточний)",value:rate);LabeledContent("Еквівалент",value:s.visibleMoney(o.amount));Text("Після збереження можна виправити курс у редакторі операції.").font(.caption)}
                 }
                 else {Text("Рахунок видалено, валюта не збігається або немає курсу. Перевірте рахунок і курс. За потреби внесіть платіж вручну.").foregroundStyle(.orange)}
@@ -369,8 +371,8 @@ struct CaptureReview: View {
                 Button("Відхилити подію",role:.destructive){discard=true}
             }.navigationTitle("Перевірка платежу").navigationBarTitleDisplayMode(.inline)
                 .toolbar{ToolbarItem(placement:.cancellationAction){Button("Закрити"){dismiss()}}}
-                .onAppear{kind=event.incoming ? (event.incomeHint == true ? .income : .unclassifiedCredit) : event.clearPurchase ? .expense:.unclassifiedDebit; accountID=event.account}.onChange(of: kind) { _ in category="" }.onChange(of: accountID) { _ in separatePayment=false }
-                .confirmationDialog("Зберегти платіж?",isPresented:$confirm){Button("Зберегти"){if var o=s.capturedOperation(selectedEvent,kind:kind) { if kind.isReportCategory && categories.contains(category) { o.category=category }; if s.finishCapture(selectedEvent,operation:o,allowSeparatePayment:separatePayment,learnMerchantCategory:remember && !category.isEmpty && category != "Без категорії") { dismiss() } }}}
+                .onAppear{kind=event.incoming ? (event.incomeHint == true ? .income : .unclassifiedCredit) : event.clearPurchase ? .expense:.unclassifiedDebit; accountID=event.account}.onChange(of: kind) { _ in category=""; receiptTreatment = .pending }.onChange(of: category) { value in if kind == .receipt { receiptTreatment = FinamiReceiptTreatment.suggestion(value) } }.onChange(of: accountID) { _ in separatePayment=false }
+                .confirmationDialog("Зберегти платіж?",isPresented:$confirm){Button("Зберегти"){if var o=s.capturedOperation(selectedEvent,kind:kind) { if kind.isReportCategory && categories.contains(category) { o.category=category }; if kind == .receipt { o.receiptTreatment = receiptTreatment }; if s.finishCapture(selectedEvent,operation:o,allowSeparatePayment:separatePayment,learnMerchantCategory:remember && !category.isEmpty && category != "Без категорії") { dismiss() } }}}
                 .confirmationDialog("Відхилити без запису?",isPresented:$discard){Button("Відхилити",role:.destructive){if s.finishCapture(event,operation:nil){dismiss()}}}
         }
     }

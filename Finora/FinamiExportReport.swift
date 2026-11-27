@@ -27,7 +27,7 @@ struct FinamiExportReport {
             monthly[month.string(from: o.date), default: FinamiReportTotals()].add(o, account: account)
             var row: [FinamiExportCell] = []
             row.append(text(date.string(from: o.date)))
-            row.append(text(o.displayKindTitle))
+            row.append(text(o.kind == .receipt ? o.displayKindTitle + " · " + (o.receiptTreatment ?? .pending).title : o.displayKindTitle))
             row.append(money(o.amount))
             row.append(text(o.category))
             row.append(text(accountNames[o.account] ?? "—"))
@@ -40,6 +40,9 @@ struct FinamiExportReport {
             allRows.append(row)
             switch o.kind {
             case .income: incomeRows.append(row)
+            case .receipt:
+                if o.countsAsIncome { incomeRows.append(row) }
+                if o.isReimbursement { expenseRows.append(row) }
             case .expense:
                 expenseRows.append(row)
                 categories[o.category, default: 0] += o.amount

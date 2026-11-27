@@ -10,7 +10,7 @@ struct FinamiAuditView: View {
     private var incomes:[Operation] { s.db.operations.filter { o in o.kind == .unclassifiedCredit && bankKind(signed:o.amount,note:o.note,mcc:o.bankMCC,operationType:o.bankType,creditAccount:s.db.accounts.first(where:{$0.id==o.account})?.isCredit ?? false) == "income" } }
     var body: some View {
         let currentIssues = issues
-        let reviewIDs = s.db.operations.filter { $0.kind.needsReview }.map(\.id)
+        let reviewIDs = s.db.operations.filter { $0.requiresReview }.map(\.id)
         List {
             Section("Стан бази") {
                 LabeledContent("Операцій",value:String(s.db.operations.count))

@@ -23,10 +23,14 @@ func finamiCategoryMerchantKey(_ raw: String) -> String {
 }
 // Explicit user choices replace equivalent older rules only for the same financial kind.
 func finamiRememberMerchant(_ note: String, kind: Kind, category: String, rules: inout [String:String]) {
-    guard kind == .expense || kind == .income, !category.isEmpty, category != "Без категорії" else { return }
+    guard kind == .expense || kind == .income || kind == .receipt, !category.isEmpty, category != "Без категорії" else { return }
     let key = finamiCategoryMerchantKey(note)
     guard key.count >= 3, key.rangeOfCharacter(from: .letters) != nil,
           !["apple pay", "bank message", "переказ", "transfer", "зарахування", "надходження", "інше", "покупка", "kiosk", "clover", "apple com bill", "google play"].contains(key) else { return }
+    if kind == .receipt {
+        let generic = ["переказ коштів", "поповнення картки", "переказ на картку", "зарахування коштів", "card transfer", "p2p", "пумб", "monobank", "приватбанк"]
+        guard !generic.contains(key), key.split(separator: " ").count >= 2 else { return }
+    }
     let prefix = kind.rawValue + ":"
     rules = rules.filter { pair in !pair.key.hasPrefix(prefix) || finamiCategoryMerchantKey(String(pair.key.dropFirst(prefix.count))) != key }
     rules[prefix + key] = category
@@ -111,7 +115,7 @@ func finamiReconcile(account: Account, operations: [Operation], observedAt: Date
     let relevant = operations.filter { $0.account == account.id || ($0.kind == .transfer && $0.destination == account.id) }
     let historical = relevant.filter { $0.date <= observedAt }
     let available = CardPosition(net: FinamiLedgerIndex(operations: relevant).balanceAt(account,date:observedAt), limit: account.limit).available
-    return .init(computedAtObservation: available, reported: reported, laterOperations: relevant.count - historical.count, possibleUnclassified: historical.filter { $0.kind.needsReview }.count)
+    return .init(computedAtObservation: available, reported: reported, laterOperations: relevant.count - historical.count, possibleUnclassified: historical.filter { $0.requiresReview }.count)
 }
 
 struct FinamiPlannedOccurrence: Identifiable, Equatable {

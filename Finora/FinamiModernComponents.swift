@@ -59,7 +59,7 @@ struct FinamiModernPaymentRow: View {
     }
     var body: some View {
         HStack(alignment:.top,spacing:10) {
-            if showImage { FinamiPaymentGlyph(icon:glyph) }
+            if showImage { FinamiBrandTile(name: name, icon: glyph, tint: .indigo, side: 42, paymentStyle: true) }
             if dynamicTypeSize.isAccessibilitySize {
                 VStack(alignment:.leading,spacing:8) { labels; amounts.frame(maxWidth:.infinity,alignment:.trailing) }
             } else {

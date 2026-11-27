@@ -143,18 +143,52 @@ func finamiRefundChoices(_ refund:Operation,operations:[Operation],merchantKey:(
     for o in operations where o.id != refund.id {if let id=o.refundOriginalID {amounts[id,default:0] += o.signedNative}}
     return operations.filter{o in o.kind == .expense && o.account==refund.account && o.date<=refund.date && merchantKey(o.note)==key && -o.signedNative >= refund.signedNative+(amounts[o.id] ?? 0)}.sorted{$0.date>$1.date}
 }
+// A compensation is a distinct incoming operation, not a new debit or a bank refund.
+// Require a same-currency UAH original, and share the cap with actual refunds.
+func finamiCanCompensate(_ receipt: Operation, _ original: Operation) -> Bool {
+    receipt.kind == .receipt && original.kind == .expense && receipt.id != original.id && original.date <= receipt.date &&
+    (receipt.entryCurrency ?? receipt.originalCurrency ?? "UAH") == "UAH" && (original.entryCurrency ?? original.originalCurrency ?? "UAH") == "UAH" &&
+    receipt.amount > 0 && receipt.signedNative == receipt.amount && original.amount > 0 && original.signedNative == -original.amount && receipt.amount <= original.amount
+}
+func finamiCompensationChoices(_ receipt: Operation, operations: [Operation], accounts: [Account]) -> [Operation] {
+    guard accounts.contains(where: { $0.id == receipt.account && $0.code == "UAH" }) else { return [] }
+    let uah = Set(accounts.filter { $0.code == "UAH" }.map(\.id))
+    var used: [String:Int64] = [:]
+    for o in operations where o.id != receipt.id {
+        if let id = o.refundOriginalID {
+            let (sum, overflow) = (used[id] ?? 0).addingReportingOverflow(max(0,o.signedNative))
+            used[id] = overflow ? Int64.max : sum
+        }
+    }
+    return operations.filter { original in
+        uah.contains(original.account) && finamiCanCompensate(receipt, original) &&
+        (used[original.id] ?? 0) <= original.amount - receipt.amount
+    }.sorted { $0.date > $1.date }
+}
 func finamiSynchronizeRefundLinks(_ operations:inout [Operation])->Bool {
+    // Validate the whole candidate before propagating derived category names.
+    guard !operations.contains(where: { $0.kind == .receipt && $0.receiptTreatment == .reimbursement && $0.refundOriginalID == nil }) else { return false }
     let linked=operations.indices.filter{operations[$0].refundOriginalID != nil}
-    guard !linked.isEmpty else{return true}
+    if linked.isEmpty { return true }
     let lookup=Dictionary(operations.map{($0.id,$0)},uniquingKeysWith:{a,_ in a});var sums:[String:Int64]=[:]
     for i in linked {
         let o=operations[i]
-        guard o.kind == .refund,let id=o.refundOriginalID,let original=lookup[id],original.kind == .expense,original.account==o.account,original.date<=o.date,o.signedNative>0 else{return false}
+        guard let id=o.refundOriginalID,let original=lookup[id],original.kind == .expense,original.date<=o.date,o.signedNative>0 else{return false}
+        if o.kind == .receipt {
+            guard o.receiptTreatment == .reimbursement, finamiCanCompensate(o, original) else { return false }
+        } else {
+            guard o.kind == .refund, original.account == o.account else { return false }
+        }
         let (sum,overflow)=(sums[id] ?? 0).addingReportingOverflow(o.signedNative)
         guard !overflow,sum <= -original.signedNative else{return false}
         sums[id]=sum
     }
-    for i in linked {if let id=operations[i].refundOriginalID,let original=lookup[id] {operations[i].category=original.category}}
+    for i in linked {
+        if let id=operations[i].refundOriginalID,let original=lookup[id] {
+            if operations[i].kind == .receipt { operations[i].receiptExpenseCategory = original.category }
+            else { operations[i].category=original.category }
+        }
+    }
     return true
 }
 

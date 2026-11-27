@@ -54,7 +54,7 @@ struct FinamiImportHub: View {
                 Button("Оновити вхідні") { s.refreshCaptures(auto: false) }
             }
             Section("Потребують уточнення") {
-                let pending = s.db.operations.filter { $0.kind.needsReview }.sorted { $0.date > $1.date }
+                let pending = s.db.operations.filter { $0.requiresReview }.sorted { $0.date > $1.date }
                 if pending.isEmpty { Text("Усе уточнено").foregroundStyle(.secondary) }
                 ForEach(pending) { o in Button { operation = o } label: { VStack(alignment: .leading) { Text(o.note.isEmpty ? o.displayKindTitle : o.note); Text(s.visibleMoney(o.amount)).font(.caption) } } }
             }

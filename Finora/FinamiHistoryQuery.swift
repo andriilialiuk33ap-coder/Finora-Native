@@ -20,7 +20,7 @@ struct FinamiHistoryQuery: Hashable {
         let isAmountTerm = !normalizedAmountTerm.isEmpty && normalizedAmountTerm.utf8.allSatisfy { (48...57).contains($0) || $0 == 46 }
         let containsDigit = term.utf8.contains { (48...57).contains($0) }
         return operations.filter { o in
-            if reviewOnly && !o.kind.needsReview { return false }
+            if reviewOnly && !o.requiresReview { return false }
             if let sourceBank, o.sourceBank != sourceBank { return false }
             if let from, o.date < from { return false }
             if let until, o.date >= until { return false }
