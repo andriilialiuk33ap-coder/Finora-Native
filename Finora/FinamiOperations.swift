@@ -242,8 +242,12 @@ struct OpEditor: View {
     guard let payment = selectedPayment, !savedOperation else { return [] }
     return finamiEligiblePaymentOperations(s.db.operations, records: s.db.paidRecords ?? [], account: o.account, currency: payment.currency, amount: nativeAmount ?? payment.amount, date: o.date)
   }
+  private var hasRecentSubscriptionPayment: Bool {
+    guard let p=selectedPayment, p.subscription, let amount=nativeAmount else { return false }
+    return !finamiRecentSubscriptionPayments(s.db.paidRecords ?? [], paymentID:p.id, currency:p.currency, amount:amount, date:o.date).isEmpty
+  }
   private var paymentSelectionValid: Bool {
-    linkedPaymentID.isEmpty || (editorChoice != .withdrawal && linkedRecord == nil && finamiPaymentDebitKind(o.kind) && selectedPayment.map { p in if let amount=nativeAmount { return amount > 0 && (p.kind == "Розстрочка" ? amount <= (p.remaining ?? 0) : amount == p.amount) };return false } == true && o.date <= Date() && (similarPayments.isEmpty || separatePayment))
+    linkedPaymentID.isEmpty || (editorChoice != .withdrawal && linkedRecord == nil && finamiPaymentDebitKind(o.kind) && selectedPayment.map { p in if let amount=nativeAmount { return amount > 0 && (p.kind == "Розстрочка" ? amount <= (p.remaining ?? 0) : amount == p.amount) };return false } == true && o.date <= Date() && ((similarPayments.isEmpty && !hasRecentSubscriptionPayment) || separatePayment))
   }
   init(original: Operation) {
     _o = State(initialValue: original)
@@ -396,6 +400,13 @@ struct OpEditor: View {
         } else if let record = linkedRecord {
           Section("Пов’язаний платіж") {
             LabeledContent("Оплачено", value: s.db.obligations.first(where: { $0.id == record.paymentID })?.name ?? s.db.subscriptions?.first(where: { $0.id == record.paymentID })?.name ?? "Платіж з історії").accessibilityIdentifier("qa.operation.linked")
+            LabeledContent("Дата оплати",value:record.paidDate.formatted(date:.abbreviated,time:.omitted))
+            if o.kind == .expense, s.db.subscriptions?.contains(where:{$0.id == record.paymentID}) == true,
+               o.category != "📺 Підписки", categories.contains("📺 Підписки") {
+              Button("Встановити категорію «Підписки»") { o.category = "📺 Підписки"; selectedLearningCategory = nil }
+                .accessibilityIdentifier("qa.operation.subscriptionCategory")
+              Text("Збережи категорію без повторної оплати.").font(.caption).foregroundStyle(.secondary)
+            }
             Text("Ця операція вже оновила графік. Фінансові поля та видалення захищені від випадкової зміни; примітку й категорію можна редагувати.").font(.caption)
           }
         } else if editorChoice != .withdrawal && finamiPaymentDebitKind(o.kind) {
@@ -408,7 +419,7 @@ struct OpEditor: View {
             if let payment = selectedPayment {
               Button("Підставити суму платежу") { amount = amountText(payment.amount); entryCurrency = sourceCode }.disabled(o.sourceBank != nil)
               if nativeAmount != payment.amount { Text(payment.kind == "Розстрочка" ? "Часткова або дострокова оплата: перевір графік банку." : "Сума має дорівнювати плановому платежу.").font(.caption).foregroundStyle(.orange) }
-              if !similarPayments.isEmpty { Toggle("Це окрема нова оплата", isOn: $separatePayment); Text("Є схожа операція. Якщо оплату вже записано, відкрий її та прив’яжи платіж там.").font(.caption).foregroundStyle(.orange) }
+              if !similarPayments.isEmpty || hasRecentSubscriptionPayment { Toggle("Це окрема нова оплата", isOn: $separatePayment); Text("Є схожа або вже записана оплата. Підтвердь лише якщо це інший платіж.").font(.caption).foregroundStyle(.orange) }
               Text("Збереження оновить рахунок, залишок договору, наступну дату та нагадування одним записом.").font(.caption)
               if o.kind == .transfer { Text("Прив’язуй переказ лише якщо це фактична оплата договору, а не звичайне поповнення кредитної картки.").font(.caption).foregroundStyle(.orange) }
             }

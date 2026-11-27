@@ -74,6 +74,33 @@ import Foundation
         check(store.confirmPayment(store.upcomingPayments[0],mode:.markOnly,accountID:"",operationID:"",paidDate:date,kind:.expense) && store.db.operations.count==2,"mark only does not touch ledger")
         store.db.subscriptions=[SubscriptionRecord(name:"Music",amount:500,currency:"UAH",next:date)]
         check(store.confirmPayment(store.upcomingPayments[0],mode:.newOperation,accountID:account.id,operationID:"",paidDate:date,kind:.expense) && store.db.subscriptions?[0].payments.count==1 && store.db.operations.last?.expenseValue==500,"subscription paid from account with expense")
+        // Regression: a charge from yesterday already linked to this subscription must be
+        // discoverable as history but must never advance a second period by accident.
+        do {
+            let music = Store(); music.db.accounts=[account,otp]
+            let subscription=SubscriptionRecord(name:"Spotify",amount:30000,currency:"UAH",next:date)
+            music.db.subscriptions=[subscription]
+            let debit=Operation(kind:.expense,amount:30000,date:date,account:account.id)
+            music.db.operations=[debit]
+            let first=music.upcomingPayments[0]
+            check(music.confirmPayment(first,mode:.existing,accountID:account.id,operationID:debit.id,paidDate:date,kind:.expense),"subscription existing debit links without checkbox")
+            let next=music.upcomingPayments[0]; let records=music.db.paidRecords ?? []
+            check(music.db.operations.count==1 && next.date>first.date,"linked subscription advances one period without second debit")
+            check(finamiRecentSubscriptionPayments(records,paymentID:subscription.id,currency:"UAH",amount:30000,date:Date()).first?.operationID==debit.id,"recent linked charge shown in subscription history despite next cycle")
+            check(finamiEligiblePaymentOperations(music.db.operations,records:records,account:account.id,currency:"UAH",amount:30000,date:Date()).isEmpty,"used charge not selectable again")
+            check(finamiUsedPaymentOperations(music.db.operations,records:records,account:account.id,currency:"UAH",amount:30000,date:Date()).map(\.id)==[debit.id],"used charge discoverable for display")
+            check(finamiUsedPaymentOperations(music.db.operations,records:records,account:otp.id,currency:"UAH",amount:30000,date:Date()).isEmpty,"used list respects selected account")
+            check(finamiRecentSubscriptionPayments(records,paymentID:"other",currency:"UAH",amount:30000,date:Date()).isEmpty,"history not attributed to another subscription")
+            check(finamiRecentSubscriptionPayments(records,paymentID:subscription.id,currency:"USD",amount:30000,date:Date()).isEmpty,"recent warning respects currency")
+            check(finamiRecentSubscriptionPayments(records,paymentID:subscription.id,currency:"UAH",amount:30000,date:date.addingTimeInterval(86400*9)).isEmpty,"old history not treated as recent charge")
+            check(!music.confirmPayment(next,mode:.existing,accountID:account.id,operationID:debit.id,paidDate:Date(),kind:.expense),"cannot reuse linked charge even for next cycle")
+            check(!music.confirmPayment(next,mode:.markOnly,accountID:"",operationID:"",paidDate:Date(),kind:.expense),"mark only cannot repeat recent subscription charge silently")
+            check(!music.confirmPayment(next,mode:.newOperation,accountID:account.id,operationID:"",paidDate:Date(),kind:.expense),"new debit cannot repeat recent subscription charge silently")
+            let draft=Operation(kind:.expense,amount:30000,date:date,account:account.id)
+            check(!music.confirmPayment(next,mode:.newOperation,accountID:account.id,operationID:draft.id,paidDate:date,kind:.expense,operationDraft:draft),"operation editor cannot bypass recent charge guard")
+            check(music.db.operations.count==1 && music.db.paidRecords?.count==1 && music.upcomingPayments[0].date==next.date,"blocked duplicate attempts preserve ledger and schedule")
+            check(music.confirmPayment(next,mode:.markOnly,accountID:"",operationID:"",paidDate:Date(),kind:.expense,allowSeparate:true) && music.db.operations.count==1 && music.db.paidRecords?.count==2,"explicit separate payment mark only changes schedule, not ledger")
+        }
         // Directly entering or editing a ledger debit must advance the same schedule.
         do {
         let direct = Store(); let credit = Account(id:"credit",name:"Credit",opening:-30_000,accountType:"credit",creditLimit:100_000)

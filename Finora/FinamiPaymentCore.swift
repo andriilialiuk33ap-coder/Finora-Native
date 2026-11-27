@@ -30,6 +30,16 @@ func finamiEligiblePaymentOperations(_ operations: [Operation], records: [Finami
         o.account == account && finamiPaymentDebitKind(o.kind) && (currency == "UAH" || o.entryCurrency == currency) && (o.sourceMinor ?? o.amount) == amount && !used.contains(o.id) && o.date <= Date() && abs(o.date.timeIntervalSince(date)) <= 7 * 86400
     }.sorted { abs($0.date.timeIntervalSince(date)) < abs($1.date.timeIntervalSince(date)) }
 }
+// Recently recorded subscription charges are history, not selectable debits for another cycle.
+// A nearby charge is a warning, never proof that two actual payments are identical.
+func finamiRecentSubscriptionPayments(_ records: [FinamiPaidRecord], paymentID: String, currency: String, amount: Int64, date: Date) -> [FinamiPaidRecord] {
+    records.filter { $0.paymentID == paymentID && $0.currency == currency && $0.amount == amount && abs($0.paidDate.timeIntervalSince(date)) <= 7 * 86400 }
+        .sorted { $0.paidDate > $1.paidDate }
+}
+func finamiUsedPaymentOperations(_ operations: [Operation], records: [FinamiPaidRecord], account: String, currency: String, amount: Int64, date: Date) -> [Operation] {
+    let used = Set(records.compactMap(\.operationID))
+    return finamiEligiblePaymentOperations(operations.filter { used.contains($0.id) }, records: [], account: account, currency: currency, amount: amount, date: date)
+}
 func finamiNewPaymentOperation(name: String, account: Account, currency: String, amount: Int64, date: Date, kind: Kind, rate: Decimal?, categories: [String], preferredCategory: String = "💳 Розстрочка") -> Operation? {
     guard amount > 0, amount <= 1_000_000_000_000, account.code == currency, kind == .expense || kind == .creditRepayment else { return nil }
     let converted: Int64
