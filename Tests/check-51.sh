@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
+grep -qx "// END_PAYMENT_STORE_CORE" Finora/FinamiPayments.swift
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-{ echo 'import Foundation'; echo 'let cash="cash"'; echo 'let expenseDefaults=["Без категорії", "💳 Розстрочка"]; let incomeDefaults=["Без категорії"]'; sed -n '/^enum Kind:/,/^struct Legacy:/p' Finora/Finora.swift | sed '$d'; sed -n '/^enum OperationSort:/,/^func ruleKey/p' Finora/IzanamiFeatures.swift | sed '$d'; grep '^func ruleKey(' Finora/IzanamiFeatures.swift; sed -n '/^enum SubscriptionPeriod:/,/^func currencyMoney/p' Finora/IzanamiFeatures.swift | sed '$d'; sed -n '/^struct FinamiPayment:/,/^struct FinamiPaymentCard:/p' Finora/FinamiPayments.swift | sed '$d'; cat <<'SWIFT'
+{ echo 'import Foundation'; echo 'let cash="cash"'; echo 'let expenseDefaults=["Без категорії", "💳 Розстрочка"]; let incomeDefaults=["Без категорії"]'; sed -n '/^enum Kind:/,/^struct Legacy:/p' Finora/Finora.swift | sed '$d'; sed -n '/^enum OperationSort:/,/^func ruleKey/p' Finora/IzanamiFeatures.swift | sed '$d'; grep '^func ruleKey(' Finora/IzanamiFeatures.swift; sed -n '/^enum SubscriptionPeriod:/,/^func currencyMoney/p' Finora/IzanamiFeatures.swift | sed '$d'; sed -n '/^struct FinamiPayment:/,/^\/\/ END_PAYMENT_STORE_CORE$/p' Finora/FinamiPayments.swift | sed '$d'; cat <<'SWIFT'
 struct DashboardItem: Codable {}
 struct AppearancePreferences: Codable { var theme = "old" }
 struct ForecastPreferences: Codable {}
