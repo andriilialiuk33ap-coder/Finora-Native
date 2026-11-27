@@ -16,6 +16,8 @@ bash Tests/check-build52.sh
 bash Tests/check-build53.sh
 bash Tests/check-build55.sh
 bash Tests/check-build56.sh
+bash Tests/check-build60-ocr.sh
+bash Tests/check-build62-optimization.sh
 bash Tests/check-load-database.sh
 bash Tests/check-encryption-macos.sh
 for file in Finora/*.swift UITests/*.swift FinamiWidgets/*.swift WidgetShared/*.swift; do swiftc -frontend -parse "$file"; done

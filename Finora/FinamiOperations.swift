@@ -227,7 +227,7 @@ struct OpEditor: View {
   @State private var calculatorInput = ""
   @State private var calculatorMode = "+"
   private var repeatCandidate: Operation? { s.db.operations.filter { $0.kind == o.kind && $0.account == o.account && $0.sourceBank == nil && $0.bankKey == nil && $0.groupedBankParts == nil && $0.kind != .transfer && $0.entryCurrency != "USD" && $0.amount > 0 }.max { $0.date < $1.date } }
-  private var linkedRecord: FinamiPaidRecord? { (s.db.paidRecords ?? []).first { $0.operationID == o.id } }
+  private var linkedRecord: FinamiPaidRecord? { s.paymentLookup.record(for: o.id) }
   private var financialLocked: Bool {linkedRecord != nil || o.groupedBankParts != nil}
   private var savedOperation: Bool { s.db.operations.contains { $0.id == o.id } }
   private var paymentChoices: [FinamiPayment] {
@@ -240,11 +240,11 @@ struct OpEditor: View {
   private var nativeAmount: Int64? { sourceCode == "USD" ? bankMinor(amount) : converted }
   private var similarPayments: [Operation] {
     guard let payment = selectedPayment, !savedOperation else { return [] }
-    return finamiEligiblePaymentOperations(s.db.operations, records: s.db.paidRecords ?? [], account: o.account, currency: payment.currency, amount: nativeAmount ?? payment.amount, date: o.date)
+    return s.paymentLookup.matches(account: o.account, currency: payment.currency, amount: nativeAmount ?? payment.amount, date: o.date, used: false)
   }
   private var hasRecentSubscriptionPayment: Bool {
     guard let p=selectedPayment, p.subscription, let amount=nativeAmount else { return false }
-    return !finamiRecentSubscriptionPayments(s.db.paidRecords ?? [], paymentID:p.id, currency:p.currency, amount:amount, date:o.date).isEmpty
+    return !s.paymentLookup.recent(paymentID:p.id, currency:p.currency, amount:amount, date:o.date).isEmpty
   }
   private var paymentSelectionValid: Bool {
     linkedPaymentID.isEmpty || (editorChoice != .withdrawal && linkedRecord == nil && finamiPaymentDebitKind(o.kind) && selectedPayment.map { p in if let amount=nativeAmount { return amount > 0 && (p.kind == "Розстрочка" ? amount <= (p.remaining ?? 0) : amount == p.amount) };return false } == true && o.date <= Date() && ((similarPayments.isEmpty && !hasRecentSubscriptionPayment) || separatePayment))
@@ -271,8 +271,10 @@ struct OpEditor: View {
       o.cashWithdrawal = choice == .withdrawal ? true : nil
       if choice == .withdrawal && next == .transfer { o.destination = cashAccounts.first(where: { $0.code == sourceCode })?.id ?? cashAccounts.first?.id ?? "" }
       if next != .transfer { o.destination = "" }
-      if next == .income && previous != .income { o.category = suggestedCategory(o.note, kind: .income, database: s.db) }
-      if previous == .income && next == .expense { o.category = "Без категорії" }
+      if next != previous {
+        o.category = FinamiCategoryCore.categoryAfterTypeChange(o.category, from: previous, to: next, database: s.db, note: o.note)
+        selectedLearningCategory = nil
+      }
       if next == .transfer { entryCurrency = sourceCode }
       linkedPaymentID = ""; separatePayment = false
     })

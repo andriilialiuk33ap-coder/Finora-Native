@@ -426,12 +426,20 @@ struct DataFile: FileDocument {
   @Published private(set) var db = Database() {
     didSet {
       mutationVersion &+= 1
+      cachedPaymentLookup = nil
       if oldValue.operations != db.operations { ledgerIndex = nil; reportCache.removeAll(); comparisonCache.removeAll(); activityCache.removeAll(); historyCache.removeAll(); dashboardMonthCache.removeAll(); dashboardMetricsCache.removeAll() }
       if oldValue.accounts.map(\.id) != db.accounts.map(\.id) || oldValue.accounts.map(\.name) != db.accounts.map(\.name) || oldValue.accounts.map(\.hideAmounts) != db.accounts.map(\.hideAmounts) { historyCache.removeAll() }
       if oldValue.accounts.map(\.reconciliationDate) != db.accounts.map(\.reconciliationDate) || oldValue.accounts.map(\.id) != db.accounts.map(\.id) {ledgerIndex=nil}
     }
   }
   private var mutationVersion: UInt64 = 0
+  private var cachedPaymentLookup: (revision: UInt64, value: FinamiPaymentLookup)?
+  var paymentLookup: FinamiPaymentLookup {
+    if let cachedPaymentLookup, cachedPaymentLookup.revision == mutationVersion { return cachedPaymentLookup.value }
+    let value = FinamiPaymentLookup(operations: db.operations, records: db.paidRecords ?? [])
+    cachedPaymentLookup = (mutationVersion, value)
+    return value
+  }
   private var ledgerIndex: FinamiLedgerIndex?
   private var dashboardMonthCache: [DateInterval: [Operation]] = [:]
   private var dashboardMetricsCache: [DateInterval: FinamiDashboardMetrics] = [:]
@@ -1666,14 +1674,17 @@ struct Categories: View {
       .confirmationDialog("Перенести операції перед видаленням",isPresented:Binding(get:{deleting != nil},set:{if !$0 {deleting=nil}}),titleVisibility:.visible) { ForEach(cats.filter{$0 != deleting},id:\.self) { c in Button("Перенести в «"+c+"»") { if let old=deleting { replace(old,with:c,remove:true) };deleting=nil } }; Button("Скасувати",role:.cancel){deleting=nil} } message:{Text("Операції не видаляються. Бюджет і правила категорії буде перенесено.")}
   }
   func toggle(_ c:String) { s.change { d in var list=income ? d.hiddenIncomeCategories ?? [] : d.hiddenExpenseCategories ?? []; if list.contains(c) { list.removeAll{$0==c} } else { list.append(c) }; if income {d.hiddenIncomeCategories=list} else {d.hiddenExpenseCategories=list} } }
-  func save() { let c=name.trimmingCharacters(in:.whitespacesAndNewlines); guard !c.isEmpty, !cats.contains(c) || editing==c else{return}; if let old=editing,old != c { replace(old,with:c,remove:false) } else if editing==nil {s.change{d in if income{d.incomeCategories.append(c)}else{d.expenseCategories.append(c)}}}; if !income {s.change{d in var groups=d.categoryParents ?? [:];groups[c]=parent.isEmpty ? nil : parent;d.categoryParents=groups}};adding=false }
-  func replace(_ old:String,with new:String,remove:Bool) { s.change { d in
-    if income { d.incomeCategories.removeAll{$0==old};if !remove{d.incomeCategories.append(new)};if !remove, d.hiddenIncomeCategories?.contains(old)==true {d.hiddenIncomeCategories?.append(new)};d.hiddenIncomeCategories?.removeAll{$0==old} }
-    else {d.expenseCategories.removeAll{$0==old};if !remove{d.expenseCategories.append(new)};if !remove, d.hiddenExpenseCategories?.contains(old)==true {d.hiddenExpenseCategories?.append(new)};d.hiddenExpenseCategories?.removeAll{$0==old};d.categoryParents?.removeValue(forKey:old);if let limit=d.limits.removeValue(forKey:old){d.limits[new,default:0]+=limit} }
-    for i in d.operations.indices where d.operations[i].category==old && (income ? d.operations[i].kind == .income : [.expense,.refund].contains(d.operations[i].kind)) {d.operations[i].category=new}
-    if var rules=d.merchantRules {for key in Array(rules.keys) where rules[key]==old && (income ? key.hasPrefix("income:") : key.hasPrefix("expense:")){rules[key]=new};d.merchantRules=rules}
-    if !income, var items=d.dashboard {for i in items.indices {items[i].categorySelection=items[i].categorySelection?.map{$0==old ? new : $0}};d.dashboard=items}
-  } }
+  func save() {
+    let c = name.trimmingCharacters(in: .whitespacesAndNewlines)
+    var candidate = s.db
+    guard FinamiCategoryCore.edit(&candidate, income: income, old: editing, new: c, parent: income ? nil : parent) else { s.error = "Перевір назву категорії та бюджет."; return }
+    if s.change({ $0 = candidate }) { adding = false }
+  }
+  func replace(_ old: String, with new: String, remove: Bool) {
+    var candidate = s.db
+    guard FinamiCategoryCore.edit(&candidate, income: income, old: old, new: new, merge: remove) else { s.error = "Не вдалося перенести категорію. Перевір назву та бюджет."; return }
+    s.change { $0 = candidate }
+  }
 }
 struct Insights: View {
   @EnvironmentObject var s: Store

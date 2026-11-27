@@ -24,7 +24,7 @@ extension Store {
         return total
     }
     // One atomic write advances the schedule, records the chosen account, and optionally adds a ledger entry.
-    func confirmPayment(_ payment: FinamiPayment, mode: FinamiPaymentMode, accountID: String, operationID: String, paidDate: Date, kind: Kind, allowSeparate: Bool = false, operationDraft: Operation? = nil, learnCategory: Bool = false, actualAmount: Int64? = nil) -> Bool {
+    func confirmPayment(_ payment: FinamiPayment, mode: FinamiPaymentMode, accountID: String, operationID: String, paidDate: Date, kind: Kind, allowSeparate: Bool = false, operationDraft: Operation? = nil, learnCategory: Bool = false, actualAmount: Int64? = nil, searchDays: Int = 7) -> Bool {
         guard let live=upcomingPayments.first(where:{$0.id==payment.id}),live.date==payment.date,live.amount==payment.amount,live.amount>0, live.currency == payment.currency, live.kind == payment.kind, live.subscription == payment.subscription, paidDate <= Date(), live.remaining == payment.remaining else {error="Платіж уже змінено. Відкрий його знову.";return false}
         let amount = actualAmount ?? payment.amount
         guard amount > 0, (payment.kind == "Розстрочка" && !payment.subscription ? amount <= (live.remaining ?? 0) : amount == live.amount) else { error="Сума не відповідає залишку або плановому платежу."; return false }
@@ -32,7 +32,7 @@ extension Store {
             error = "Схожу оплату цієї підписки вже записано. Перевір історію або підтвердь, що це інший платіж."; return false
         }
         let account = db.accounts.first { $0.id == accountID && $0.code == payment.currency }
-        let candidates = finamiEligiblePaymentOperations(db.operations, records: db.paidRecords ?? [], account: accountID, currency: payment.currency, amount: amount, date: paidDate)
+        let candidates = finamiEligiblePaymentOperations(db.operations, records: db.paidRecords ?? [], account: accountID, currency: payment.currency, amount: amount, date: paidDate, searchDays: mode == .existing ? searchDays : 7)
         let existing = candidates.first { $0.id == operationID }
         var newOperation: Operation?
         if let draft = operationDraft {
@@ -209,13 +209,14 @@ struct FinamiPaymentCheckout: View {
     @State private var paymentKind = Kind.creditRepayment
     @State private var acceptNew = false
     @State private var enteredAmount = ""
+    @State private var searchDays = 7
     @State private var openedOperation: Operation?
     private var recentPayments: [FinamiPaidRecord] {
         guard payment.subscription else { return [] }
-        return finamiRecentSubscriptionPayments(s.db.paidRecords ?? [], paymentID:payment.id, currency:payment.currency, amount:amount, date:paidDate)
+        return s.paymentLookup.recent(paymentID:payment.id, currency:payment.currency, amount:amount, date:paidDate)
     }
     private var usedOperations: [Operation] {
-        finamiUsedPaymentOperations(s.db.operations, records:s.db.paidRecords ?? [], account:accountID, currency:payment.currency, amount:amount, date:paidDate)
+        s.paymentLookup.matches(account:accountID, currency:payment.currency, amount:amount, date:paidDate, used:true, searchDays:searchDays)
     }
     private func paymentName(_ id: String) -> String {
         s.db.subscriptions?.first(where:{$0.id == id})?.name ?? s.db.obligations.first(where:{$0.id == id})?.name ?? "Платіж з історії"
@@ -229,7 +230,7 @@ struct FinamiPaymentCheckout: View {
     private var amount: Int64 { payment.kind == "Розстрочка" && !enteredAmount.isEmpty ? (bankMinor(enteredAmount) ?? 0) : payment.amount }
     private var mode: FinamiPaymentMode? { FinamiPaymentMode(rawValue:selectedMode) }
     private var accounts: [Account] { s.db.accounts.filter { $0.code == payment.currency } }
-    private var candidates: [Operation] { finamiEligiblePaymentOperations(s.db.operations, records:s.db.paidRecords ?? [], account:accountID, currency:payment.currency, amount:amount, date:paidDate) }
+    private var candidates: [Operation] { s.paymentLookup.matches(account:accountID, currency:payment.currency, amount:amount, date:paidDate, used:false, searchDays:mode == .existing ? searchDays : 7) }
     private var valid: Bool {
         guard let mode,amount>0,amount <= (payment.remaining ?? payment.amount) else { return false }
         if mode == .markOnly { return !needsSeparateConfirmation || acceptNew }
@@ -262,6 +263,10 @@ struct FinamiPaymentCheckout: View {
                 if let a = accounts.first(where:{$0.id == accountID}), mode != .existing { LabeledContent("Доступно",value:a.hideAmounts == true ? "••••" : s.visibleMoney(s.available(a),a.code)); if s.available(a) < amount { Text("Доступного залишку недостатньо за даними Finami. Перевір фактичну оплату.").foregroundStyle(.orange).font(.caption) } }
                 Picker("Як записати",selection:$selectedMode) { Text("Обрати спосіб").tag(""); ForEach(FinamiPaymentMode.allCases) { Text($0.rawValue).tag($0.rawValue) } }.accessibilityIdentifier("qa.payment.mode")
                 if mode == .existing {
+                    Picker("Період пошуку", selection: $searchDays) {
+                        Text("±7 днів").tag(7); Text("±30 днів").tag(30); Text("±90 днів").tag(90)
+                    }
+                    Text("Зіставлення за сумою та рахунком. Перевір фактичну дату списання, особливо за ширшого періоду.").font(.caption).foregroundStyle(.secondary)
                     if !candidates.isEmpty {
                         Picker("Операція",selection:$selectedOperation) {
                             Text("Обрати існуючу").tag("")
@@ -269,10 +274,10 @@ struct FinamiPaymentCheckout: View {
                         }
                         Button("Показати вибране списання") { openedOperation=candidates.first(where:{$0.id == selectedOperation}) }.disabled(selectedOperation.isEmpty)
                     } else if accountID.isEmpty { Text("Спочатку обери рахунок, з якого списано кошти.").font(.caption) }
-                    else if usedOperations.isEmpty { Text("Немає вільних списань на цю суму за 7 днів до/після дати оплати. Перевір рахунок, дату та фактичну суму.").font(.caption) }
+                    else if usedOperations.isEmpty { Text("Немає вільних списань на цю суму за \(searchDays) днів до/після дати оплати. Перевір рахунок, дату та фактичну суму.").font(.caption) }
                     else { Text("Знайдені списання вже прив’язані до платежів. Повторно використати їх не можна.").font(.caption) }
                     ForEach(usedOperations) { operation in
-                        if let record=s.db.paidRecords?.first(where:{$0.operationID == operation.id}) {
+                        if let record=s.paymentLookup.record(for:operation.id) {
                             Button { openedOperation=operation } label: {
                                 VStack(alignment:.leading,spacing:4) {
                                     Label(record.paymentID == payment.id ? "Уже оплачено: " + payment.name : "Пов’язано: " + paymentName(record.paymentID),systemImage:"link")
@@ -293,12 +298,13 @@ struct FinamiPaymentCheckout: View {
                     Text("Знайдено схожу або вже записану оплату. Підтвердь лише якщо це справді інший платіж.").font(.caption).foregroundStyle(.orange)
                 }
             }
-            Section { Button("Підтвердити оплату") { guard let mode, valid else {return}; if s.confirmPayment(payment,mode:mode,accountID:accountID,operationID:selectedOperation,paidDate:paidDate,kind:paymentKind,allowSeparate:acceptNew,actualAmount:amount) {onComplete()} }.disabled(!valid).accessibilityIdentifier("qa.payment.confirm"); Text("Finami записує фактичну оплату в облік, але не здійснює банківський платіж.").font(.caption).foregroundStyle(.secondary) }
+            Section { Button("Підтвердити оплату") { guard let mode, valid else {return}; if s.confirmPayment(payment,mode:mode,accountID:accountID,operationID:selectedOperation,paidDate:paidDate,kind:paymentKind,allowSeparate:acceptNew,actualAmount:amount,searchDays:searchDays) {onComplete()} }.disabled(!valid).accessibilityIdentifier("qa.payment.confirm"); Text("Finami записує фактичну оплату в облік, але не здійснює банківський платіж.").font(.caption).foregroundStyle(.secondary) }
         }.navigationTitle("Записати оплату").toolbar { ToolbarItem(placement:.cancellationAction){Button("Скасувати"){dismiss()}} }
         .onAppear { paymentKind = payment.subscription || payment.kind == "Регулярний платіж" ? .expense : .creditRepayment }
         .onChange(of:accountID) { _ in selectedOperation="";acceptNew=false }
         .onChange(of:paidDate) { _ in selectedOperation="";acceptNew=false }
         .onChange(of:enteredAmount) { _ in selectedOperation="";acceptNew=false }
+        .onChange(of:searchDays) { _ in selectedOperation="";acceptNew=false }
         .onChange(of:selectedMode) { _ in selectedOperation="";acceptNew=false }
         .sheet(item:$openedOperation) { OpEditor(original:$0) }
         }

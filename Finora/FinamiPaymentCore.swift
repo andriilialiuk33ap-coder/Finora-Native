@@ -24,10 +24,42 @@ enum FinamiPaymentMode: String, CaseIterable, Identifiable {
     case newOperation = "Створити списання", existing = "Вже є в операціях", markOnly = "Лише позначити сплаченим"
     var id: String { rawValue }
 }
-func finamiEligiblePaymentOperations(_ operations: [Operation], records: [FinamiPaidRecord], account: String, currency: String, amount: Int64, date: Date) -> [Operation] {
+/// A read-only index for checkout; invalidated with the database revision.
+/// It keeps the same eligibility policy as the commit path.
+struct FinamiPaymentLookup {
+    private struct Key: Hashable { let account: String; let amount: Int64 }
+    private let operations: [Operation]
+    private var byAmount: [Key: [Int]] = [:]
+    private var recordsByPayment: [String: [FinamiPaidRecord]] = [:]
+    private var recordsByOperation: [String: FinamiPaidRecord] = [:]
+    init(operations: [Operation], records: [FinamiPaidRecord]) {
+        self.operations = operations
+        for i in operations.indices where finamiPaymentDebitKind(operations[i].kind) {
+            let o = operations[i]
+            byAmount[Key(account: o.account, amount: o.sourceMinor ?? o.amount), default: []].append(i)
+        }
+        for r in records {
+            recordsByPayment[r.paymentID, default: []].append(r)
+            if let id = r.operationID, recordsByOperation[id] == nil { recordsByOperation[id] = r }
+        }
+    }
+    func record(for operationID: String) -> FinamiPaidRecord? { recordsByOperation[operationID] }
+    func recent(paymentID: String, currency: String, amount: Int64, date: Date) -> [FinamiPaidRecord] {
+        finamiRecentSubscriptionPayments(recordsByPayment[paymentID] ?? [], paymentID: paymentID, currency: currency, amount: amount, date: date)
+    }
+    func matches(account: String, currency: String, amount: Int64, date: Date, used: Bool, searchDays: Int = 7) -> [Operation] {
+        let rows = (byAmount[Key(account: account, amount: amount)] ?? []).compactMap { i -> Operation? in
+            let o = operations[i]
+            return (recordsByOperation[o.id] != nil) == used ? o : nil
+        }
+        return finamiEligiblePaymentOperations(rows, records: [], account: account, currency: currency, amount: amount, date: date, searchDays: searchDays)
+    }
+}
+func finamiEligiblePaymentOperations(_ operations: [Operation], records: [FinamiPaidRecord], account: String, currency: String, amount: Int64, date: Date, searchDays: Int = 7) -> [Operation] {
     let used = Set(records.compactMap(\.operationID))
+    let window = Double(max(7, min(90, searchDays))) * 86400
     return operations.filter { o in
-        o.account == account && finamiPaymentDebitKind(o.kind) && (currency == "UAH" || o.entryCurrency == currency) && (o.sourceMinor ?? o.amount) == amount && !used.contains(o.id) && o.date <= Date() && abs(o.date.timeIntervalSince(date)) <= 7 * 86400
+        o.account == account && finamiPaymentDebitKind(o.kind) && (currency == "UAH" || o.entryCurrency == currency) && (o.sourceMinor ?? o.amount) == amount && !used.contains(o.id) && o.date <= Date() && abs(o.date.timeIntervalSince(date)) <= window
     }.sorted { abs($0.date.timeIntervalSince(date)) < abs($1.date.timeIntervalSince(date)) }
 }
 // Recently recorded subscription charges are history, not selectable debits for another cycle.

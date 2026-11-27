@@ -92,7 +92,13 @@ struct FinamiRulesView: View {
             Section("Збережені правила") { ForEach((s.db.merchantRules ?? [:]).keys.sorted(),id:\.self){key in VStack(alignment:.leading){Text(key);Text(s.db.merchantRules?[key] ?? "").font(.caption)}.swipeActions{Button(role:.destructive){s.change{$0.merchantRules?.removeValue(forKey:key)}}label:{Label("Видалити",systemImage:"trash")}} } }
         }.navigationTitle("Правила категорій").confirmationDialog("Застосувати лише вибрані категорії? Суми не зміняться.",isPresented:$confirm){Button("Застосувати"){apply()}}
     }
-    private func saveRule() { let key=(income ? Kind.income:Kind.expense).rawValue+":"+finamiMerchantKey(merchant); let value=chosen; if s.change({d in var rules=d.merchantRules ?? [:]; rules=rules.filter{ pair in let prefix=(income ? Kind.income:Kind.expense).rawValue+":"; return !pair.key.hasPrefix(prefix) || finamiMerchantKey(String(pair.key.dropFirst(prefix.count))) != finamiMerchantKey(merchant) };rules[key]=value;d.merchantRules=rules}){merchant="";chosen="Без категорії"} }
+    private func saveRule() {
+        var rules = s.db.merchantRules ?? [:]
+        let before = rules
+        finamiRememberMerchant(merchant, kind: income ? .income : .expense, category: chosen, rules: &rules)
+        guard rules != before else { s.error = "Правило вже існує або назва продавця надто загальна."; return }
+        if s.change({ $0.merchantRules = rules }) { merchant = ""; chosen = "Без категорії" }
+    }
     private func apply() { let proposals=groups.compactMap { group -> (FinamiCategoryGroup,String)? in let c=selected[group.id] ?? group.suggestion; return c != "Без категорії" && (group.kind == .income ? incomes:expense).contains(c) ? (group,c):nil }; if s.change({d in var rules=d.merchantRules ?? [:];var changes:[String:String]=[:];for (group,c) in proposals {let prefix=group.kind.rawValue+":";rules=rules.filter{!$0.key.hasPrefix(prefix) || prefix+finamiMerchantKey(String($0.key.dropFirst(prefix.count))) != group.id};rules[group.id]=c;for id in group.ids {changes[id]=c}};for i in d.operations.indices {if let c=changes[d.operations[i].id] {d.operations[i].category=c}};d.merchantRules=rules}) {selected=[:]} }
     private func install() { s.change { d in
         let parent="🍺 Алкоголь", beer="Пиво", wine="Вино", spirits="Міцні напої", pets="🐾 Тварини", petShop="Зоомагазини", sweets="Солодощі", games="Азартні ігри"
