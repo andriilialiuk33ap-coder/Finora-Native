@@ -106,6 +106,7 @@ struct FinamiHomeAccountCard: View {
     var mode: String = "all"
     var onAccountsScreen = false
     var dashboardSize: DashboardSize? = nil
+    var template: String? = nil
     @State private var route: Route?
     private enum Route: Identifiable {
         case settings, history, reconcile, edit(Account), operation(Operation)
@@ -210,7 +211,8 @@ struct FinamiHomeAccountCard: View {
         .padding(dashboardSize == .small ? 9 : dashboardSize == .large ? 20 : style == .compact ? 12 : 16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background {
-            if variant == "auroraCard" && s.db.preferences?.designLowEffects != true {
+            if (template ?? s.db.preferences?.cardTemplate ?? "За дизайном") != "За дизайном" { Color.clear.modifier(FinamiCardStyle(tint: tint, template: template)) }
+            else if variant == "auroraCard" && s.db.preferences?.designLowEffects != true {
                 FinamiAccountSurface(tint: tint, radius: 24).overlay { RoundedRectangle(cornerRadius: 24).fill(LinearGradient(colors: [tint.opacity(0.17), .clear, tint.opacity(0.09)], startPoint: .topLeading, endPoint: .bottomTrailing)) }
             } else if style == .physical || style == .premium {
                 FinamiAccountSurface(tint: tint, radius: 24)
@@ -339,13 +341,13 @@ struct FinamiHomeAccountsSettings: View {
         List {
             Section("Загальний стиль") {
                 FinamiComponentStylePicker(component: "accounts", title: "Design 3.0")
-                Picker("Шаблон", selection: Binding(get: { accountStyle(s.db.preferences?.homeAccountLayout).rawValue }, set: { v in s.changeAppearance { p in p.homeAccountLayout = v } })) {
+                Picker("Шаблон", selection: Binding(get: { accountStyle(s.db.preferences?.homeAccountLayout).rawValue }, set: { v in s.changeAppearance { p in p.homeAccountLayout = v; p.designLayout = "cards"; p.modernAccountGrid = false; p.setDesignStyle("original", for: "accounts") } })) {
                     ForEach(HomeAccountStyle.allCases) { Text($0.title).tag($0.rawValue) }
                 }
                 Picker("Права частина", selection: preference(\.homeAccountRight, fallback: "")) {
                     Text("За шаблоном").tag(""); ForEach(HomeAccountRight.allCases) { Text($0.title).tag($0.rawValue) }
                 }
-                Text("Права частина налаштовується окремо. Якщо показник вибраний праворуч, він не дублюється нижче.").font(.caption).foregroundStyle(.secondary)
+                Text("Шаблон перемикає рахунки на повні картки; сітку можна повернути у Design Lab. Індивідуальні стилі мають пріоритет. Права частина налаштовується окремо.").font(.caption).foregroundStyle(.secondary)
             }
             Section("Показники за замовчуванням") { ForEach(HomeAccountField.allCases) { f in Toggle(f.title, isOn: field(f)) } }
             Section("Закріплені") { accountRows(accounts.filter { $0.cardOptions?.pinned == true }, pinned: true) }
@@ -398,7 +400,13 @@ struct FinamiHomeAccountSettings: View {
                 }
                 Section("Дизайн") {
                     FinamiComponentStylePicker(component: "accounts", title: "Design 3.0", accountID: a.id)
-                    Picker("Шаблон", selection: selection(\.style)) { Text("Загальний").tag(""); ForEach(HomeAccountStyle.allCases) { Text($0.title).tag($0.rawValue) } }
+                    Picker("Шаблон", selection: Binding(get: { options.style ?? "" }, set: { value in
+                        update { $0.style = value.isEmpty ? nil : value }
+                        s.changeAppearance { p in
+                            if !value.isEmpty { p.setDesignAccountStyle("original", for: a.id) }
+                            else { p.setDesignAccountStyle(nil, for: a.id) }
+                        }
+                    })) { Text("Загальний").tag(""); ForEach(HomeAccountStyle.allCases) { Text($0.title).tag($0.rawValue) } }
                     Picker("Права частина", selection: selection(\.right)) { Text("Загальна").tag(""); ForEach(HomeAccountRight.allCases) { Text($0.title).tag($0.rawValue) } }
                     Picker("Акцент", selection: selection(\.accent)) { Text("Автоматично").tag(""); ForEach(IzanamiTheme.all) { theme in Label(theme.name, systemImage: "circle.fill").foregroundStyle(theme.color).tag(theme.name) } }
                     if !a.isCredit { Text("Кредитні показники відображаються лише для кредитних рахунків.").font(.caption).foregroundStyle(.secondary) }
@@ -467,10 +475,11 @@ struct FinamiCompactAccountsGrid: View {
     var date: Date
     var onAccountsScreen = false
     var forceList = false
+    var template: String? = nil
     @State private var selected: Account?
     private var p: AppearancePreferences { s.db.preferences ?? .init() }
     private var list: Bool { forceList || p.finamiLayout == "list" || dynamicTypeSize >= .xxxLarge }
-    private var reservesVariantSpace: Bool { accounts.contains { p.designAccountStyle(for: $0.id) != "original" } }
+    private var reservesVariantSpace: Bool { accounts.contains { (p.designAccountStyle(for: $0.id) ?? "original") != "original" } }
     private func isHidden(_ a: Account, field: String?) -> Bool {
         masked || s.privateAmounts || a.hideAmounts == true || (onAccountsScreen && (field == "own" ? p.accountsHideOwn == true : p.accountsHideCredit == true))
     }
@@ -547,6 +556,19 @@ struct FinamiCompactAccountsGrid: View {
             HStack { Image(systemName:"creditcard"); Spacer(); Text(isHidden(a,field:"own") || isHidden(a,field:"used") ? "••••" : a.lastFour.map { "•••• " + $0 } ?? a.code) }.font(.caption).foregroundStyle(.secondary).padding(.horizontal,10).padding(.bottom,10)
         }
     }
+    private func compactTemplate(_ a: Account) -> String? {
+        // A per-account legacy template changes its compact surface without
+        // switching the whole dashboard to full cards.
+        if let raw = a.cardOptions?.style, let style = HomeAccountStyle(rawValue: raw) {
+            switch style {
+            case .premium: return FinamiCardTemplate.premium.rawValue
+            case .detailed: return FinamiCardTemplate.stripe.rawValue
+            case .compact: return FinamiCardTemplate.compact.rawValue
+            case .physical: return FinamiCardTemplate.bank.rawValue
+            }
+        }
+        return template
+    }
     private func card(_ a:Account) -> some View {
         Button { selected=a } label: {
             VStack(spacing: 0) {
@@ -559,8 +581,10 @@ struct FinamiCompactAccountsGrid: View {
                 }
             }
                 .frame(maxWidth:.infinity,alignment:.topLeading).contentShape(Rectangle())
-                .modifier(FinamiCardStyle(tint:accountTint(a,fallback:.teal)))
-        }.buttonStyle(.plain).accessibilityIdentifier("qa.account.compact." + a.id)
+                .modifier(FinamiCardStyle(tint:accountTint(a,fallback:.teal), template: compactTemplate(a)))
+        }.buttonStyle(.plain)
+            .accessibilityValue(metric(a).1)
+            .accessibilityIdentifier("qa.account.compact." + a.id)
     }
     var body: some View {
         LazyVGrid(columns:list ? [GridItem(.flexible(),spacing:10,alignment:.top)] : [GridItem(.adaptive(minimum:145),spacing:10,alignment:.top)],alignment:.center,spacing:10) {
@@ -568,7 +592,7 @@ struct FinamiCompactAccountsGrid: View {
         }.sheet(item:$selected) { a in
             NavigationStack {
                 ScrollView {
-                    FinamiHomeAccountCard(accountID:a.id,date:date,fallbackTint:.teal,mode:mode,onAccountsScreen:onAccountsScreen)
+                    FinamiHomeAccountCard(accountID:a.id,date:date,fallbackTint:.teal,mode:mode,onAccountsScreen:onAccountsScreen,template:template)
                         .environment(\.finamiMask,masked)
                         .padding()
                 }.navigationTitle("Деталі рахунку").toolbar { ToolbarItem(placement:.confirmationAction) { Button("Готово") { selected=nil } } }

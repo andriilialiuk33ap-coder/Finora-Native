@@ -1,0 +1,39 @@
+Build 56 targeted verification
+PASS: anchor keeps account identity, credit limit and exact adjusted opening
+PASS: complete confirmed anchor
+PASS: atomic JSON roundtrip: -250 net, 250 used, 750 available
+PASS: saved control point survives reload
+PASS: history and other accounts unchanged
+PASS: layout and account filter survive same roundtrip
+PASS: late historical imports do not alter control balance
+PASS: new payments after control date still change balance
+PASS: future anchor rejected
+PASS: out of range anchor rejected
+PASS: exact wrong-account statement row proposed for explicit move
+PASS: linked payment / exchange operation cannot move
+PASS: ambiguous exact key cannot move
+PASS: wrong statement identity blocked
+PASS: ambiguous account masks do not propose moves
+PASS: unverified prior IBAN not overwritten
+PASS: changed financial amount needs manual review
+PASS: refund-linked original cannot move
+PASS: reimport after reassignment idempotent
+PASS: reassignment preserves total net movement
+PASS: undo exact reassignment
+PASS: zero available is ambiguous
+PASS: credit available converts to signed net only on explicit estimation
+PASS: debit estimated net separately from holds
+PASS: shared credit formula matches confirmed bank components
+PASS: anchor plus later movement; old imports do not inflate balance
+PASS: estimated anchor provenance persists
+PASS: sources distinguished without inventing origin
+PASS: capture provenance retained
+PASS: 13 bank deposits preserve actual sum and keys
+PASS: grouped exchange counted once
+PASS: wrong-account FX credits removed from credit ledger by confirmed grouping
+PASS: fresh database opens
+PASS: existing database opens and retains data
+PASS: corrupt database reports error, blocks writes and preserves original file
+PASS: corrupt appearance settings do not prevent financial data loading
+PASS: syntax parse of five changed Swift files
+NOT RUN: full regression, Xcode, XCUITest

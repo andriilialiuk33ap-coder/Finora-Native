@@ -7,6 +7,7 @@ final class FinamiUITests: XCTestCase {
         app = XCUIApplication()
         app.launchArguments = ["--finami-qa", "--finami-qa-reset"]
         let fixtures = ["testHomeReviewOpensMatchingOperations":"--finami-qa-home-review-fixture",
+                        "testAllUpcomingPaymentsAndArchive":"--finami-qa-upcoming-fixture",
                         "testAccountReportFieldsIndependentAndPersist":"--finami-qa-reports-fixture",
                         "testCompactAccountGridAlignmentAndDetails":"--finami-qa-design-fixture",
                         "testBalanceReconciliationPersists":"--finami-qa-design-fixture",
@@ -174,6 +175,19 @@ final class FinamiUITests: XCTestCase {
         }
         capture("ocr-populated")
     }
+    func testAllUpcomingPaymentsAndArchive() {
+        let all = app.descendants(matching: .any).matching(identifier: "qa.upcoming.all.all").firstMatch
+        for _ in 0..<10 { if all.exists && all.isHittable { break }; app.swipeUp() }
+        visible(all); all.tap(); visible(app.navigationBars["Усі платежі"])
+        let sixth = app.buttons["qa.upcoming.row.qa-upcoming-6"]
+        for _ in 0..<8 { if sixth.exists && sixth.isHittable { break }; app.swipeUp() }
+        visible(sixth); sixth.swipeLeft()
+        let remove = app.buttons["Видалити"]; visible(remove); remove.tap()
+        let confirm = app.buttons["Видалити в архів"]; visible(confirm); confirm.tap()
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: sixth)], timeout: 8), .completed)
+        visible(app.staticTexts["Усього: 5"])
+        capture("upcoming-all-and-archive")
+    }
     func testHomeReviewOpensMatchingOperations() {
         let open = app.descendants(matching: .any).matching(identifier: "qa.dashboard.review.open").firstMatch
         visible(open); XCTAssertEqual(open.value as? String, "2"); open.tap()
@@ -340,12 +354,23 @@ final class FinamiUITests: XCTestCase {
         visible(category); capture("category-persisted")
     }
     func testBalanceReconciliationPersists() {
-        tabButton("Ще").tap()
-        let quick = app.descendants(matching:.any).matching(identifier:"qa.quick.reconcile").firstMatch
-        visible(quick); quick.tap(); visible(app.navigationBars["Звірити баланс"])
-        let picker = app.descendants(matching:.any).matching(identifier:"qa.reconcile.account").firstMatch
-        visible(picker); picker.tap()
-        let card = app.buttons["QA Credit Card"]; visible(card); card.tap()
+        func openCreditReconciliation() {
+            tabButton("Ще").tap()
+            let quick = app.descendants(matching: .any).matching(identifier: "qa.quick.reconcile").firstMatch
+            for _ in 0..<8 { if quick.exists && quick.isHittable { break }; app.swipeDown() }
+            visible(quick); quick.tap(); visible(app.navigationBars["Звірити баланс"])
+            let picker = app.descendants(matching: .any).matching(identifier: "qa.reconcile.account").firstMatch
+            visible(picker); picker.tap()
+            let card = app.buttons["QA Credit Card"]; visible(card); card.tap()
+        }
+        func assertBalanceField(_ id: String, _ amount: Double, file: StaticString = #filePath, line: UInt = #line) {
+            let field = app.descendants(matching: .any).matching(identifier: id).firstMatch
+            for _ in 0..<8 { if field.exists && field.isHittable { break }; app.swipeUp() }
+            visible(field, file: file, line: line)
+            let expected = amount.formatted(.currency(code: "UAH").locale(Locale(identifier: "uk_UA")))
+            XCTAssertEqual(field.value as? String, expected, "Unexpected amount in \(id)", file: file, line: line)
+        }
+        openCreditReconciliation()
         let used = app.textFields["Використано кредиту, UAH"]
         for _ in 0..<8 { if used.exists && used.isHittable { break }; app.swipeUp() }
         visible(used); used.tap(); used.typeText("250")
@@ -353,15 +378,26 @@ final class FinamiUITests: XCTestCase {
         for _ in 0..<10 { if save.exists && save.isHittable { break }; app.swipeUp() }
         visible(save); save.tap()
         let confirm = app.buttons["Застосувати"]; visible(confirm); confirm.tap()
+        let saved = app.descendants(matching: .any).matching(identifier: "qa.reconcile.saved").firstMatch
+        for _ in 0..<8 { if saved.exists && saved.isHittable { break }; app.swipeDown() }
+        visible(saved)
         app.terminate(); app.launchArguments = ["--finami-qa"]; app.launch()
-        visible(tabButton("Рахунки")); tabButton("Рахунки").tap()
+        visible(tabButton("Ще")); openCreditReconciliation()
+        // Verify the actual reloaded financial values independently of the account-card style.
+        assertBalanceField("qa.reconcile.currentNet", -250)
+        assertBalanceField("qa.reconcile.currentAvailable", 750)
+        assertBalanceField("qa.reconcile.persistedNet", -250)
+        capture("reconciled-credit-persisted")
+        // Keep the original integration check as well: the persisted grid must
+        // expose the same value without changing the saved account mode or layout.
+        tabButton("Рахунки").tap()
         visible(app.navigationBars["Рахунки"])
-        let credit = app.buttons["qa.account.compact.qa-design-credit"]
+        let credit = app.descendants(matching: .any).matching(identifier: "qa.account.compact.qa-design-credit").firstMatch
         for _ in 0..<10 { if credit.exists && credit.isHittable { break }; app.swipeUp() }
         visible(credit); XCTAssertTrue(credit.isHittable)
-        let expected = (750.0).formatted(.currency(code:"UAH").locale(Locale(identifier:"uk_UA")))
-        XCTAssertTrue(credit.label.contains(expected) || credit.staticTexts[expected].exists, "Reconciled credit must be 750 UAH: \(credit.label)")
-        capture("reconciled-credit-persisted")
+        let expected = (750.0).formatted(.currency(code: "UAH").locale(Locale(identifier: "uk_UA")))
+        XCTAssertEqual(credit.value as? String, expected, "Account card must display the reloaded available credit")
+        capture("reconciled-credit-card-persisted")
     }
     func testLaunchPerformance() {
         app.terminate();app.launchArguments=["--finami-qa"]

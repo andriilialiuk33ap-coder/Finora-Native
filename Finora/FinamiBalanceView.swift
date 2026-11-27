@@ -9,6 +9,7 @@ struct FinamiBalanceView: View {
     @State private var transferID=""
     @State private var selected=Set<String>()
     @State private var confirm=false
+    @State private var savedAnchor = false
     @State private var confirmedVersion:UInt64? = nil
     @State private var anchorDate=Date()
     @State private var anchorText=""
@@ -75,10 +76,15 @@ struct FinamiBalanceView: View {
             }
         }.navigationTitle(mode == "anchor" ? "Звірити баланс" : "Розумна звірка")
         .onAppear { if mode=="anchor",anchorAccount?.isCredit == true,anchorText.isEmpty,usedText.isEmpty { anchorKind="components" } }
-        .onChange(of:mode){_ in selected=[];destination=""}
+        .onChange(of:mode){_ in savedAnchor=false;selected=[];destination=""}
         .onChange(of:batch){_ in selected=[]}
-        .onChange(of:destination){_ in anchorText="";availableText="";ownText="0";usedText="";anchorKind=anchorAccount?.isCredit == true ? "components" : "net";acceptEstimate=false}
-        .onChange(of:anchorKind){_ in acceptEstimate=false}
+        .onChange(of:destination){_ in savedAnchor=false;anchorText="";availableText="";ownText="0";usedText="";anchorKind=anchorAccount?.isCredit == true ? "components" : "net";acceptEstimate=false}
+        .onChange(of:anchorKind){_ in savedAnchor=false;acceptEstimate=false}
+        .onChange(of:anchorDate){_ in savedAnchor=false}
+        .onChange(of:anchorText){_ in savedAnchor=false}
+        .onChange(of:ownText){_ in savedAnchor=false}
+        .onChange(of:usedText){_ in savedAnchor=false}
+        .onChange(of:availableText){_ in savedAnchor=false}
         .onChange(of:transferID){_ in selected=[];redundantAdjustment=""}
         .onChange(of:selected){_ in redundantAdjustment=""}
         .confirmationDialog("Підтвердити зміни фінансової бази?",isPresented:$confirm){Button("Застосувати"){apply()}}
@@ -111,10 +117,15 @@ struct FinamiBalanceView: View {
     private var anchorSection:some View {Section("Контрольний баланс на дату") {
         DatePicker("Дата і час",selection:$anchorDate,in:...Date())
         if let a=anchorAccount {
-            LabeledContent("Поточний чистий баланс Finami",value:a.hideAmounts == true ? "••••":s.visibleMoney(s.nativeBalance(a),a.code))
+            balanceReadout("Поточний чистий баланс Finami", amount: s.nativeBalance(a), account: a, identifier: "qa.reconcile.currentNet")
             if a.isCredit {
                 LabeledContent("Кредитний ліміт",value:a.hideAmounts == true ? "••••":s.visibleMoney(a.limit,a.code))
-                LabeledContent("Доступний кредит Finami",value:a.hideAmounts == true ? "••••":s.visibleMoney(s.unusedCredit(a),a.code))
+                balanceReadout("Доступний кредит Finami", amount: s.unusedCredit(a), account: a, identifier: "qa.reconcile.currentAvailable")
+            }
+            // Read the persisted anchor, not the current editor draft.
+            if let date = a.reconciliationDate, let net = a.reconciliationNet {
+                LabeledContent("Остання звірка", value: date.formatted(date: .abbreviated, time: .shortened))
+                balanceReadout(a.reconciliationEstimated == true ? "Збережена оцінка" : "Збережений контрольний баланс", amount: net, account: a, identifier: "qa.reconcile.persistedNet")
             }
             Picker("Тип банківських даних",selection:$anchorKind) {
                 Text("Чистий обліковий баланс").tag("net")
@@ -130,6 +141,7 @@ struct FinamiBalanceView: View {
                 Text("Доступні кошти можуть відрізнятися через холди. Це оцінка, не підтверджений обліковий баланс. Нуль доступного не визначає чистий борг.").font(.caption).foregroundStyle(.orange)
                 Toggle("Приймаю оцінку як контрольну точку",isOn:$acceptEstimate)
             }
+            if savedAnchor { Label("Контрольний баланс збережено", systemImage: "checkmark.circle").foregroundStyle(.green).accessibilityIdentifier("qa.reconcile.saved") }
             if let net=anchorNet,let n=proposedOpening {
                 let position=CardPosition(net:net,limit:a.limit)
                 let historical=FinamiLedgerIndex(operations:s.historyForAccount(a.id),accounts:[a]).balanceAt(a,date:anchorDate)
@@ -140,15 +152,40 @@ struct FinamiBalanceView: View {
                 if let available=bankMinor(availableText),available>=0 {LabeledContent("Різниця з доступним банку",value:a.hideAmounts == true ? "••••":s.visibleMoney(available-position.available))}
                 LabeledContent("Нова база балансу",value:a.hideAmounts == true ? "••••":s.visibleMoney(n))
                 Text("Підтверди після перевірки виписки. Історія залишається; операції після цієї дати змінюють баланс. Операції до контрольної дати не змінюють поточний баланс. Це не дохід і не витрата.").font(.caption)
-                Button("Зберегти контрольний баланс"){confirmedVersion=s.databaseVersion;confirm=true}.accessibilityIdentifier("qa.reconcile.save")
+                Button("Зберегти контрольний баланс"){savedAnchor=false;confirmedVersion=s.databaseVersion;confirm=true}.accessibilityIdentifier("qa.reconcile.save")
             }
         }
     }}
+    private func balanceReadout(_ title: String, amount: Int64, account: Account, identifier: String) -> some View {
+        let value = account.hideAmounts == true ? "••••" : s.visibleMoney(amount, account.code)
+        return LabeledContent(title, value: value)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(title)
+            .accessibilityValue(value)
+            .accessibilityIdentifier(identifier)
+    }
     private func apply(){
         guard confirmedVersion==s.databaseVersion else {s.error="Дані змінилися. Перевір та підтвердь звірку повторно.";return}
-        if mode=="anchor",let a=anchorAccount,let n=proposedOpening,let net=anchorNet {s.change{d in guard let i=d.accounts.firstIndex(where:{$0.id==a.id}) else{return};d.accounts[i].opening=n;d.accounts[i].reconciliationDate=anchorDate;d.accounts[i].reconciliationNet=net;d.accounts[i].reconciliationEstimated=(anchorKind=="estimate")
-            if let available=bankMinor(availableText),available>=0 {var values=d.balanceObservations ?? [:];if values[a.id].map({$0.date<=anchorDate}) ?? true {values[a.id]=FinamiBalanceObservation(accountID:a.id,date:anchorDate,available:available,currency:a.code)};d.balanceObservations=values}
-        };return}
+        if mode == "anchor" {
+            savedAnchor = false
+            guard let a = anchorAccount, let net = anchorNet,
+                  let i = s.db.accounts.firstIndex(where: { $0.id == a.id }),
+                  let updated = finamiAnchoredAccount(a, operations: s.db.operations, net: net, at: anchorDate, estimated: anchorKind == "estimate") else {
+                s.error = "Не вдалося підготувати контрольний баланс. Перевір рахунок, дату та суми."
+                return
+            }
+            savedAnchor = s.change { d in
+                d.accounts[i] = updated
+                if let available = bankMinor(availableText), available >= 0 {
+                    var values = d.balanceObservations ?? [:]
+                    if values[a.id].map({ $0.date <= anchorDate }) ?? true {
+                        values[a.id] = FinamiBalanceObservation(accountID: a.id, date: anchorDate, available: available, currency: a.code)
+                    }
+                    d.balanceObservations = values
+                }
+            }
+            return
+        }
         guard let p=proposal,let data=try? JSONEncoder().encode(FinamiBalanceUndo(before:s.db.operations,after:p)) else{return}
         if s.change({$0.operations=p;$0.reconciliationUndo=data}) {selected=[];transferID=""}
     }

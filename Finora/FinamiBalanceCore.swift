@@ -36,6 +36,17 @@ func finamiOpeningForAnchor(account:Account, operations:[Operation], net:Int64, 
     let (opening,overflow)=net.subtractingReportingOverflow(movement)
     return !overflow && opening >= -1_000_000_000_000 && opening <= 1_000_000_000_000 ? opening:nil
 }
+// Construct a complete, validated anchor before entering the atomic Store transaction.
+// This changes only the selected account, never the operation history.
+func finamiAnchoredAccount(_ account: Account, operations: [Operation], net: Int64, at: Date, estimated: Bool, now: Date = Date()) -> Account? {
+    guard at <= now, let opening = finamiOpeningForAnchor(account: account, operations: operations, net: net, at: at) else { return nil }
+    var updated = account
+    updated.opening = opening
+    updated.reconciliationDate = at
+    updated.reconciliationNet = net
+    updated.reconciliationEstimated = estimated
+    return updated
+}
 struct FinamiFXAmounts: Equatable {
     let grossUSD:Int64
     let feeUSD:Int64
