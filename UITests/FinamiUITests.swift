@@ -365,10 +365,10 @@ final class FinamiUITests: XCTestCase {
         }
         func assertBalanceField(_ id: String, _ amount: Double, file: StaticString = #filePath, line: UInt = #line) {
             let field = app.descendants(matching: .any).matching(identifier: id).firstMatch
-            for _ in 0..<8 { if field.exists && field.isHittable { break }; app.swipeUp() }
+            for _ in 0..<8 { if field.exists { break }; app.swipeUp() }
             visible(field, file: file, line: line)
             let expected = amount.formatted(.currency(code: "UAH").locale(Locale(identifier: "uk_UA")))
-            XCTAssertEqual(field.value as? String, expected, "Unexpected amount in \(id)", file: file, line: line)
+            awaitValue(field, expected, file: file, line: line)
         }
         openCreditReconciliation()
         let used = app.textFields["Використано кредиту, UAH"]
@@ -378,9 +378,11 @@ final class FinamiUITests: XCTestCase {
         for _ in 0..<10 { if save.exists && save.isHittable { break }; app.swipeUp() }
         visible(save); save.tap()
         let confirm = app.buttons["Застосувати"]; visible(confirm); confirm.tap()
-        let saved = app.descendants(matching: .any).matching(identifier: "qa.reconcile.saved").firstMatch
-        for _ in 0..<8 { if saved.exists && saved.isHittable { break }; app.swipeDown() }
+        // This is a non-interactive status. Do not use isHittable or scroll it away.
+        let saved = app.staticTexts["qa.reconcile.saved"]
         visible(saved)
+        XCTAssertEqual(saved.label, "Контрольний баланс збережено")
+        capture("reconciliation-write-confirmed")
         app.terminate(); app.launchArguments = ["--finami-qa"]; app.launch()
         visible(tabButton("Ще")); openCreditReconciliation()
         // Verify the actual reloaded financial values independently of the account-card style.

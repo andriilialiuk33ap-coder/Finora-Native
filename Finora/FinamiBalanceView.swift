@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct FinamiBalanceView: View {
     @EnvironmentObject private var s:Store
@@ -74,7 +75,26 @@ struct FinamiBalanceView: View {
             if let data=s.db.reconciliationUndo,let undo=try? JSONDecoder().decode(FinamiBalanceUndo.self,from:data),undo.restore(current:s.db.operations) != nil {
                 Section("Скасування") {Button("Скасувати останню звірку",role:.destructive){undoLast()};Text("Доступно, доки історія операцій не змінилася.").font(.caption)}
             }
-        }.navigationTitle(mode == "anchor" ? "Звірити баланс" : "Розумна звірка")
+        }
+        // A successful commit is a status, not a tappable row in the lazy List.
+        // Keep it visible even while the user scrolls to inspect the result.
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if mode == "anchor" && savedAnchor {
+                HStack(spacing: 8) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .accessibilityHidden(true)
+                    Text("Контрольний баланс збережено")
+                        .accessibilityIdentifier("qa.reconcile.saved")
+                    Spacer(minLength: 0)
+                }
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.green)
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.regularMaterial)
+            }
+        }
+        .navigationTitle(mode == "anchor" ? "Звірити баланс" : "Розумна звірка")
         .onAppear { if mode=="anchor",anchorAccount?.isCredit == true,anchorText.isEmpty,usedText.isEmpty { anchorKind="components" } }
         .onChange(of:mode){_ in savedAnchor=false;selected=[];destination=""}
         .onChange(of:batch){_ in selected=[]}
@@ -141,7 +161,6 @@ struct FinamiBalanceView: View {
                 Text("Доступні кошти можуть відрізнятися через холди. Це оцінка, не підтверджений обліковий баланс. Нуль доступного не визначає чистий борг.").font(.caption).foregroundStyle(.orange)
                 Toggle("Приймаю оцінку як контрольну точку",isOn:$acceptEstimate)
             }
-            if savedAnchor { Label("Контрольний баланс збережено", systemImage: "checkmark.circle").foregroundStyle(.green).accessibilityIdentifier("qa.reconcile.saved") }
             if let net=anchorNet,let n=proposedOpening {
                 let position=CardPosition(net:net,limit:a.limit)
                 let historical=FinamiLedgerIndex(operations:s.historyForAccount(a.id),accounts:[a]).balanceAt(a,date:anchorDate)
@@ -152,7 +171,12 @@ struct FinamiBalanceView: View {
                 if let available=bankMinor(availableText),available>=0 {LabeledContent("Різниця з доступним банку",value:a.hideAmounts == true ? "••••":s.visibleMoney(available-position.available))}
                 LabeledContent("Нова база балансу",value:a.hideAmounts == true ? "••••":s.visibleMoney(n))
                 Text("Підтверди після перевірки виписки. Історія залишається; операції після цієї дати змінюють баланс. Операції до контрольної дати не змінюють поточний баланс. Це не дохід і не витрата.").font(.caption)
-                Button("Зберегти контрольний баланс"){savedAnchor=false;confirmedVersion=s.databaseVersion;confirm=true}.accessibilityIdentifier("qa.reconcile.save")
+                Button("Зберегти контрольний баланс") {
+                    savedAnchor = false
+                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                    confirmedVersion = s.databaseVersion
+                    confirm = true
+                }.accessibilityIdentifier("qa.reconcile.save")
             }
         }
     }}

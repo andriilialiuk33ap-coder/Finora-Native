@@ -1,0 +1,13 @@
+Build 58 — локальні цільові тести
+PASS: anchor keeps account identity, credit limit and exact adjusted opening
+PASS: complete confirmed anchor
+PASS: atomic JSON roundtrip: -250 net, 250 used, 750 available
+PASS: saved control point survives reload
+PASS: history and other accounts unchanged
+PASS: layout and account filter survive same roundtrip
+PASS: late historical imports do not alter control balance
+PASS: new payments after control date still change balance
+PASS: future anchor rejected
+PASS: out of range anchor rejected
+PASS: Swift parse FinamiBalanceView.swift, FinamiUITests.swift, FinamiBuildInfo.swift
+NOT RUN: full regression, Xcode, XCUITest
