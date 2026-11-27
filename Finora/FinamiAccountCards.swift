@@ -448,7 +448,7 @@ private struct HomeAccountHistory: View {
                     Button { edit = o } label: {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(o.note.isEmpty ? o.category : o.note).font(.headline).foregroundStyle(.primary)
-                            Text(o.kind.title + " · " + o.date.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary)
+                            Text(o.displayKindTitle + " · " + o.date.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary)
                             Text(mask ? "****" : currencyMoney(activity.signed(o), a.code)).font(.title3.weight(.semibold)).foregroundStyle(.primary).monospacedDigit()
                         }.frame(maxWidth: .infinity, alignment: .leading)
                     }.buttonStyle(.plain)
@@ -469,7 +469,8 @@ struct FinamiCompactAccountsGrid: View {
     var forceList = false
     @State private var selected: Account?
     private var p: AppearancePreferences { s.db.preferences ?? .init() }
-    private var list: Bool { forceList || p.finamiLayout == "list" || dynamicTypeSize.isAccessibilitySize }
+    private var list: Bool { forceList || p.finamiLayout == "list" || dynamicTypeSize >= .xxxLarge }
+    private var reservesVariantSpace: Bool { accounts.contains { p.designAccountStyle(for: $0.id) != "original" } }
     private func isHidden(_ a: Account, field: String?) -> Bool {
         masked || s.privateAmounts || a.hideAmounts == true || (onAccountsScreen && (field == "own" ? p.accountsHideOwn == true : p.accountsHideCredit == true))
     }
@@ -504,7 +505,7 @@ struct FinamiCompactAccountsGrid: View {
             Spacer(minLength:0)
             Text(value.0).font(.caption2).foregroundStyle(.secondary).lineLimit(2,reservesSpace:true)
             Text(value.1).font(.headline).monospacedDigit().lineLimit(1).minimumScaleFactor(0.55).accessibilityLabel(value.1)
-        }.frame(maxWidth:.infinity,minHeight:132,alignment:.topLeading).padding(12)
+        }.frame(maxWidth:.infinity,alignment:.topLeading).frame(height:132,alignment:.topLeading).padding(12)
     }
     private func listCard(_ a:Account) -> some View {
         let value=metric(a)
@@ -548,13 +549,21 @@ struct FinamiCompactAccountsGrid: View {
     }
     private func card(_ a:Account) -> some View {
         Button { selected=a } label: {
-            VStack(spacing: 0) { if list { listCard(a) } else { gridCard(a) }; compactVariant(a) }
+            VStack(spacing: 0) {
+                if list { listCard(a); compactVariant(a) }
+                else {
+                    gridCard(a)
+                    if reservesVariantSpace {
+                        ZStack(alignment: .top) { Color.clear; compactVariant(a) }.frame(height: 52)
+                    }
+                }
+            }
                 .frame(maxWidth:.infinity,alignment:.topLeading).contentShape(Rectangle())
                 .modifier(FinamiCardStyle(tint:accountTint(a,fallback:.teal)))
         }.buttonStyle(.plain).accessibilityIdentifier("qa.account.compact." + a.id)
     }
     var body: some View {
-        LazyVGrid(columns:Array(repeating:GridItem(.flexible(),spacing:10,alignment:.top),count:list ? 1 : 2),alignment:.center,spacing:10) {
+        LazyVGrid(columns:list ? [GridItem(.flexible(),spacing:10,alignment:.top)] : [GridItem(.adaptive(minimum:145),spacing:10,alignment:.top)],alignment:.center,spacing:10) {
             ForEach(accounts) { a in card(a) }
         }.sheet(item:$selected) { a in
             NavigationStack {

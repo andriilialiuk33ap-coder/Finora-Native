@@ -71,7 +71,7 @@ extension Store {
                 d.operations.removeAll { $0.id == newOperation.id }
                 d.operations.append(newOperation)
                 if learnCategory && (newOperation.kind == .expense || newOperation.kind == .income) && !newOperation.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    var rules = d.merchantRules ?? [:]; rules[ruleKey(newOperation.note, kind: newOperation.kind)] = newOperation.category; d.merchantRules = rules
+                    var rules = d.merchantRules ?? [:]; finamiRememberMerchant(newOperation.note, kind: newOperation.kind, category: newOperation.category, rules: &rules); d.merchantRules = rules
                 }
             }
             d.reminders?.removeAll{$0.linkedID==payment.id}
@@ -137,6 +137,7 @@ struct FinamiPaymentDetails:View {
     @State private var photo:PhotosPickerItem?
     @State private var confirm=false
     @State private var paymentSaved=false
+    @State private var archiveInstallment=false
     @State private var photoLoading=false
     var body:some View { NavigationStack { Form {
         Section {FinamiPaymentCard(payment:payment)}
@@ -147,6 +148,10 @@ struct FinamiPaymentDetails:View {
             PhotosPicker(selection:$photo,matching:.images) {Label("Вибрати фотографію",systemImage:"photo")}.disabled(photoLoading)
             if photoLoading { ProgressView("Обробка фото…") }
             if s.db.paymentPhotos?[payment.id] != nil {Button("Видалити фотографію",role:.destructive){s.change{$0.paymentPhotos?.removeValue(forKey:payment.id)}}}
+            if !payment.subscription && s.db.obligations.contains(where: { $0.id == payment.id && $0.kind == .installment }) {
+                Button("Видалити розстрочку", role: .destructive) { archiveInstallment = true }
+                    .accessibilityIdentifier("qa.installment.archive.details")
+            }
         }
         if !(s.db.paidRecords ?? []).filter({$0.paymentID == payment.id}).isEmpty {
             Section("Історія оплат") {
@@ -162,6 +167,13 @@ struct FinamiPaymentDetails:View {
             Text("Можна створити кілька нагадувань із власними датою та часом.").font(.caption)
         }
     }.navigationTitle("Деталі платежу").toolbar{ToolbarItem(placement:.cancellationAction){Button("Готово"){dismiss()}}}.sheet(isPresented:$confirm,onDismiss:{if paymentSaved {dismiss()}}) { FinamiPaymentCheckout(payment:payment,onComplete:{paymentSaved=true;confirm=false}) }
+        .confirmationDialog("Прибрати розстрочку з активного плану?", isPresented: $archiveInstallment, titleVisibility: .visible) {
+            Button("Видалити в архів", role: .destructive) {
+                let linked = (s.db.reminders ?? []).filter { $0.linkedID == payment.id }
+                if s.change({ d in finamiRemoveInstallment(payment.id, from: &d) }) { linked.forEach { ReminderScheduler.cancel($0) }; dismiss() }
+            }
+            Button("Скасувати", role: .cancel) {}
+        } message: { Text("Банківські операції та історія сплати залишаться. Розстрочку можна відновити з архіву.") }
         .onChange(of:photo) { item in
             guard let item, !photoLoading else {return};photoLoading=true
             Task { @MainActor in

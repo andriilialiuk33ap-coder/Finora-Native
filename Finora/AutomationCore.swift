@@ -232,12 +232,29 @@ enum CaptureInbox {
         try FileManager.default.createDirectory(at:dir,withIntermediateDirectories:true)
         try JSONEncoder().encode(event).write(to:dir.appendingPathComponent(event.id+".json"),options:[.atomic,.completeFileProtectionUntilFirstUserAuthentication])
     }
+    struct Scan {
+        var events: [CapturedPayment] = []
+        var unreadable = 0
+    }
+    // Isolate damaged or temporarily inaccessible files. Keep them intact for retry.
+    static func scan(in dir: URL) throws -> Scan {
+        var result = Scan()
+        let files = try FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles])
+        for url in files where url.pathExtension == "json" {
+            do {
+                guard try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else { throw CaptureError.storage }
+                let event = try JSONDecoder().decode(CapturedPayment.self, from: Data(contentsOf: url))
+                guard UUID(uuidString: event.id) != nil, url.lastPathComponent == event.id + ".json", event.minor > 0, event.minor <= 1_000_000_000_000, ["UAH", "USD"].contains(event.currency) else { throw CaptureError.storage }
+                result.events.append(event)
+            } catch { result.unreadable += 1 }
+        }
+        result.events.sort { $0.date == $1.date ? $0.id < $1.id : $0.date < $1.date }
+        return result
+    }
     static func read(in dir: URL) throws -> [CapturedPayment] {
-        try FileManager.default.contentsOfDirectory(at:dir,includingPropertiesForKeys:nil).filter{$0.pathExtension == "json"}.map { url in
-            let event = try JSONDecoder().decode(CapturedPayment.self,from:Data(contentsOf:url))
-            guard UUID(uuidString:event.id) != nil, url.lastPathComponent == event.id+".json", event.minor > 0, event.minor <= 1_000_000_000_000 else {throw CaptureError.storage}
-            return event
-        }.sorted{$0.date < $1.date}
+        let result = try scan(in: dir)
+        guard result.unreadable == 0 else { throw CaptureError.storage }
+        return result.events
     }
     static func remove(_ event: CapturedPayment, in dir: URL) throws {
         guard UUID(uuidString:event.id) != nil else {throw CaptureError.invalid}

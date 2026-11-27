@@ -21,9 +21,12 @@ struct CapturePreferences: Codable {
         captureRepeatedMessage(e,handled:db.captureMessageFingerprints ?? [])
     }
     func captureMatch(_ e: CapturedPayment) -> Bool {
-        if captureRepeat(e) {return true}
-        let paid = Set((db.paidRecords ?? []).compactMap(\.operationID))
-        return db.operations.contains { o in
+        captureMatch(e, in: db)
+    }
+    private func captureMatch(_ e: CapturedPayment, in database: Database) -> Bool {
+        if captureRepeatedMessage(e, handled: database.captureMessageFingerprints ?? []) { return true }
+        let paid = Set((database.paidRecords ?? []).compactMap(\.operationID))
+        return database.operations.contains { o in
             finamiCaptureAccountConflict(e, otherAccount:o.account, otherCurrency:o.entryCurrency ?? "UAH", otherAmount:o.sourceMinor ?? o.amount, otherIncoming:o.kind.incoming, otherDate:o.date, otherSource:o.captureSource, otherMerchant:o.note) || capturePossibleDuplicate(e,otherAccount:o.account,otherCurrency:o.entryCurrency ?? "UAH",otherAmount:o.sourceMinor ?? o.amount,otherIncoming:o.kind.incoming,otherDate:o.date,otherSource:o.captureSource,isBank:o.sourceBank != nil || o.bankKey != nil || paid.contains(o.id))
         }
     }
@@ -41,33 +44,60 @@ struct CapturePreferences: Codable {
     func refreshCaptures(auto: Bool = true, inbox: URL? = nil) {
         guard storageHealthy, !loading else { return }
         do {
-            let dir=try (inbox ?? CaptureInbox.folder())
-            let all=try CaptureInbox.read(in:dir)
-            if all.isEmpty {
-                if !capturePending.isEmpty { capturePending = [] }
-                if captureWarning != nil { captureWarning = nil }
-                return
+            let dir = try (inbox ?? CaptureInbox.folder())
+            let scan = try CaptureInbox.scan(in: dir)
+            var warnings: [String] = []
+            if scan.unreadable > 0 { warnings.append("Не вдалося прочитати файли черги: \(scan.unreadable). Збережено для повторної спроби.") }
+            let handled = Set(db.captureHandled ?? [])
+            let existing = Set(db.operations.map(\.id))
+            var staged = db
+            var accepted: [CapturedPayment] = []
+            var pending: [CapturedPayment] = []
+            func remove(_ e: CapturedPayment) {
+                do { try CaptureInbox.remove(e, in: dir) }
+                catch { warnings.append("Не вдалося очистити оброблений запис черги. Буде повторено.") }
             }
-            let handled=Set(db.captureHandled ?? [])
-            var pending=[CapturedPayment]()
-            for original in all {
+            for original in scan.events {
                 let e = routedCapture(original)
-                if handled.contains(e.id) || db.operations.contains(where:{$0.id==e.id}) {
-                    try CaptureInbox.remove(e,in:dir);continue
-                }
-                let p=db.capturePreferences ?? .init()
-                let enabled=e.source=="Apple Pay" ? p.walletAuto:p.messageAuto
-                if auto && enabled && e.currency == "UAH" && e.clearPurchase && !e.incoming && !captureMatch(e), let o=capturedOperation(e,kind:.expense) {
-                    if finishCapture(e,operation:o,inbox:dir) {continue}
-                }
-                pending.append(e)
+                if handled.contains(e.id) || existing.contains(e.id) { remove(e); continue }
+                let p = db.capturePreferences ?? .init()
+                let enabled = e.source == "Apple Pay" ? p.walletAuto : p.messageAuto
+                if auto && enabled && e.currency == "UAH" && e.clearPurchase && !e.incoming && !captureMatch(e, in: staged), let o = capturedOperation(e, kind: .expense) {
+                    Self.recordCapture(e, operation: o, learn: false, in: &staged)
+                    accepted.append(e)
+                } else { pending.append(e) }
             }
-            if capturePending != pending {capturePending=pending}
-            if captureWarning != nil {captureWarning=nil}
+            if !accepted.isEmpty {
+                // Store.change retains all existing validation, snapshots and atomic persistence.
+                if change({ $0 = staged }) { for e in accepted { remove(e) } }
+                else {
+                    pending.append(contentsOf: accepted)
+                    warnings.append("Пакет не збережено. Операції залишилися у черзі.")
+                }
+            }
+            pending.sort { $0.date == $1.date ? $0.id < $1.id : $0.date < $1.date }
+            if capturePending != pending { capturePending = pending }
+            let warning = warnings.isEmpty ? nil : Array(Set(warnings)).sorted().joined(separator: "\n")
+            if captureWarning != warning { captureWarning = warning }
         } catch {
-            let message = error.localizedDescription
-            if captureWarning != message { captureWarning = message }
+            if captureWarning != error.localizedDescription { captureWarning = error.localizedDescription }
         }
+    }
+    private static func recordCapture(_ e: CapturedPayment, operation: Operation?, learn: Bool, in d: inout Database) {
+        guard !(d.captureHandled ?? []).contains(e.id) else { return }
+        if let operation, !d.operations.contains(where: { $0.id == e.id }) {
+            d.operations.append(operation)
+            if learn && (operation.kind == .expense || operation.kind == .income) && operation.category != "Без категорії" && !e.merchant.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                var rules = d.merchantRules ?? [:]; finamiRememberMerchant(e.merchant, kind: operation.kind, category: operation.category, rules: &rules); d.merchantRules = rules
+            }
+            if let available = e.reportedAvailable, d.accounts.contains(where: { $0.id == operation.account && $0.code == e.currency }) {
+                var observations = d.balanceObservations ?? [:]
+                if observations[operation.account].map({ $0.date <= e.date }) ?? true { observations[operation.account] = FinamiBalanceObservation(accountID: operation.account, date: e.date, available: available, currency: e.currency) }
+                d.balanceObservations = observations
+            }
+        }
+        var handled = d.captureHandled ?? []; handled.append(e.id); d.captureHandled = handled
+        d.captureMessageFingerprints = captureRememberMessage(e, handled: d.captureMessageFingerprints ?? [])
     }
     @discardableResult func finishCapture(_ e: CapturedPayment, operation: Operation?, allowSeparatePayment: Bool = false, learnMerchantCategory: Bool = false, inbox: URL? = nil) -> Bool {
         // Recheck at commit, not just when a review screen was opened.
@@ -75,24 +105,7 @@ struct CapturePreferences: Codable {
             captureWarning="Можливий дублікат. Підтвердьте, що це окрема покупка."
             return false
         }
-        guard change({d in
-            if !(d.captureHandled ?? []).contains(e.id) {
-                if let operation, !d.operations.contains(where:{$0.id==e.id}) {
-                    d.operations.append(operation)
-                    if learnMerchantCategory && operation.kind.isReportCategory && !e.merchant.isEmpty {
-                        let key = operation.kind.rawValue + ":" + e.merchant.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                        var rules = d.merchantRules ?? [:]; rules[key] = operation.category; d.merchantRules = rules
-                    }
-                    if let available = e.reportedAvailable, d.accounts.contains(where: { $0.id == operation.account && $0.code == e.currency }) {
-                        var observations = d.balanceObservations ?? [:]
-                        if observations[operation.account].map({ $0.date <= e.date }) ?? true { observations[operation.account] = FinamiBalanceObservation(accountID: operation.account, date: e.date, available: available, currency: e.currency) }
-                        d.balanceObservations = observations
-                    }
-                }
-                var handled=d.captureHandled ?? [];handled.append(e.id);d.captureHandled=handled
-                d.captureMessageFingerprints=captureRememberMessage(e,handled:d.captureMessageFingerprints ?? [])
-            }
-        }) else {return false}
+        guard change({ d in Self.recordCapture(e, operation: operation, learn: learnMerchantCategory, in: &d) }) else { return false }
         do {try CaptureInbox.remove(e,in:inbox ?? CaptureInbox.folder())} catch {captureWarning=error.localizedDescription}
         capturePending.removeAll{$0.id==e.id}
         return true
@@ -118,6 +131,8 @@ struct AutomationCenter: View {
     @AppStorage("finami.lastNotificationStatus") private var lastNotificationStatus = ""
     @State private var openFailed = false
     @State private var checkTime: Double = 0
+    @AppStorage("finami.lastBackgroundCapture") private var lastBackgroundCapture: Double = 0
+    @AppStorage("finami.backgroundCaptureSchedule") private var backgroundSchedule = ""
     @AppStorage("finami.notificationShortcutLink") private var notificationShortcutLink = ""
     @AppStorage("finami.walletShortcutLink") private var walletShortcutLink = ""
     @State private var templateEditor = false
@@ -241,6 +256,9 @@ struct AutomationCenter: View {
             LabeledContent("Останній виклик Apple Pay", value: stamp(lastWalletAttempt))
             Text(FinamiNotificationStatus.display(lastWalletStatus)).font(.caption)
             LabeledContent("Очікують перевірки", value: String(s.capturePending.count))
+            LabeledContent("Остання фонова обробка", value: stamp(lastBackgroundCapture))
+            if !backgroundSchedule.isEmpty { Text(backgroundSchedule == "requested" ? "Фонове оновлення запитано. Час запуску визначає iOS." : "Фонове оновлення недоступне або запит відхилено. Черга збережена.").font(.caption).foregroundStyle(.secondary) }
+            Button("Запросити фонове оновлення") { FinamiCaptureBackground.schedule() }
             LabeledContent("Остання прийнята операція банку", value: stamp(lastBankNotification))
             LabeledContent("Останній виклик сповіщення", value: stamp(lastNotificationAttempt))
             Text(FinamiNotificationStatus.display(lastNotificationStatus)).font(.caption).accessibilityIdentifier("qa.automation.notificationStatus")
@@ -263,7 +281,7 @@ struct AutomationCenter: View {
                 s.change { d in var p = d.capturePreferences ?? .init(); p.notifySaved = value; d.capturePreferences = p }
                 if value { Task { _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert,.sound]) } }
             }))
-            Text("Спочатку обидва вимкнені. Перевірте одну реальну покупку, потім увімкніть потрібний режим. Події обробляються при відкритті Finami (після розблокування), а не в момент оплати. Невідомий магазин отримує категорію «Без категорії». Повторні повідомлення ніколи не додаються автоматично, навіть після перезапуску. Схожі платежі, доларові суми та неоднозначні рухи залишаються на перевірку. Не вмикайте одночасно кілька джерел для однієї картки без звірки.").font(.caption)
+            Text("Спочатку обидва вимкнені. Перевірте одну реальну покупку, потім увімкніть потрібний режим. Події зберігаються Командами без відкриття Finami. Обробка виконується при доступному фоновому запуску iOS або при наступному відкритті після розблокування. Невідомий магазин отримує категорію «Без категорії». Повторні повідомлення ніколи не додаються автоматично, навіть після перезапуску. Схожі платежі, доларові суми та неоднозначні рухи залишаються на перевірку. Не вмикайте одночасно кілька джерел для однієї картки без звірки.").font(.caption)
         }
     }
     private var inboxSection: some View {
@@ -316,7 +334,7 @@ struct CaptureReview: View {
     @State private var kind: Kind = .expense
     @State private var accountID = ""
     @State private var category = ""
-    @State private var remember = false
+    @State private var remember = true
     private var selectedEvent: CapturedPayment { var e = event; e.account = accountID; return e }
     private var categories: [String] { kind == .income ? s.db.incomeCategories : s.db.expenseCategories }
     @State private var confirm=false
@@ -352,7 +370,7 @@ struct CaptureReview: View {
             }.navigationTitle("Перевірка платежу").navigationBarTitleDisplayMode(.inline)
                 .toolbar{ToolbarItem(placement:.cancellationAction){Button("Закрити"){dismiss()}}}
                 .onAppear{kind=event.incoming ? (event.incomeHint == true ? .income : .unclassifiedCredit) : event.clearPurchase ? .expense:.unclassifiedDebit; accountID=event.account}.onChange(of: kind) { _ in category="" }.onChange(of: accountID) { _ in separatePayment=false }
-                .confirmationDialog("Зберегти платіж?",isPresented:$confirm){Button("Зберегти"){if var o=s.capturedOperation(selectedEvent,kind:kind) { if kind.isReportCategory && categories.contains(category) { o.category=category }; if s.finishCapture(selectedEvent,operation:o,allowSeparatePayment:separatePayment,learnMerchantCategory:remember) { dismiss() } }}}
+                .confirmationDialog("Зберегти платіж?",isPresented:$confirm){Button("Зберегти"){if var o=s.capturedOperation(selectedEvent,kind:kind) { if kind.isReportCategory && categories.contains(category) { o.category=category }; if s.finishCapture(selectedEvent,operation:o,allowSeparatePayment:separatePayment,learnMerchantCategory:remember && !category.isEmpty && category != "Без категорії") { dismiss() } }}}
                 .confirmationDialog("Відхилити без запису?",isPresented:$discard){Button("Відхилити",role:.destructive){if s.finishCapture(event,operation:nil){dismiss()}}}
         }
     }

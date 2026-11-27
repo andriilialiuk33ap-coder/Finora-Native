@@ -28,6 +28,7 @@ private func finamiQueueWallet(amount: Double, merchant: String, account: String
     catch { defaults.set("storageError", forKey: "finami.lastWalletStatus"); throw error }
     defaults.set(now, forKey: "finami.lastWalletCapture")
     defaults.set("queued", forKey: "finami.lastWalletStatus")
+    FinamiCaptureBackground.schedule()
 }
 // A separate action keeps all existing per-account shortcuts compatible.
 struct CaptureWalletAliasIntent: AppIntent {
@@ -61,6 +62,7 @@ struct CaptureMessageIntent: AppIntent {
         let event = try captureMessage(message,account:account)
         try CaptureInbox.enqueue(event,in:CaptureInbox.folder())
         UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "finami.lastBankNotification")
+        FinamiCaptureBackground.schedule()
         return .result(dialog:"Message captured. Open Finami to review. / Повідомлення отримано. Відкрийте Finami для перевірки.")
     }
 }
@@ -89,7 +91,7 @@ struct CaptureBankNotificationIntent: AppIntent {
         let now = Date().timeIntervalSince1970
         defaults.set(status.rawValue, forKey: "finami.lastNotificationStatus")
         defaults.set(now, forKey: "finami.lastNotificationAttempt")
-        if status == .queued { defaults.set(now, forKey: "finami.lastBankNotification") }
+        if status == .queued { defaults.set(now, forKey: "finami.lastBankNotification"); FinamiCaptureBackground.schedule() }
         // No dialog or thrown parse error for an unattended automation.
         return .result()
     }

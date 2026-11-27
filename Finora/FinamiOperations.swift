@@ -13,7 +13,7 @@ struct OperationRow: View {
   private var details: some View {
     VStack(alignment:.leading,spacing:3) {
       Text(o.note.isEmpty ? (o.kind == .transfer ? "Переказ" : o.category) : finamiMerchantDisplay(o.note)).font(.subheadline.weight(.semibold)).lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
-      Text("\(o.kind.title) · \(s.accountName(o.account)) · \(o.date.formatted(.dateTime.day().month(.abbreviated).year().locale(Locale(identifier: "uk_UA"))))")
+      Text("\(o.displayKindTitle) · \(s.accountName(o.account)) · \(o.date.formatted(.dateTime.day().month(.abbreviated).year().locale(Locale(identifier: "uk_UA"))))")
         .font(.caption).foregroundStyle(.secondary)
       if style != "compactLedger" && size != "S" { Text(o.sourceLabel).font(.caption2).foregroundStyle(.secondary) }
     }.frame(maxWidth:.infinity,alignment:.leading)
@@ -65,6 +65,7 @@ struct OperationRow: View {
 struct Operations: View {
   @EnvironmentObject var s: Store
   @State private var search = ""
+  @State private var settledSearch = ""
   @State private var edit: Operation?
   @State private var operationSettings = false
   var filter: String { s.db.preferences?.operationsFilter ?? "all" }
@@ -86,9 +87,22 @@ struct Operations: View {
   var filtered: [Operation] {
     let from = usePeriod ? Calendar.current.startOfDay(for:min(dateFrom,dateTo)) : nil
     let end = usePeriod ? Calendar.current.date(byAdding:.day,value:1,to:Calendar.current.startOfDay(for:max(dateFrom,dateTo))) : nil
-    return s.queryHistory(.init(kind:filter,account:accountFilter,category:categoryFilter,search:search,sort:sort,hideAmounts:s.privateAmounts,from:from,until:end,minimum:bankMinor(minimum),maximum:bankMinor(maximum),reviewOnly:reviewOnly,sourceBank:bankFilter == "all" ? nil : bankFilter))
+    return s.queryHistory(.init(kind:filter,account:accountFilter,category:categoryFilter,search:settledSearch,sort:sort,hideAmounts:s.privateAmounts,from:from,until:end,minimum:bankMinor(minimum),maximum:bankMinor(maximum),reviewOnly:reviewOnly,sourceBank:bankFilter == "all" ? nil : bankFilter))
   }
   var chronological: Bool { sort == .newest || sort == .oldest }
+  private var searchTerm: String { search.trimmingCharacters(in: .whitespacesAndNewlines) }
+  private var searchPending: Bool { searchTerm != settledSearch }
+  private var activeFilters: Int {
+    [filter != "all", accountFilter != "all", categoryFilter != "all", usePeriod,
+     !s.privateAmounts && (!minimum.isEmpty || !maximum.isEmpty), reviewOnly, bankFilter != "all"].filter { $0 }.count
+  }
+  private func resetFilters() {
+    if filter != "all" || sort != .newest {
+      s.changeAppearance { $0.operationsFilter = "all"; $0.operationsSort = OperationSort.newest.rawValue }
+    }
+    accountFilter = "all"; categoryFilter = "all"; search = ""; settledSearch = ""
+    usePeriod = false; minimum = ""; maximum = ""; reviewOnly = false; bankFilter = "all"; pageSize = 150
+  }
 
   func action(_ kind: Kind, _ title: String, _ icon: String, _ tint: Color) -> some View {
     Button { edit = Operation(kind: kind, account: s.db.accounts.first?.id ?? cash) } label: {
@@ -100,19 +114,25 @@ struct Operations: View {
     return LazyVStack(spacing: style == "merchantCards" ? 6 : 0) {
       ForEach(values) { o in
         Button { edit = o } label: { OperationRow(o: o).padding(.vertical, style == "compactLedger" ? 4 : s.db.preferences?.modernCompactSpacing == true ? 7 : 12).padding(.horizontal, 12).contentShape(Rectangle()) }.buttonStyle(.plain)
+          .contextMenu {
+            if let draft = FinamiRepeatDraft.make(o, accounts: s.db.accounts, masked: s.privateAmounts) {
+              Button { edit = draft } label: { Label("Повторити операцію", systemImage: "doc.on.doc") }
+            }
+            Button { edit = o } label: { Label("Редагувати", systemImage: "pencil") }
+          }
         if o.id != values.last?.id && style != "merchantCards" { Divider().padding(.leading, 62) }
       }
     }.modifier(FinamiCardStyle(tint:.teal))
   }
   var body: some View {
-    let values = filtered
+    let values: [Operation] = searchPending ? [] : filtered
     let displayedValues = Array(values.prefix(pageSize))
     let grouped = Dictionary(grouping: displayedValues) { Calendar.current.startOfDay(for: $0.date) }
     let days = grouped.keys.sorted { sort == .oldest ? $0 < $1 : $0 > $1 }
     ScrollView {
       LazyVStack(alignment: .leading, spacing: (s.db.preferences ?? .init()).finamiSpacing) {
         VStack(alignment: .leading, spacing: 12) {
-          FinamiSectionTitle(title: "Журнал операцій", subtitle: "\(values.count) записів за вибраними фільтрами", icon: "list.bullet.rectangle.portrait", tint: .teal)
+          FinamiSectionTitle(title: "Журнал операцій", subtitle: searchPending ? "Пошук…" : "\(values.count) записів за вибраними фільтрами", icon: "list.bullet.rectangle.portrait", tint: .teal)
           HStack { action(.expense,"Витрата","minus",.orange); action(.income,"Дохід","plus",.green); action(.transfer,"Переказ","arrow.left.arrow.right",.blue) }
           HStack {
             Button { voice = true } label: { Label("Голос", systemImage: "mic.fill").frame(maxWidth: .infinity).padding(.vertical, 5) }.buttonStyle(.bordered)
@@ -120,11 +140,16 @@ struct Operations: View {
           }
         }.padding(16).modifier(FinamiCardStyle(tint: .teal))
         HStack {
-          Picker("Тип", selection: filterBinding) { Text("Усі типи").tag("all"); ForEach(Kind.allCases) { Text($0.title).tag($0.rawValue) } }.pickerStyle(.menu)
+          Picker("Тип", selection: filterBinding) { Text("Усі типи").tag("all"); ForEach(Kind.allCases) { Text($0.title).tag($0.rawValue) }; Text("Зняття готівки").tag("cashWithdrawal") }.pickerStyle(.menu)
           Spacer(minLength: 0)
-          Button { operationSettings = true } label: { Label("Фільтри", systemImage: "line.3.horizontal.decrease.circle") }.buttonStyle(.bordered)
+          Button { operationSettings = true } label: { Label(activeFilters == 0 ? "Фільтри" : "Фільтри (\(activeFilters))", systemImage: "line.3.horizontal.decrease.circle") }.buttonStyle(.bordered)
         }
-        if values.isEmpty { FinamiEmptyCard(title: "Немає операцій", detail: "Додай запис або зміни фільтри пошуку.", icon: "tray") }
+        if activeFilters > 0 || !searchTerm.isEmpty {
+          Button { resetFilters() } label: { Label("Очистити пошук і фільтри", systemImage: "xmark.circle") }
+            .font(.subheadline).buttonStyle(.bordered).accessibilityIdentifier("qa.operations.clearFilters")
+        }
+        if searchPending { ProgressView("Пошук…").frame(maxWidth: .infinity).padding(.vertical, 24) }
+        else if values.isEmpty { FinamiEmptyCard(title: "Немає операцій", detail: "Додай запис або зміни фільтри пошуку.", icon: "tray") }
         else if chronological {
           ForEach(days, id: \.self) { day in
             VStack(alignment: .leading, spacing: 8) {
@@ -138,7 +163,14 @@ struct Operations: View {
         }
       }.padding()
     }.background(finamiScreenBackground(s.db.preferences)).searchable(text: $search, prompt: "Магазин, категорія, сума").navigationTitle("Операції")
-      .onChange(of: search) { _ in pageSize = 150 }
+      .task(id: searchTerm) {
+        let term = searchTerm
+        if !term.isEmpty {
+          do { try await Task.sleep(nanoseconds: 200_000_000) } catch { return }
+        }
+        guard !Task.isCancelled, term == searchTerm else { return }
+        settledSearch = term; pageSize = 150
+      }
       .onChange(of: filter) { _ in pageSize = 150 }
       .onChange(of: sort) { _ in pageSize = 150 }
       .onChange(of: accountFilter) { _ in pageSize = 150 }
@@ -159,7 +191,7 @@ struct Operations: View {
       .sheet(isPresented: $operationSettings) {
         NavigationStack { Form {
           FinamiComponentStylePicker(component: "operations", title: "Стиль операцій")
-          Picker("Тип", selection: filterBinding) { Text("Усі").tag("all"); ForEach(Kind.allCases) { Text($0.title).tag($0.rawValue) } }
+          Picker("Тип", selection: filterBinding) { Text("Усі").tag("all"); ForEach(Kind.allCases) { Text($0.title).tag($0.rawValue) }; Text("Зняття готівки").tag("cashWithdrawal") }
           Picker("Рахунок", selection: $accountFilter) { Text("Усі").tag("all"); ForEach(s.db.accounts) { Text($0.name).tag($0.id) } }
           Picker("Категорія", selection: $categoryFilter) { Text("Усі").tag("all"); ForEach(Array(Set(s.db.operations.map(\.category))).sorted(), id: \.self) { Text($0).tag($0) } }
           Toggle("Потребують уточнення",isOn:$reviewOnly)
@@ -168,7 +200,7 @@ struct Operations: View {
           if usePeriod { DatePicker("Від",selection:$dateFrom,displayedComponents:.date);DatePicker("До",selection:$dateTo,displayedComponents:.date) }
           if !s.privateAmounts { FinamiField("Сума від, ₴",text:$minimum,keyboard:.decimalPad);FinamiField("Сума до, ₴",text:$maximum,keyboard:.decimalPad) }
           Picker("Сортування", selection: sortBinding) { ForEach(OperationSort.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
-          Button("Скинути фільтри") { filterBinding.wrappedValue = "all"; sortBinding.wrappedValue = .newest; accountFilter = "all"; categoryFilter = "all"; search = "";usePeriod=false;minimum="";maximum="";reviewOnly=false;bankFilter="all" }
+          Button("Скинути фільтри") { resetFilters() }
         }.navigationTitle("Фільтри операцій").toolbar { Button("Готово") { pageSize=150;operationSettings = false } } }
       }
   }
@@ -177,9 +209,11 @@ struct OpEditor: View {
   @EnvironmentObject var s: Store
   @Environment(\.dismiss) var dismiss
   @State var o: Operation
+  private let bankIncoming: Bool?
   @State var amount: String
   @State private var confirm = false
-  @State private var learnRule = false
+  @State private var learnRule = true
+  @State private var selectedLearningCategory: String? = nil
   @State private var entryCurrency = "UAH"
   @State private var rate = ""
   @State private var exactReceived = ""
@@ -209,10 +243,11 @@ struct OpEditor: View {
     return finamiEligiblePaymentOperations(s.db.operations, records: s.db.paidRecords ?? [], account: o.account, currency: payment.currency, amount: nativeAmount ?? payment.amount, date: o.date)
   }
   private var paymentSelectionValid: Bool {
-    linkedPaymentID.isEmpty || (linkedRecord == nil && finamiPaymentDebitKind(o.kind) && selectedPayment.map { p in if let amount=nativeAmount { return amount > 0 && (p.kind == "Розстрочка" ? amount <= (p.remaining ?? 0) : amount == p.amount) };return false } == true && o.date <= Date() && (similarPayments.isEmpty || separatePayment))
+    linkedPaymentID.isEmpty || (editorChoice != .withdrawal && linkedRecord == nil && finamiPaymentDebitKind(o.kind) && selectedPayment.map { p in if let amount=nativeAmount { return amount > 0 && (p.kind == "Розстрочка" ? amount <= (p.remaining ?? 0) : amount == p.amount) };return false } == true && o.date <= Date() && (similarPayments.isEmpty || separatePayment))
   }
   init(original: Operation) {
     _o = State(initialValue: original)
+    bankIncoming = original.sourceBank != nil && original.kind != .transfer ? original.kind.incoming : nil
     _tagsText = State(initialValue: (original.tags ?? []).joined(separator:", "))
     let input = original.entryCurrency == "USD" ? (original.originalAmount ?? original.sourceMinor ?? original.amount) : original.amount
     _amount = State(initialValue: input == 0 ? "" : amountText(input))
@@ -221,9 +256,27 @@ struct OpEditor: View {
     _exactReceived = State(initialValue: original.entryCurrency == "USD" && original.kind == .transfer && original.destinationMinor != nil ? amountText(original.destinationMinor ?? 0) : (original.kind == .income && original.entryCurrency == "USD" && original.originalCurrency == "USD" ? amountText(original.amount):""))
   }
   var categories: [String] { let list = o.kind == .income ? s.db.incomeCategories : s.db.expenseCategories; let hidden = o.kind == .income ? (s.db.hiddenIncomeCategories ?? []) : (s.db.hiddenExpenseCategories ?? []); let available = list.filter { !hidden.contains($0) || $0 == o.category }; return Array(Set(available + ["Без категорії",o.category])).sorted() }
-  var allowedKinds: [Kind] {
-    if o.sourceBank != nil && o.kind != .transfer {return Kind.allCases.filter{$0 != .transfer && $0.incoming == o.kind.incoming}}
-    return Kind.allCases
+  private var editorChoice: FinamiOperationChoice { .current(o.kind, withdrawal: o.cashWithdrawal == true) }
+  private var cashAccounts: [Account] { s.db.accounts.filter { ($0.id == cash || $0.accountType == "cash") && $0.id != o.account } }
+  private var choiceBinding: Binding<FinamiOperationChoice> {
+    Binding(get: { editorChoice }, set: { choice in
+      guard choice != editorChoice else { return }
+      let previous = o.kind
+      let next = choice.ledgerKind(bankIncoming: bankIncoming, existing: previous)
+      o.kind = next
+      o.cashWithdrawal = choice == .withdrawal ? true : nil
+      if choice == .withdrawal && next == .transfer { o.destination = cashAccounts.first(where: { $0.code == sourceCode })?.id ?? cashAccounts.first?.id ?? "" }
+      if next != .transfer { o.destination = "" }
+      if next == .income && previous != .income { o.category = suggestedCategory(o.note, kind: .income, database: s.db) }
+      if previous == .income && next == .expense { o.category = "Без категорії" }
+      if next == .transfer { entryCurrency = sourceCode }
+      linkedPaymentID = ""; separatePayment = false
+    })
+  }
+  private var allowedChoices: [FinamiOperationChoice] {
+    let choices = FinamiOperationChoice.options(bankIncoming: bankIncoming, current: editorChoice)
+    // Do not repurpose a matched two-bank transfer as a cash withdrawal.
+    return choices.filter { $0 != .withdrawal || o.destinationBankKey == nil || editorChoice == .withdrawal }
   }
   var sourceCode:String { s.db.accounts.first(where:{$0.id==o.account})?.code ?? "UAH" }
   var destinationCode:String { s.db.accounts.first(where:{$0.id==o.destination})?.code ?? "UAH" }
@@ -245,6 +298,7 @@ struct OpEditor: View {
   var valid: Bool {
     paymentSelectionValid && (converted ?? 0)>0 && s.db.accounts.contains { $0.id == o.account } && (!requiresRate || usedRate.map{fxRate(finamiFXRateText($0)) != nil} == true)
       && (sourceCode != "USD" || entryCurrency == "USD")
+      && (editorChoice != .withdrawal || o.kind != .transfer || cashAccounts.contains { $0.id == o.destination })
       && (o.kind != .transfer || (o.account != o.destination && s.db.accounts.contains { $0.id == o.destination } && (received ?? 0)>0 && entryCurrency == sourceCode))
   }
   private var editorStyle: String { s.db.preferences?.designStyle(for: "editor") ?? "original" }
@@ -262,14 +316,14 @@ struct OpEditor: View {
             if o.sourceBank == nil {o.originalAmount=entered;o.originalCurrency=entryCurrency}
             if !linkedPaymentID.isEmpty {
               guard let payment = selectedPayment else { return }
-              if s.confirmPayment(payment, mode: .newOperation, accountID: o.account, operationID: o.id, paidDate: o.date, kind: o.kind, allowSeparate: separatePayment, operationDraft: o, learnCategory: learnRule, actualAmount: o.sourceMinor ?? o.amount) { rememberAccount(); dismiss() }
+              if s.confirmPayment(payment, mode: .newOperation, accountID: o.account, operationID: o.id, paidDate: o.date, kind: o.kind, allowSeparate: separatePayment, operationDraft: o, learnCategory: learnRule && selectedLearningCategory == o.category && o.category != "Без категорії", actualAmount: o.sourceMinor ?? o.amount) { rememberAccount(); dismiss() }
               return
             }
             if s.change({ d in
               d.operations.removeAll { $0.id == o.id }
               d.operations.append(o)
-              if learnRule && (o.kind == .expense || o.kind == .income) && !o.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                var rules = d.merchantRules ?? [:]; rules[ruleKey(o.note, kind: o.kind)] = o.category; d.merchantRules = rules
+              if learnRule && selectedLearningCategory == o.category && o.category != "Без категорії" && (o.kind == .expense || o.kind == .income) && !o.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                var rules = d.merchantRules ?? [:]; finamiRememberMerchant(o.note, kind: o.kind, category: o.category, rules: &rules); d.merchantRules = rules
               }
             }) {
               rememberAccount(); dismiss()
@@ -280,14 +334,18 @@ struct OpEditor: View {
       Form {
         if editorStyle != "original" {
           VStack(alignment: .leading, spacing: 8) {
-            Text(o.kind.title).font(.caption).foregroundStyle(.secondary)
+            Text(o.displayKindTitle).font(.caption).foregroundStyle(.secondary)
             Text(s.privateAmounts ? "••••" : amount.isEmpty ? "0" : amount).font(editorStyle == "minimal" ? .title2.bold() : .largeTitle.bold()).monospacedDigit()
             if editorStyle == "bankingPro" { Label(s.accountName(o.account), systemImage: "wallet.pass") }
             if editorStyle == "smartEntry" { Label("Категорія: " + suggestedCategory(o.note, kind: o.kind, database: s.db), systemImage: "sparkles").font(.caption) }
           }.frame(maxWidth: .infinity, alignment: editorStyle == "minimal" ? .leading : .center).padding(8)
         }
-        Picker("Тип", selection: $o.kind) { ForEach(allowedKinds) { Text($0.title).tag($0) } }
+        Picker("Тип", selection: choiceBinding) { ForEach(allowedChoices) { Text($0.title).tag($0) } }
           .pickerStyle(.menu).disabled(financialLocked)
+        if editorChoice == .legacy { Text("Збережений тип: " + o.kind.title + ". Облік не зміниться, якщо залишити цей тип.").font(.caption).foregroundStyle(.secondary) }
+        if editorChoice == .income { Text("Зарплата, кешбек та інші надходження — категорії одного типу «Дохід».").font(.caption).foregroundStyle(.secondary) }
+        if editorChoice == .withdrawal && o.kind == .movementOut { Text("Банківське списання позначено як зняття готівки. Готівковий рахунок автоматично не поповнюється, щоб не дублювати рух коштів.").font(.caption).foregroundStyle(.secondary) }
+        if editorChoice == .withdrawal && o.kind == .transfer && cashAccounts.isEmpty { Text("Спочатку додай готівковий рахунок.").font(.caption).foregroundStyle(.orange) }
         if o.kind.needsReview { Text("Не входить у доходи чи витрати до уточнення. Баланс враховує рух коштів.").font(.caption) }
         FinamiField("Сума, \(entryCurrency)", text: $amount, keyboard: .decimalPad).disabled(financialLocked)
         if !financialLocked && s.db.preferences?.designEditorKeyboard == true { FinamiDesignKeyboard(amount: $amount, haptics: s.db.preferences?.designEditorHaptics != false) }
@@ -312,14 +370,14 @@ struct OpEditor: View {
           ForEach(s.db.accounts.filter{o.sourceBank == nil || $0.code == "UAH"}) { Text($0.name).tag($0.id) }
         }.disabled(financialLocked)
         if o.kind == .transfer {
-          Picker("Куди", selection: $o.destination) {
+          Picker(editorChoice == .withdrawal ? "Готівковий рахунок" : "Куди", selection: $o.destination) {
             Text("Вибрати").tag("")
-            ForEach(s.db.accounts) { Text($0.name).tag($0.id) }
+            ForEach(editorChoice == .withdrawal ? cashAccounts : s.db.accounts) { Text($0.name).tag($0.id) }
           }.disabled(financialLocked)
           if sourceCode == "USD" && destinationCode == "UAH" && o.sourceBank == nil {FinamiField("Фактично отримано UAH (необов’язково)",text:$exactReceived,keyboard:.decimalPad).disabled(financialLocked);if exactMode {Text("Сума зарахування має пріоритет над введеним курсом.").font(.caption)}}
           if let n=received, !o.destination.isEmpty { LabeledContent("Зарахувати",value:currencyMoney(n,destinationCode)) }
         } else if o.kind.isReportCategory {
-          Picker("Категорія", selection: $o.category) {
+          Picker("Категорія", selection: Binding(get: { o.category }, set: { o.category = $0; selectedLearningCategory = $0 })) {
             ForEach(categories, id: \.self) { Text($0).tag($0) }
           }
           if editorStyle != "original" && editorStyle != "minimal" {
@@ -327,7 +385,7 @@ struct OpEditor: View {
             let recent = Array(Set(s.db.operations.suffix(150).filter { $0.kind == o.kind && categories.contains($0.category) }.map(\.category))).sorted()
             ScrollView(.horizontal, showsIndicators: false) { HStack {
               ForEach(Array((favorites + recent.filter { !favorites.contains($0) }).prefix(10)), id: \.self) { category in
-                Button { o.category = category } label: { Label(category, systemImage: favorites.contains(category) ? "star.fill" : "clock").font(.caption).padding(8).frame(minHeight:44).background(Color.accentColor.opacity(o.category == category ? 0.18 : 0.05),in: RoundedRectangle(cornerRadius: 8)) }.buttonStyle(.plain)
+                Button { o.category = category; selectedLearningCategory = category } label: { Label(category, systemImage: favorites.contains(category) ? "star.fill" : "clock").font(.caption).padding(8).frame(minHeight:44).background(Color.accentColor.opacity(o.category == category ? 0.18 : 0.05),in: RoundedRectangle(cornerRadius: 8)) }.buttonStyle(.plain)
               }
             } }
             Button(favorites.contains(o.category) ? "Прибрати з обраних" : "Додати категорію в обрані") { s.changeAppearance { p in var list = Set(p.designEditorFavorites ?? []); if list.contains(o.category) { list.remove(o.category) } else { list.insert(o.category) }; p.designEditorFavorites = list.sorted() } }.font(.caption)
@@ -340,7 +398,7 @@ struct OpEditor: View {
             LabeledContent("Оплачено", value: s.db.obligations.first(where: { $0.id == record.paymentID })?.name ?? s.db.subscriptions?.first(where: { $0.id == record.paymentID })?.name ?? "Платіж з історії").accessibilityIdentifier("qa.operation.linked")
             Text("Ця операція вже оновила графік. Фінансові поля та видалення захищені від випадкової зміни; примітку й категорію можна редагувати.").font(.caption)
           }
-        } else if finamiPaymentDebitKind(o.kind) {
+        } else if editorChoice != .withdrawal && finamiPaymentDebitKind(o.kind) {
           Section("Пов’язати з платежем") {
             Picker("Розстрочка, кредит або підписка", selection: $linkedPaymentID) {
               Text("Не пов’язувати").tag("")
@@ -396,17 +454,19 @@ struct OpEditor: View {
         FinamiField("Друге число", text: $calculatorInput, keyboard: .decimalPad)
         Button("Застосувати") { if let result = FinamiDesignPolicy.calculate(amount, calculatorInput, operation: calculatorMode) { amount = result; calculator = false } }.disabled(FinamiDesignPolicy.calculate(amount, calculatorInput, operation: calculatorMode) == nil)
       }.navigationTitle("Калькулятор").toolbar { Button("Скасувати") { calculator = false } } } }
-      .onChange(of:o.account) { _ in entryCurrency=sourceCode; linkedPaymentID=""; separatePayment=false }
+      .onChange(of:o.account) { _ in entryCurrency=sourceCode; linkedPaymentID=""; separatePayment=false; if editorChoice == .withdrawal && o.kind == .transfer && !cashAccounts.contains(where: { $0.id == o.destination }) { o.destination = cashAccounts.first(where: { $0.code == sourceCode })?.id ?? cashAccounts.first?.id ?? "" } }
       .onChange(of:linkedPaymentID) { _ in separatePayment=false }
       .onChange(of:amount) { _ in separatePayment=false }
       .onChange(of:o.date) { _ in separatePayment=false }
       .onChange(of:o.note) { newNote in
+        selectedLearningCategory = nil
         if o.kind.isReportCategory && o.category == "Без категорії" && !savedOperation {
           let suggestion = suggestedCategory(newNote,kind:o.kind,database:s.db)
           if categories.contains(suggestion) { o.category = suggestion }
         }
       }
       .onChange(of: o.kind) { _ in
+        selectedLearningCategory = nil
         if !finamiPaymentDebitKind(o.kind) { linkedPaymentID="" }; separatePayment=false
         if o.kind == .transfer {entryCurrency=sourceCode}
         if !categories.contains(o.category) { o.category = categories.first ?? "Інше" }

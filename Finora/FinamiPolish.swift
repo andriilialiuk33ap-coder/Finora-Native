@@ -31,8 +31,11 @@ struct FinamiDashboardSurface: ViewModifier {
     var isAccounts: Bool
     var tint: Color
     var template: String?
+    var aurora = false
     @ViewBuilder func body(content: Content) -> some View {
-        if isAccounts { content } else { content.modifier(FinamiCardStyle(tint: tint, template: template)) }
+        if isAccounts { content }
+        else if aurora && (template == nil || template == FinamiCardTemplate.automatic.rawValue) { content.modifier(FinamiAuroraSurface(tint: tint)) }
+        else { content.modifier(FinamiCardStyle(tint: tint, template: template)) }
     }
 }
 // A full-width, informative header for every collapsed dashboard section.
@@ -160,4 +163,28 @@ func finamiOperationIcon(_ operation: Operation) -> String {
     let name = operation.category.lowercased()
     let icons: [(String, String)] = [("продукт", "cart"), ("кава", "cup.and.saucer"), ("харч", "fork.knife"), ("транспорт", "bus"), ("таксі", "car"), ("пальн", "fuelpump"), ("авто", "car"), ("здоров", "cross.case"), ("житл", "house"), ("комунал", "house"), ("підпис", "repeat"), ("покуп", "bag"), ("зв’яз", "iphone"), ("подорож", "airplane"), ("подар", "gift"), ("освіт", "book"), ("розваг", "gamecontroller")]
     return icons.first(where: { name.contains($0.0) })?.1 ?? "arrow.up.right"
+}
+
+/// Compact, equal-height quick actions with an accessible vertical fallback.
+struct FinamiDashboardQuickActions: View {
+    @Environment(\.dynamicTypeSize) private var typeSize
+    var open: (Kind) -> Void
+    private func tile(_ kind: Kind, _ title: String, _ icon: String, _ tint: Color) -> some View {
+        Button { open(kind) } label: {
+            VStack(spacing: 6) {
+                FinamiIconTile(icon: icon, tint: tint, side: 34)
+                Text(title).font(.subheadline.weight(.medium)).foregroundStyle(.primary)
+            }.frame(maxWidth: .infinity, minHeight: 72).padding(8)
+                .modifier(FinamiCardStyle(tint: tint)).contentShape(Rectangle())
+        }.buttonStyle(.plain).accessibilityIdentifier("qa.home.quick." + kind.rawValue)
+    }
+    @ViewBuilder private var tiles: some View {
+        tile(.expense, "Витрата", "minus", .orange)
+        tile(.income, "Дохід", "plus", .green)
+        tile(.transfer, "Переказ", "arrow.left.arrow.right", .blue)
+    }
+    var body: some View {
+        if typeSize.isAccessibilitySize { VStack(spacing: 8) { tiles } }
+        else { HStack(spacing: 8) { tiles } }
+    }
 }

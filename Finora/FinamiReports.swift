@@ -358,29 +358,47 @@ private struct FinamiAccountReportSettings: View {
 }
 
 // Live list of the selected report's unresolved entries, without changing balances.
-private struct FinamiReportReviewList: View {
+struct FinamiReportReviewList: View {
     @EnvironmentObject private var s: Store
     let ids: [String]
     let account: String?
     let maskAmounts: Bool
+    var includeInbox = false
     @State private var edited: Operation?
+    @State private var capture: CapturedPayment?
     private var entries: [Operation] {
         let selected = Set(ids)
-        return s.db.operations.filter { selected.contains($0.id) && $0.kind.needsReview && (account == nil || $0.account == account) }.sorted { $0.date > $1.date }
+        return s.db.operations.filter { selected.contains($0.id) && (includeInbox ? $0.needsCaptureAttention : $0.kind.needsReview) && (account == nil || $0.account == account) }.sorted { $0.date > $1.date }
     }
     var body: some View {
         List {
-            Section { Text("Оберіть операцію та уточніть її тип. Дохід — лише справжнє надходження, а не переказ власних коштів або кредит.").font(.caption) }
+            Section { Text("Оберіть операцію та уточніть її тип або категорію. Дохід — лише справжнє надходження, а не переказ власних коштів або кредит.").font(.caption) }
             Section {
-                if entries.isEmpty { Text("Усі операції уточнено").foregroundStyle(.secondary) }
+                if entries.isEmpty && (!includeInbox || s.capturePending.isEmpty) { Text("Усі операції уточнено").foregroundStyle(.secondary) }
                 ForEach(entries) { o in
                     Button { edited = o } label: {
                         OperationRow(o: o).environment(\.finamiMask, maskAmounts || s.db.accounts.first(where: { $0.id == o.account })?.hideAmounts == true)
-                    }.buttonStyle(.plain)
+                    }.buttonStyle(.plain).accessibilityIdentifier("qa.review.operation." + o.id)
+                }
+            }
+            if includeInbox && (!s.capturePending.isEmpty || s.captureWarning != nil) {
+                Section("Вхідні банківські події") {
+                    ForEach(s.capturePending) { e in
+                        Button { capture = e } label: {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(e.merchant.isEmpty ? e.source : e.merchant)
+                                Text(maskAmounts || s.privateAmounts || e.account.isEmpty || s.db.accounts.first(where: { $0.id == e.account })?.hideAmounts == true ? "••••" : s.visibleMoney(e.minor, e.currency)).font(.caption)
+                                Text(e.account.isEmpty ? "Обрати рахунок" : s.accountName(e.account)).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }.buttonStyle(.plain)
+                    }
+                    if let warning = s.captureWarning { Text(warning).font(.caption).foregroundStyle(.orange) }
+                    Button("Оновити чергу") { s.refreshCaptures(auto: false) }
                 }
             }
         }.navigationTitle("Уточнення операцій")
             .sheet(item: $edited) { OpEditor(original: $0) }
+            .sheet(item: $capture) { CaptureReview(event: $0) }
     }
 }
 

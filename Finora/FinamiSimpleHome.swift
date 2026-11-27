@@ -28,7 +28,7 @@ struct FinamiSimpleHome: View {
             Divider()
             metric("Доступний кредит",s.totalAvailableCredit)
             metric("Використано кредиту",s.totalCreditUsed)
-        }.padding(16).frame(maxWidth:.infinity,alignment:.leading).modifier(FinamiCardStyle(tint:finoraAccent))
+        }.padding(16).frame(maxWidth:.infinity,alignment:.leading).modifier(FinamiAuroraSurface(tint:finamiDesignAccent(p.designAccent) ?? finoraAccent))
     }
     private func add(_ kind:Kind) { operation=Operation(kind:kind,category:"Без категорії",account:s.db.accounts.first?.id ?? cash) }
     private var actions:some View {
@@ -61,6 +61,13 @@ struct FinamiSimpleHome: View {
         ScrollView { LazyVStack(alignment:.leading,spacing:12) {
             summary
             actions
+            let review = s.db.operations.filter { $0.needsCaptureAttention }
+            let count = review.count + s.capturePending.count
+            if count > 0 {
+                NavigationLink { FinamiReportReviewList(ids: review.map(\.id), account: nil, maskAmounts: masked, includeInbox: true) } label: {
+                    FinamiCollapsedDashboardCard(title: "Необхідна увага", summary: "\(count) · Відкрити операції", icon: "exclamationmark.bubble.fill", tint: .orange, template: nil)
+                }.buttonStyle(.plain)
+            }
             Text("Рахунки").font(.headline)
             FinamiCompactAccountsGrid(accounts:accountList,mode:"all",date:Date(),onAccountsScreen:false,forceList:true).environment(\.finamiMask,masked)
             if !s.upcomingPayments.isEmpty {

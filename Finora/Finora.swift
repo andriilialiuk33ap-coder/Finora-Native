@@ -47,15 +47,71 @@ enum Kind: String, Codable, CaseIterable, Identifiable {
     switch self {
     case .expense: return "Витрата"
     case .income: return "Дохід"
-    case .transfer: return "Переказ між рахунками"
+    case .transfer: return "Переказ коштів"
     case .creditDraw: return "Отримання кредиту"
     case .creditRepayment: return "Погашення кредиту"
     case .creditRepaymentIncoming: return "Поповнення кредитної картки"
-    case .movementIn: return "Переказ / поповнення +"
-    case .movementOut: return "Переказ / зняття −"
+    case .movementIn: return "Переказ коштів (вхідний)"
+    case .movementOut: return "Переказ коштів (вихідний)"
     case .refund: return "Повернення покупки"
     case .unclassifiedCredit: return "Зарахування: уточнити"
     case .unclassifiedDebit: return "Списання: уточнити"
+    }
+  }
+}
+// Editor choices are deliberately separate from persisted ledger classifications.
+enum FinamiOperationChoice: String, CaseIterable, Identifiable {
+  case expense, income, transfer, withdrawal, repayment, refund, reviewCredit, reviewDebit, legacy
+  var id: String { rawValue }
+  var title: String {
+    switch self {
+    case .expense: return "Витрата"
+    case .income: return "Дохід"
+    case .transfer: return "Переказ коштів"
+    case .withdrawal: return "Зняття готівки"
+    case .repayment: return "Погашення кредиту"
+    case .refund: return "Повернення покупки"
+    case .reviewCredit: return "Зарахування: уточнити"
+    case .reviewDebit: return "Списання: уточнити"
+    case .legacy: return "Збережений банківський тип"
+    }
+  }
+  static func current(_ kind: Kind, withdrawal: Bool) -> Self {
+    switch kind {
+    case .expense: return .expense
+    case .income: return .income
+    case .transfer, .movementOut: return withdrawal ? .withdrawal : .transfer
+    case .movementIn: return .transfer
+    case .creditRepayment: return .repayment
+    case .refund: return .refund
+    case .unclassifiedCredit: return .reviewCredit
+    case .unclassifiedDebit: return .reviewDebit
+    case .creditDraw, .creditRepaymentIncoming: return .legacy
+    }
+  }
+  static func options(bankIncoming: Bool?, current: Self) -> [Self] {
+    var values: [Self]
+    switch bankIncoming {
+    case true?: values = [.income, .transfer, .refund, .reviewCredit]
+    case false?: values = [.expense, .transfer, .withdrawal, .repayment, .reviewDebit]
+    case nil: values = [.expense, .income, .transfer, .withdrawal, .repayment, .refund, .reviewCredit, .reviewDebit]
+    }
+    if !values.contains(current) { values.append(current) }
+    return values
+  }
+  func ledgerKind(bankIncoming: Bool?, existing: Kind) -> Kind {
+    switch self {
+    case .expense: return .expense
+    case .income: return .income
+    case .transfer:
+      if [.transfer, .movementIn, .movementOut].contains(existing) { return existing }
+      return bankIncoming.map { $0 ? .movementIn : .movementOut } ?? .transfer
+    case .withdrawal: return bankIncoming == nil ? .transfer : .movementOut
+    case .repayment: return .creditRepayment
+    case .refund: return .refund
+    case .reviewCredit: return .unclassifiedCredit
+    case .reviewDebit: return .unclassifiedDebit
+    case .legacy: return existing
     }
   }
 }
@@ -140,6 +196,10 @@ struct Operation: Codable, Identifiable, Equatable {
   var scanFingerprint: String? = nil
   var scanImageID: String? = nil
   var tags: [String]? = nil
+  // Optional for backward-compatible decoding; the underlying transfer accounting stays unchanged.
+  var cashWithdrawal: Bool? = nil
+  var needsCaptureAttention: Bool { kind.needsReview || (captureSource != nil && (kind == .expense || kind == .income) && category == "Без категорії") }
+  var displayKindTitle: String { cashWithdrawal == true && (kind == .transfer || kind == .movementOut) ? "Зняття готівки" : kind.title }
   var signedNative: Int64 { kind.incoming ? (sourceMinor ?? amount) : -(sourceMinor ?? amount) }
   // Only count an embedded fee separately when it is demonstrably part of a non-expense debit.
   var neutralFee: Int64 {
@@ -366,7 +426,7 @@ struct DataFile: FileDocument {
   @Published private(set) var db = Database() {
     didSet {
       mutationVersion &+= 1
-      if oldValue.operations != db.operations { ledgerIndex = nil; reportCache.removeAll(); comparisonCache.removeAll(); activityCache.removeAll(); historyCache.removeAll(); dashboardMonthCache.removeAll() }
+      if oldValue.operations != db.operations { ledgerIndex = nil; reportCache.removeAll(); comparisonCache.removeAll(); activityCache.removeAll(); historyCache.removeAll(); dashboardMonthCache.removeAll(); dashboardMetricsCache.removeAll() }
       if oldValue.accounts.map(\.id) != db.accounts.map(\.id) || oldValue.accounts.map(\.name) != db.accounts.map(\.name) || oldValue.accounts.map(\.hideAmounts) != db.accounts.map(\.hideAmounts) { historyCache.removeAll() }
       if oldValue.accounts.map(\.reconciliationDate) != db.accounts.map(\.reconciliationDate) || oldValue.accounts.map(\.id) != db.accounts.map(\.id) {ledgerIndex=nil}
     }
@@ -374,6 +434,15 @@ struct DataFile: FileDocument {
   private var mutationVersion: UInt64 = 0
   private var ledgerIndex: FinamiLedgerIndex?
   private var dashboardMonthCache: [DateInterval: [Operation]] = [:]
+  private var dashboardMetricsCache: [DateInterval: FinamiDashboardMetrics] = [:]
+  func dashboardMetrics(_ date: Date) -> FinamiDashboardMetrics {
+    guard let interval = Calendar.current.dateInterval(of: .month, for: date) else { return FinamiDashboardMetrics(operations: month(date)) }
+    if let cached = dashboardMetricsCache[interval] { return cached }
+    let metrics = FinamiDashboardMetrics(operations: month(date))
+    if dashboardMetricsCache.count >= 4 { dashboardMetricsCache.removeAll(keepingCapacity: true) }
+    dashboardMetricsCache[interval] = metrics
+    return metrics
+  }
   private struct ActivityKey: Hashable { let account: String; let currency: String; let month: Date }
   private var activityCache: [ActivityKey: AccountActivity] = [:]
   private var historyCache: [FinamiHistoryQuery: [Operation]] = [:]
@@ -459,6 +528,16 @@ struct DataFile: FileDocument {
             loaded.operations = [-2,-1,0].map { offset in
                 Operation(kind:.expense,amount:10000,date:cal.date(byAdding:.month,value:offset,to:Date().addingTimeInterval(-86400)) ?? Date(),category:"📺 Підписки",note:"QA Streaming",account:"qa-recurring")
             }
+          }
+          if ProcessInfo.processInfo.arguments.contains("--finami-qa-home-review-fixture") {
+            loaded.accounts.append(Account(id:"qa-review-account",name:"QA Review"))
+            loaded.operations = [
+              Operation(id:"qa-review-in",kind:.unclassifiedCredit,amount:10000,note:"QA Unclassified credit",account:"qa-review-account"),
+              Operation(id:"qa-review-out",kind:.unclassifiedDebit,amount:5000,note:"QA Unclassified debit",account:"qa-review-account"),
+              Operation(id:"qa-reviewed",kind:.income,amount:20000,note:"QA Already classified",account:"qa-review-account"),
+              Operation(id:"qa-review-previous",kind:.unclassifiedDebit,amount:3000,date:Calendar.current.date(byAdding:.month,value:-1,to:Date()) ?? Date(),note:"QA Previous month",account:"qa-review-account")
+            ]
+            loaded.dashboard = [.init(kind:.review,enabled:true,size:.medium)]
           }
           if ProcessInfo.processInfo.arguments.contains("--finami-qa-reports-fixture") {
             loaded.accounts.append(Account(id:"qa-pumb",name:"QA Pumb"))
@@ -711,7 +790,7 @@ struct DataFile: FileDocument {
     let f = ISO8601DateFormatter()
     let rows = db.operations.map { o in
       [
-        f.string(from: o.date), o.kind.title, amountText(o.amount), q(o.category),
+        f.string(from: o.date), o.displayKindTitle, amountText(o.amount), q(o.category),
         q(accountName(o.account)), q(o.destination.isEmpty ? "" : accountName(o.destination)),
         q(o.note), q(o.entryCurrency ?? "UAH"), q(o.originalCurrency ?? "UAH"), amountText(o.originalAmount ?? o.amount), q(o.exchangeRate ?? ""), amountText(o.bankFee ?? 0), q(o.sourceBank ?? ""),
       ].joined(separator: ";")
@@ -742,6 +821,9 @@ struct DataFile: FileDocument {
           guard url.scheme == "finami-widget", let host = url.host, ["balance","payments","quick","planning"].contains(host) else { return }
           store.widgetRoute = host
       }
+    }
+    .backgroundTask(.appRefresh(FinamiCaptureBackground.identifier)) {
+      await FinamiCaptureBackground.process(store: store)
     }
   }
 }
@@ -803,7 +885,7 @@ struct Root: View {
           do { try await Task.sleep(nanoseconds: 350_000_000) } catch { return }
           while !Task.isCancelled {
             store.refreshCaptures()
-            do {try await Task.sleep(nanoseconds: store.capturePending.isEmpty ? 6_000_000_000 : 3_000_000_000)} catch {break}
+            do {try await Task.sleep(nanoseconds: store.capturePending.isEmpty ? 6_000_000_000 : 12_000_000_000)} catch {break}
           }
         }
       }
@@ -820,7 +902,7 @@ struct Root: View {
       .sheet(isPresented: $widgetAdd) { OpEditor(original: Operation(category: "Без категорії", account: store.db.accounts.first?.id ?? cash)).environmentObject(store) }
       .sheet(isPresented: $widgetCalendar) { NavigationStack { CalendarView().toolbar { ToolbarItem(placement:.cancellationAction) { Button("Готово") { widgetCalendar = false } } } }.environmentObject(store) }
       .sheet(isPresented: $widgetPlanning) { NavigationStack { FinamiPlanningView().toolbar { ToolbarItem(placement:.cancellationAction) { Button("Готово") { widgetPlanning=false } } } }.environmentObject(store) }
-      .onChange(of: phase) { p in if p == .background && lockEnabled { unlocked = false; widgetAdd = false; widgetCalendar = false; widgetPlanning = false }; if p == .active { updateWidgets() } }.alert(
+      .onChange(of: phase) { p in if p == .background && lockEnabled { unlocked = false; widgetAdd = false; widgetCalendar = false; widgetPlanning = false }; if p == .background { FinamiCaptureBackground.schedule() }; if p == .active { updateWidgets() } }.alert(
       "Finami",
       isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.error = nil } })
     ) {
@@ -1206,6 +1288,7 @@ struct More: View {
         }
       }.buttonStyle(.plain)
       FinamiMenuGroup("Finami Next") {
+        NavigationLink { FinamiAuditView() } label: { FinamiMenuLabel(title:"Якість фінансових даних",icon:"checkmark.shield.fill",color:.teal) }.accessibilityIdentifier("qa.quality.open")
         NavigationLink { FinamiNextReviewView() } label: { FinamiMenuLabel(title:"Центр перевірки операцій",icon:"checkmark.shield",color:.orange) }.accessibilityIdentifier("qa.next.review")
         NavigationLink { FinamiNextInsightsView() } label: { FinamiMenuLabel(title:"Фінансові підсумки",icon:"chart.bar.xaxis",color:.teal) }.accessibilityIdentifier("qa.next.insights")
         NavigationLink { FinamiExchangeDiaryView() } label: { FinamiMenuLabel(title:"Журнал USDT",icon:"arrow.left.arrow.right",color:.green) }.accessibilityIdentifier("qa.next.usdt")
@@ -1378,10 +1461,9 @@ struct Obligations: View {
           Button { s.changeAppearance { $0.toggleDesignCard(o.id, subscription: false) } } label: {
             Image(systemName: collapsed ? "chevron.down" : "chevron.up").frame(minWidth: 44,minHeight: 44)
           }.buttonStyle(.borderless).accessibilityLabel(collapsed ? "Розгорнути розстрочку" : "Згорнути розстрочку").accessibilityIdentifier("qa.installment.collapse." + o.id)
-          Button(role: .destructive) { remove = o } label: { Image(systemName: "trash").frame(minWidth: 44, minHeight: 44).accessibilityLabel("Видалити розстрочку") }.buttonStyle(.borderless)
         }
         }.swipeActions(edge: .trailing, allowsFullSwipe: false) {
-          if kind == .installment { Button { remove = o } label: { Label("Видалити", systemImage: "trash") }.tint(.red) }
+          if kind == .installment { Button(role: .destructive) { remove = o } label: { Label("Видалити", systemImage: "trash") }.tint(.red) }
         }
       }
       if kind == .installment, let archived = s.db.removedInstallments, !archived.isEmpty {

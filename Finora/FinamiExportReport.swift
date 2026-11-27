@@ -27,7 +27,7 @@ struct FinamiExportReport {
             monthly[month.string(from: o.date), default: FinamiReportTotals()].add(o, account: account)
             var row: [FinamiExportCell] = []
             row.append(text(date.string(from: o.date)))
-            row.append(text(o.kind.title))
+            row.append(text(o.displayKindTitle))
             row.append(money(o.amount))
             row.append(text(o.category))
             row.append(text(accountNames[o.account] ?? "—"))

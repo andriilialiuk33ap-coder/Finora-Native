@@ -54,6 +54,7 @@ struct AppearancePreferences: Codable {
     var designLayout: String? = nil
     var designDashboard: String? = nil
     var simpleHome: Bool? = nil
+    var qualityQuickActions: Bool? = nil
     var designAccent: String? = nil
     var designRadius: Int? = nil
     var designLowEffects: Bool? = nil
@@ -329,6 +330,7 @@ struct DashboardSettings: View {
     var body: some View {
         List {
             NavigationLink("Змінити порядок видимих блоків") { FinamiOrderEditor(target: .dashboard, closeButton: false) }
+            Toggle("Швидкі дії на головній", isOn: Binding(get: { s.db.preferences?.qualityQuickActions != false }, set: { value in s.changeAppearance { $0.qualityQuickActions = value } }))
             Section("Увімкни потрібні блоки. Через «Редагувати» перетягни їх у новий порядок. Компактні блоки займають менше місця; рахунки, баланси та платежі залишаються на всю ширину для читабельності.") {
                 ForEach(items) { item in
                     VStack(alignment: .leading, spacing: 8) {
@@ -350,6 +352,7 @@ struct CustomDashboard: View {
     @EnvironmentObject var s: Store
     @State private var date = Date()
     @State private var add = false
+    @State private var quickDraft: Operation?
     @State private var configure = false
     @State private var reorder = false
     @State private var voice = false
@@ -380,6 +383,13 @@ struct CustomDashboard: View {
         }
         if !pair.isEmpty { result.append(pair) }; return result
     }
+    @ViewBuilder private var quickActions: some View {
+        if s.db.preferences?.qualityQuickActions != false {
+            FinamiDashboardQuickActions { kind in
+                quickDraft = Operation(kind: kind, category: "Без категорії", account: s.db.accounts.first?.id ?? cash)
+            }
+        }
+    }
     var body: some View {
         VStack(spacing: 0) {
         ScrollView {
@@ -390,13 +400,16 @@ struct CustomDashboard: View {
                     HStack(alignment: .top, spacing: 12) {
                         ForEach(entry.items) { item in DashboardTile(item: item, date: date) }
                     }
+                    if entry.items.contains(where: { $0.kind == .ownFunds }) { quickActions }
                 }
+                if !items.contains(where: { $0.kind == .ownFunds }) { quickActions }
             }.padding()
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
         HStack { Button { add = true } label: { Label("Додати операцію", systemImage: "plus.circle.fill").font(.headline).frame(maxWidth: .infinity).padding(.vertical, 5).frame(minHeight:44) }.buttonStyle(.borderedProminent); Button { voice=true } label:{Image(systemName:"mic.fill").frame(minWidth:44,minHeight:44)}.buttonStyle(.bordered).accessibilityLabel("Голосовий запис"); Button { scan = true } label: { Image(systemName: "doc.viewfinder").frame(minWidth:44,minHeight:44) }.buttonStyle(.bordered).accessibilityLabel("Імпорт зі скриншота").accessibilityIdentifier("qa.home.scan") }.padding(.horizontal).padding(.vertical,7).background(Color(uiColor:.systemGroupedBackground))
         }.background(finamiScreenBackground(s.db.preferences)).navigationTitle(s.db.preferences?.homeTitle ?? "Головна")
             .toolbar { NavigationLink { FinamiGlobalSearch() } label: { Image(systemName:"magnifyingglass") }.accessibilityLabel("Пошук Finami"); Button { s.changeAppearance { p in p.hideAmounts = !(p.hideAmounts ?? false) } } label: { Image(systemName:s.privateAmounts ? "eye.slash" : "eye") }.accessibilityLabel("Приховати або показати суми"); Button { reorder = true } label: { Image(systemName: "arrow.up.arrow.down") }.accessibilityLabel("Змінити порядок блоків"); Button { configure = true } label: { Image(systemName: "slider.horizontal.3").font(.title2) }.accessibilityLabel("Налаштувати блоки") }
             .sheet(isPresented: $add) { OpEditor(original: Operation(category: "Без категорії", account: s.db.accounts.first?.id ?? cash)) }
+            .sheet(item: $quickDraft) { OpEditor(original: $0) }
             .sheet(isPresented:$voice) { FinamiVoice() }
             .sheet(isPresented:$scan) { NavigationStack { FinamiScanView().toolbar { ToolbarItem(placement: .cancellationAction) { Button("Закрити") { scan = false } } } } }
             .sheet(isPresented: $reorder) { NavigationStack { FinamiOrderEditor(target: .dashboard) } }
@@ -408,13 +421,23 @@ struct DashboardTile: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     var item: DashboardItem; var date: Date
     var ops: [Operation] { s.month(date) }
-    var inc: Int64 { s.totals(ops,.income) }
-    var exp: Int64 { s.totals(ops,.expense) }
+    private var metrics: FinamiDashboardMetrics { s.dashboardMetrics(date) }
+    var inc: Int64 { metrics.income }
+    var exp: Int64 { metrics.expense }
     var balance: Int64 { s.includedAccounts.reduce(0) { $0 + s.balance($1) } }
     var small: Bool { item.size == .small && ![.balance,.ownFunds,.creditLimit,.creditPortfolio,.obligations,.allAvailable,.monthlyPayments,.accounts,.paymentCalendar].contains(item.kind) && !dynamicTypeSize.isAccessibilitySize }
     @State private var paymentDetails: FinamiPayment?
     @State private var accountSettings = false
-    var masked: Bool { s.privateAmounts || item.hideAmounts == true }
+    var masked: Bool {
+        if s.privateAmounts || item.hideAmounts == true { return true }
+        // A combined overview must not disclose individually hidden account amounts.
+        if item.kind == .ownFunds {
+            let hidden = Set(s.db.accounts.filter { $0.hideAmounts == true }.map(\.id))
+            if s.includedAccounts.contains(where: { hidden.contains($0.id) }) { return true }
+            if !hidden.isEmpty && ops.contains(where: { hidden.contains($0.account) || ($0.kind == .transfer && hidden.contains($0.destination)) }) { return true }
+        }
+        return false
+    }
     func display(_ n:Int64)->String { masked ? "••••" : s.displayed(n) }
     func visible(_ n:Int64,_ code:String = "UAH")->String { masked ? "••••" : s.visibleMoney(n,code) }
     var showCharts:Bool { s.db.preferences?.noCharts == false && !masked }
@@ -427,34 +450,68 @@ struct DashboardTile: View {
     var color: Color {
         let p = s.db.preferences ?? .init()
         if let name = item.accentName, let custom = IzanamiTheme.all.first(where: {$0.name == name}) { return custom.color }
+        if item.kind == .ownFunds { return finamiDesignAccent(p.designAccent) ?? (FinamiDesign(rawValue:p.design ?? "Signature") ?? .signature).tint }
         return (p.colorfulDashboard ?? true) ? item.kind.tileColor : (IzanamiTheme.all.first(where:{$0.name==p.theme})?.color ?? (FinamiDesign(rawValue:p.design ?? "Signature") ?? .signature).tint)
     }
     var body: some View {
         VStack(alignment: .leading, spacing: tileSpacing) {
             if collapsed {
                 let summary = collapsedSummary
-                Button { toggleCollapsed() } label: {
-                    FinamiCollapsedDashboardCard(title:item.kind.title,summary:summary,icon:item.kind.icon,tint:color,template:item.template)
-                }.buttonStyle(.plain).accessibilityLabel("Розгорнути " + item.kind.title).accessibilityValue(summary).accessibilityIdentifier("qa.dashboard.collapsed." + item.id)
+                if item.kind == .review {
+                    NavigationLink { reviewDestination } label: {
+                        FinamiCollapsedDashboardCard(title:item.kind.title,summary:"\(reviewCount) · " + (reviewCount == 0 ? "Усе уточнено" : "Відкрити операції"),icon:item.kind.icon,tint:color,template:item.template)
+                    }.buttonStyle(.plain).accessibilityLabel("Потребують уточнення").accessibilityValue(String(reviewCount)).accessibilityIdentifier("qa.dashboard.review.collapsed")
+                } else {
+                    Button { toggleCollapsed() } label: {
+                        FinamiCollapsedDashboardCard(title:item.kind.title,summary:summary,icon:item.kind.icon,tint:color,template:item.template)
+                    }.buttonStyle(.plain).accessibilityLabel("Розгорнути " + item.kind.title).accessibilityValue(summary).accessibilityIdentifier("qa.dashboard.collapsed." + item.id)
+                }
             } else {
             if small {
                 HStack {FinamiIconTile(icon:item.kind.icon,tint:color,side:32);Spacer(minLength:0);privacyButton}
-                Button { toggleCollapsed() } label: { Text(item.kind.title).font(.subheadline.weight(.semibold)).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true).frame(minHeight:44,alignment:.leading) }.buttonStyle(.plain).accessibilityLabel("Згорнути " + item.kind.title)
+                tileTitle
+            } else if item.kind == .accounts {
+                HStack(alignment:.center,spacing:8) {
+                    FinamiIconTile(icon:item.kind.icon,tint:color,side:36)
+                    tileTitle.frame(maxWidth:.infinity,alignment:.leading)
+                    Button { accountSettings = true } label: { Image(systemName:"slider.horizontal.3").frame(width:44,height:44) }.buttonStyle(.plain).accessibilityLabel("Налаштування карток рахунків")
+                    privacyButton
+                }.padding(.horizontal, 4).padding(.vertical, 2)
             } else {
-                HStack(alignment:.center,spacing:9){FinamiIconTile(icon:item.kind.icon,tint:color,side:compact ? 28 : detailed ? 44 : 36);Button { toggleCollapsed() } label: { Text(item.kind == .accounts ? "Мої рахунки" : item.kind.title).font(.headline).foregroundStyle(.primary).fixedSize(horizontal:false,vertical:true).frame(minHeight:44,alignment:.leading) }.buttonStyle(.plain).accessibilityLabel("Згорнути " + item.kind.title);Spacer(minLength:0);if item.kind == .accounts { Button { accountSettings = true } label: { Image(systemName:"slider.horizontal.3").frame(minWidth:44,minHeight:44) }.buttonStyle(.plain).accessibilityLabel("Налаштування карток рахунків") };privacyButton}.padding(.horizontal, item.kind == .accounts ? 4 : 0)
+                HStack(alignment:.center,spacing:9){FinamiIconTile(icon:item.kind.icon,tint:color,side:compact ? 28 : detailed ? 44 : 36);tileTitle;Spacer(minLength:0);privacyButton}
             }
             content
             }
         }
         .frame(maxWidth: .infinity, minHeight: item.kind == .accounts || collapsed ? nil : tileMinHeight, alignment: .topLeading)
         .padding(item.kind == .accounts || collapsed ? 0 : tilePadding)
-        .modifier(FinamiDashboardSurface(isAccounts: item.kind == .accounts || collapsed, tint: color, template: item.template))
+        .modifier(FinamiDashboardSurface(isAccounts: item.kind == .accounts || collapsed, tint: color, template: item.template, aurora: item.kind == .ownFunds))
         .environment(\.finamiMask, masked)
         .contextMenu { Button(collapsed ? "Розгорнути блок" : "Згорнути блок") { toggleCollapsed() } }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("qa.dashboard.tile." + item.id)
         .sheet(item:$paymentDetails) { FinamiPaymentDetails(payment:$0) }
         .sheet(isPresented:$accountSettings) { NavigationStack { FinamiHomeAccountsSettings().toolbar { ToolbarItem(placement:.cancellationAction) { Button("Готово") { accountSettings = false } } } } }
+    }
+    private var reviewOperations: [Operation] { ops.filter { $0.needsCaptureAttention } }
+    private var reviewCount: Int { reviewOperations.count + s.capturePending.count }
+    private var reviewDestination: some View {
+        FinamiReportReviewList(ids: reviewOperations.map(\.id), account: nil, maskAmounts: masked, includeInbox: true)
+    }
+    private var titleLabel: some View {
+        Text(item.kind == .accounts ? "Мої рахунки" : item.kind.title)
+            .font(small ? .subheadline.weight(.semibold) : .headline)
+            .foregroundStyle(small ? Color.secondary : Color.primary)
+            .fixedSize(horizontal:false,vertical:true).frame(minHeight:44,alignment:.leading)
+    }
+    @ViewBuilder private var tileTitle: some View {
+        if item.kind == .review {
+            NavigationLink { reviewDestination } label: { titleLabel }
+                .buttonStyle(.plain).accessibilityIdentifier("qa.dashboard.review.title")
+        } else {
+            Button { toggleCollapsed() } label: { titleLabel }
+                .buttonStyle(.plain).accessibilityLabel("Згорнути " + item.kind.title)
+        }
     }
     private var collapsedSummary: String {
         if masked { return "Суми приховано" }
@@ -509,6 +566,10 @@ struct DashboardTile: View {
                 .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2).minimumScaleFactor(0.7)
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
+    @ViewBuilder private var overviewFlowMetrics: some View {
+        if s.db.preferences?.showIncome == true { metric("Доходи", inc, .green) }
+        if s.db.preferences?.showExpenses != false { metric("Витрати", exp, .orange) }
+    }
     var cashFlow: some View {
         VStack(alignment:.leading,spacing:12) {
             if s.db.preferences?.showIncome == true { metric("Доходи",inc,.green) }
@@ -517,9 +578,7 @@ struct DashboardTile: View {
         }
     }
     var categoryGroups: [(key: String, value: Int64)] {
-        Dictionary(grouping: ops.filter { $0.expenseValue != 0 }, by: { $0.expenseGroup })
-            .mapValues { $0.reduce(Int64(0)) { $0 + $1.expenseValue } }
-            .filter { $0.value > 0 && (item.categorySelection?.contains($0.key) ?? true) }.sorted { $0.value > $1.value }
+        metrics.categories.filter { item.categorySelection?.contains($0.key) ?? true }
     }
     var categories: some View {
         let groups = categoryGroups
@@ -546,7 +605,7 @@ struct DashboardTile: View {
         if (s.db.preferences ?? .init()).finamiLayout != "cards" {
             FinamiCompactAccountsGrid(accounts:shown,mode:"all",date:date)
         } else {
-            ForEach(shown) { a in FinamiHomeAccountCard(accountID:a.id,date:date,fallbackTint:color,dashboardSize:item.size) }
+            VStack(spacing: 10) { ForEach(shown) { a in FinamiHomeAccountCard(accountID:a.id,date:date,fallbackTint:color,dashboardSize:item.size) } }
         }
     }
     @ViewBuilder var content: some View {
@@ -562,7 +621,7 @@ struct DashboardTile: View {
         case .recent:
             if ops.isEmpty { detail("Немає операцій") }
             else {
-                let shown = Array(ops.sorted{$0.date > $1.date}.prefix(compact ? 1 : detailed ? 5 : 2))
+                let shown = Array(metrics.recent.prefix(compact ? 1 : detailed ? 5 : 2))
                 ForEach(shown) { o in
                     if small { Text(visible(o.amount)).font(.subheadline.weight(.semibold)).monospacedDigit(); detail(o.note.isEmpty ? o.category : o.note) }
                     else { OperationRow(o: o) }
@@ -598,11 +657,27 @@ struct DashboardTile: View {
         case .fees: amount(ops.filter{$0.kind == .expense && $0.category == "🏦 Комісії"}.reduce(0){$0+$1.amount})
         case .ownFunds:
             amount(s.totalOwnFunds); detail("Без кредитних коштів")
-            if s.db.preferences?.showIncome == true { metric("Доходи",inc,.green) }
-            if s.db.preferences?.showExpenses != false { metric("Витрати",exp,.orange) }
+            if s.db.preferences?.showIncome == true || s.db.preferences?.showExpenses != false {
+                Divider().padding(.vertical, 2)
+                if dynamicTypeSize.isAccessibilitySize {
+                    VStack(alignment: .leading, spacing: 10) { overviewFlowMetrics }
+                } else {
+                    HStack(alignment: .top, spacing: 12) { overviewFlowMetrics }
+                }
+            }
         case .creditDebt: amount(s.totalAccountDebt); detail("Використані кредитні кошти")
         case .availableCredit: amount(s.totalAvailableCredit); detail("Не є власними коштами")
-        case .review: value(String(ops.filter{$0.kind.needsReview}.count)); detail("Потребують перевірки")
+        case .review:
+            NavigationLink { reviewDestination } label: {
+                HStack(alignment: .center, spacing: 6) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        value(String(reviewCount))
+                        detail(reviewCount == 0 ? "Усе уточнено" : "Необхідна увага · відкрити")
+                    }
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).contentShape(Rectangle())
+            }.buttonStyle(.plain).accessibilityLabel("Уточнити операції").accessibilityValue(String(reviewCount)).accessibilityIdentifier("qa.dashboard.review.open")
         case .savings: value(masked ? "••••" : inc > 0 ? ((Double(inc-exp)/Double(inc)).formatted(.percent.precision(.fractionLength(1)))) : "—"); detail("Частка доходу після витрат")
         }
     }

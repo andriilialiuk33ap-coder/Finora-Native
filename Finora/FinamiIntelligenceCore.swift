@@ -13,14 +13,32 @@ func finamiMerchantKey(_ raw: String) -> String {
     let variants = ["бадді":"baddi","бадди":"baddi","чил тайм":"chill time","чіл тайм":"chill time","чіл таим":"chill time","чил таим":"chill time","для своїх":"dlyasvoyih","для своіх":"dlyasvoyih","dlya svoyih":"dlyasvoyih","dlia svoikh":"dlyasvoyih","окраса":"okrasa","наше пиво":"nashe pivo","bolt eu":"bolt","уклон":"uklon"]
     return variants[key] ?? key
 }
+// Category aliases are separate from recurring-payment and transfer matching.
+func finamiCategoryMerchantKey(_ raw: String) -> String {
+    let key = finamiMerchantKey(raw)
+    // Normalize a known chain plus terminal/store number, not arbitrary merchant strings.
+    if key.range(of: #"^(?:silpo|сільпо)(?: [0-9]{2,8})?$"#, options: .regularExpression) != nil { return "silpo" }
+    if key.range(of: #"^(?:atb|атб|atб)(?: market)?(?: [0-9]{2,8})?$"#, options: .regularExpression) != nil { return "atb" }
+    return key
+}
+// Explicit user choices replace equivalent older rules only for the same financial kind.
+func finamiRememberMerchant(_ note: String, kind: Kind, category: String, rules: inout [String:String]) {
+    guard kind == .expense || kind == .income, !category.isEmpty, category != "Без категорії" else { return }
+    let key = finamiCategoryMerchantKey(note)
+    guard key.count >= 3, key.rangeOfCharacter(from: .letters) != nil,
+          !["apple pay", "bank message", "переказ", "transfer", "зарахування", "надходження", "інше", "покупка", "kiosk", "clover", "apple com bill", "google play"].contains(key) else { return }
+    let prefix = kind.rawValue + ":"
+    rules = rules.filter { pair in !pair.key.hasPrefix(prefix) || finamiCategoryMerchantKey(String(pair.key.dropFirst(prefix.count))) != key }
+    rules[prefix + key] = category
+}
 func finamiIntelligentCategory(_ note: String, kind: Kind, allowed: [String], learned: [String: String]) -> String {
     let prefix = kind.rawValue + ":"
     let key = note.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     if let exact = learned[prefix + key], allowed.contains(exact) { return exact }
-    let normalized = finamiMerchantKey(note)
+    let normalized = finamiCategoryMerchantKey(note)
     guard !normalized.isEmpty else { return "Без категорії" }
     let matching = Set(learned.compactMap { pair -> String? in
-        guard pair.key.hasPrefix(prefix), allowed.contains(pair.value), finamiMerchantKey(String(pair.key.dropFirst(prefix.count))) == normalized else { return nil }
+        guard pair.key.hasPrefix(prefix), allowed.contains(pair.value), finamiCategoryMerchantKey(String(pair.key.dropFirst(prefix.count))) == normalized else { return nil }
         return pair.value
     })
     if matching.count == 1, let match = matching.first { return match }

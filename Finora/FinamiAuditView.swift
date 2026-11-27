@@ -9,39 +9,52 @@ struct FinamiAuditView: View {
     private var issues:[FinamiAuditIssue] { finamiAuditIssues(operations:s.db.operations,accounts:s.db.accounts,records:s.db.paidRecords ?? []) }
     private var incomes:[Operation] { s.db.operations.filter { o in o.kind == .unclassifiedCredit && bankKind(signed:o.amount,note:o.note,mcc:o.bankMCC,operationType:o.bankType,creditAccount:s.db.accounts.first(where:{$0.id==o.account})?.isCredit ?? false) == "income" } }
     var body: some View {
+        let currentIssues = issues
+        let reviewIDs = s.db.operations.filter { $0.kind.needsReview }.map(\.id)
         List {
             Section("Стан бази") {
                 LabeledContent("Операцій",value:String(s.db.operations.count))
-                LabeledContent("Потребують уточнення типу",value:String(s.db.operations.filter{$0.kind.needsReview}.count))
-                LabeledContent("Можливі суперечності",value:String(issues.count))
+                NavigationLink { FinamiReportReviewList(ids: reviewIDs, account: nil, maskAmounts: s.privateAmounts) } label: {
+                    LabeledContent("Потребують уточнення типу", value: String(reviewIDs.count))
+                }
+                LabeledContent("Можливі суперечності",value:String(currentIssues.count))
+                NavigationLink("Схожі операції та дублікати") { FinamiNextReviewView() }
+                NavigationLink("Резервні копії та стан сховища") { FinamiDiagnostics() }
+                NavigationLink("Зашифрована резервна копія") { FinamiSecureBackupView() }
                 NavigationLink("Розумна звірка та валютний обмін") { FinamiBalanceView() }
                 NavigationLink("Звірка з банківським залишком") { FinamiReconciliation() }
                 NavigationLink("Категорії та правила") { FinamiRulesView() }
                 Text("Перевірка не змінює суми, рахунки або історію без підтвердження.").font(.caption)
             }
             Section("Потребують перевірки") {
-                if issues.isEmpty {Text("Суперечностей за цими правилами не знайдено")}
-                ForEach(issues) { issue in issueRow(issue) }
+                if currentIssues.isEmpty {Text("Суперечностей за цими правилами не знайдено")}
+                ForEach(currentIssues) { issue in issueRow(issue) }
             }
             if !incomes.isEmpty { incomeSection }
             Section("Можливі старі оплати") { ForEach(s.db.obligations.filter{$0.kind == .installment}) { o in historicalRow(o) } }
-        }.navigationTitle("Аудит бази").sheet(item:$operation){OpEditor(original:$0)}
+        }.navigationTitle("Якість фінансових даних").sheet(item:$operation){OpEditor(original:$0)}
         .confirmationDialog("Підтвердити, що всі запропоновані зарахування є доходами?",isPresented:$confirmIncome){Button("Підтвердити"){applyIncome()}}
         .confirmationDialog("Об’єднати два підтверджені записи переказу? Баланси залишаться незмінними.",isPresented:Binding(get:{selectedPair != nil},set:{if !$0 {selectedPair=nil}})){Button("Об’єднати переказ"){mergePair()}}
         .confirmationDialog("Підтвердити, що ця оплата ВЖЕ врахована в поточному залишку розстрочки? Сума боргу, дата й баланс рахунку не зміняться.",isPresented:Binding(get:{oldPayment != nil},set:{if !$0 {oldPayment=nil}})){Button("Додати лише до історії"){linkHistorical()}}
+    }
+    private func auditAmount(_ operation: Operation) -> String {
+        let hidden = s.db.accounts.contains { account in
+            account.hideAmounts == true && (account.id == operation.account || (operation.kind == .transfer && account.id == operation.destination))
+        }
+        return hidden ? "••••" : s.visibleMoney(operation.amount)
     }
     private func issueOperations(_ issue:FinamiAuditIssue)->[Operation] { s.db.operations.filter{issue.operationIDs.contains($0.id)} }
     private func transfer(_ issue:FinamiAuditIssue)->Operation? { let rows=issueOperations(issue);guard rows.count==2 else{return nil};return finamiTransferFromPair(rows[0],rows[1],accounts:s.db.accounts,records:s.db.paidRecords ?? []) }
     private func issueRow(_ issue:FinamiAuditIssue)->some View {
         VStack(alignment:.leading,spacing:8) {
             Text(issue.title).bold();Text(issue.detail).font(.caption)
-            ForEach(issueOperations(issue)) { o in Button {operation=o} label:{VStack(alignment:.leading){Text(o.kind.title+" · "+s.accountName(o.account));Text(s.visibleMoney(o.amount)).font(.caption)}}.buttonStyle(.borderless) }
+            ForEach(issueOperations(issue)) { o in Button {operation=o} label:{VStack(alignment:.leading){Text(o.displayKindTitle+" · "+s.accountName(o.account));Text(auditAmount(o)).font(.caption)}}.buttonStyle(.borderless) }
             if transfer(issue) != nil { Button("Підтвердити внутрішній переказ"){selectedPair=issue}.buttonStyle(.borderless) }
         }
     }
     private var incomeSection:some View { Section("Можливі доходи") {
         Text("Явні ознаки зарплати, винагороди або кешбеку. Зміна типу не змінює залишок рахунку.").font(.caption)
-        ForEach(incomes){o in Button {operation=o} label:{VStack(alignment:.leading){Text(o.note);Text(s.visibleMoney(o.amount)).font(.caption)}}}
+        ForEach(incomes){o in Button {operation=o} label:{VStack(alignment:.leading){Text(o.note);Text(auditAmount(o)).font(.caption)}}}
         Button("Підтвердити всі як доходи"){confirmIncome=true}
     } }
     @ViewBuilder private func historicalRow(_ obligation:Obligation)->some View {
@@ -50,7 +63,7 @@ struct FinamiAuditView: View {
             Text("Збіг суми або маски договору не доводить оплату. Якщо вона вже врахована в залишку, додай тільки до історії. Якщо ще не врахована, відкрий операцію та зв’яжи її з поточним платежем.").font(.caption)
             ForEach(candidates.prefix(20)) { o in
                 VStack(alignment:.leading,spacing:6) {
-                    Text(s.accountName(o.account)+" · "+o.date.formatted(date:.abbreviated,time:.omitted));Text(s.visibleMoney(o.amount)).font(.caption)
+                    Text(s.accountName(o.account)+" · "+o.date.formatted(date:.abbreviated,time:.omitted));Text(auditAmount(o)).font(.caption)
                     Button("Вже враховано в залишку"){oldPayment=finamiHistoricalPaymentRecord(obligation:obligation,operation:o,accounts:s.db.accounts,records:s.db.paidRecords ?? [])}.buttonStyle(.borderless)
                     Button("Відкрити операцію"){operation=o}.buttonStyle(.borderless)
                 }
