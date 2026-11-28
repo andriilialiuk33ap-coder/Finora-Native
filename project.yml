@@ -5,9 +5,10 @@ options:
 settings:
   base:
     SWIFT_VERSION: '5.0'
-    MARKETING_VERSION: '6.4.20'
-    CURRENT_PROJECT_VERSION: '68'
+    MARKETING_VERSION: '6.4.41'
+    CURRENT_PROJECT_VERSION: '89'
     TARGETED_DEVICE_FAMILY: '1'
+    OTHER_SWIFT_FLAGS: '$(inherited) -Xfrontend -warn-long-expression-type-checking=300 -Xfrontend -warn-long-function-bodies=1000'
 packages:
   ZIPFoundation:
     url: https://github.com/weichsel/ZIPFoundation.git
