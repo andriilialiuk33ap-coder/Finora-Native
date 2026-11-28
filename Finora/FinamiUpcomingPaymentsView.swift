@@ -34,6 +34,7 @@ struct FinamiAllUpcomingPayments: View {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(p.name).font(.headline)
                                 Text(p.kind + " · " + p.date.formatted(date: .abbreviated, time: .omitted)).font(.caption).foregroundStyle(.secondary)
+                                if p.confirmedSchedule != nil { Text("За графіком банку").font(.caption).foregroundStyle(.secondary) }
                                 if p.overdue { Text("Прострочено").font(.caption).foregroundStyle(.orange) }
                             }
                             Spacer()

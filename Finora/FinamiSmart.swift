@@ -57,6 +57,8 @@ struct FinamiDiagnostics: View {
     @State private var scheduled = 0
     @State private var checked = false
     @State private var parser = "Не перевірено"
+    @State private var safety = "Не перевірено"
+    @State private var checkingSafety = false
     @State private var diagnosticDocument:DataFile?
     @State private var exportingDiagnostics=false
     @AppStorage("finami.lastShortcutCheck") private var lastCheck: Double = 0
@@ -115,10 +117,20 @@ struct FinamiDiagnostics: View {
                 Text("Парсер: " + parser)
                     .foregroundStyle(parser == "Тест не пройдено" ? Color.orange : Color.primary)
                     .accessibilityIdentifier("qa.diagnostics.parser")
+                Text("Фінансові межі: " + safety).accessibilityIdentifier("qa.diagnostics.safety")
                 Button("Перевірити зараз") {
                     parser = finamiNotificationSelfTest() ? "Тест пройдено" : "Тест не пройдено"
-                    Task { await refresh() }
-                }.accessibilityIdentifier("qa.diagnostics.run")
+                    checkingSafety = true
+                    Task { @MainActor in
+                        let candidate = s.db
+                        let revision = s.databaseVersion
+                        let readable = s.storageHealthy
+                        let passed = await Task.detached(priority: .utility) { (try? FinamiDatabaseSafety.validate(candidate)) != nil }.value
+                        safety = !readable ? "Запис заблоковано" : revision != s.databaseVersion ? "Дані змінилися — повтори тест" : passed ? "Тест пройдено" : "Потребує перевірки"
+                        checkingSafety = false
+                        await refresh()
+                    }
+                }.disabled(checkingSafety).accessibilityIdentifier("qa.diagnostics.run")
                 Text("Тест не додає операцій і не змінює баланс.").font(.caption)
             }
         }.navigationTitle("Діагностика").task { await refresh() }.fileExporter(isPresented:$exportingDiagnostics,document:diagnosticDocument,contentType:.json,defaultFilename:"Finami-diagnostics") { result in if case .failure(let e)=result {s.error=e.localizedDescription} }
@@ -150,7 +162,7 @@ struct FinamiSecureBackupView: View {
             }
             Section("Експорт та відновлення") {
                 Button("Створити зашифровану копію") {
-                    do { let raw = try JSONEncoder().encode(s.db); document = DataFile(data: try FinamiBackupCrypto.seal(raw, password: password)); exporting = true; status = "" } catch { status = error.localizedDescription }
+                    do { let raw = try s.backupData(); document = DataFile(data: try FinamiBackupCrypto.seal(raw, password: password)); exporting = true; status = "" } catch { status = error.localizedDescription }
                 }.disabled(password.count < 12 || password != confirmation || !s.storageHealthy)
                 Button("Відкрити зашифровану копію") { importing = true }.disabled(password.isEmpty)
                 if !status.isEmpty { Text(status).foregroundStyle(.orange) }

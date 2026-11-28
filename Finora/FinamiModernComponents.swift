@@ -7,10 +7,10 @@ struct FinamiPaymentGlyph: View {
     var side: CGFloat = 42
     var body: some View {
         let black = s.db.preferences?.modernPaymentIcons != "color"
-        RoundedRectangle(cornerRadius:12)
+        RoundedRectangle(cornerRadius:FinamiDesignPolicy.paymentGlyphCorner)
             .fill(black ? Color(red:0.035,green:0.035,blue:0.045) : tint.opacity(0.13))
             .overlay { Image(systemName:icon).font(.system(size:side*0.43,weight:.semibold)).foregroundStyle(black ? Color(red:0.88,green:0.73,blue:0.44) : tint) }
-            .overlay { RoundedRectangle(cornerRadius:12).strokeBorder(black ? Color(red:0.82,green:0.66,blue:0.34).opacity(0.22) : tint.opacity(0.14),lineWidth:1) }
+            .overlay { RoundedRectangle(cornerRadius:FinamiDesignPolicy.paymentGlyphCorner).strokeBorder(black ? Color(red:0.82,green:0.66,blue:0.34).opacity(0.22) : tint.opacity(0.14),lineWidth:1) }
             .frame(width:side,height:side).accessibilityHidden(true)
     }
 }

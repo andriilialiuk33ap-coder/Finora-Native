@@ -117,11 +117,68 @@ func finamiLinkedOperationsPreserved(before: Database, after: Database) -> Bool 
     }
 }
 
+// Read-only integrity diagnostics. A deleted subscription may intentionally retain
+// its payment history; only validate actual ledger links, never require a live schedule.
+struct FinamiPaymentIntegrityIssue: Hashable {
+    enum Kind: String { case duplicateRecord, duplicateLink, missingDebit, wrongDebit, wrongAccount, wrongAmount, wrongCurrency, invalidRecord }
+    let kind: Kind
+    let reference: String
+    let operationID: String?
+}
+func finamiPaymentIntegrityIssues(operations: [Operation], accounts: [Account], records: [FinamiPaidRecord]) -> [FinamiPaymentIntegrityIssue] {
+    guard !records.isEmpty else { return [] }
+    let linkedIDs = Set(records.compactMap(\.operationID))
+    let rows = Dictionary(operations.lazy.filter { linkedIDs.contains($0.id) }.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+    let accountCodes = Dictionary(accounts.map { ($0.id, $0.code) }, uniquingKeysWith: { first, _ in first })
+    var issues: [FinamiPaymentIntegrityIssue] = []
+    var seenRecords = Set<String>(), seenLinks = Set<String>()
+    for record in records {
+        func add(_ kind: FinamiPaymentIntegrityIssue.Kind, reference: String? = nil) {
+            issues.append(.init(kind: kind, reference: reference ?? record.id, operationID: record.operationID))
+        }
+        if !seenRecords.insert(record.id).inserted { add(.duplicateRecord) }
+        if record.amount <= 0 || record.amount > 1_000_000_000_000 || !["UAH", "USD"].contains(record.currency) { add(.invalidRecord) }
+        guard let id = record.operationID else { continue } // mark-only payment
+        if !seenLinks.insert(id).inserted { add(.duplicateLink, reference: id) }
+        guard let debit = rows[id] else { add(.missingDebit); continue }
+        if !finamiPaymentDebitKind(debit.kind) { add(.wrongDebit) }
+        if record.accountID != debit.account { add(.wrongAccount) }
+        if (debit.sourceMinor ?? debit.amount) != record.amount { add(.wrongAmount) }
+        if accountCodes[debit.account] != record.currency { add(.wrongCurrency) }
+    }
+    return issues
+}
+// Allow old inconsistencies to remain visible and repairable; reject newly introduced
+// problems, including an increase in repeated links. Do not silently rewrite history.
+func finamiPaymentIntegrityPreserved(beforeOperations: [Operation], beforeAccounts: [Account], beforeRecords: [FinamiPaidRecord], afterOperations: [Operation], afterAccounts: [Account], afterRecords: [FinamiPaidRecord]) -> Bool {
+    let after = finamiPaymentIntegrityIssues(operations: afterOperations, accounts: afterAccounts, records: afterRecords)
+    guard !after.isEmpty else { return true }
+    let before = finamiPaymentIntegrityIssues(operations: beforeOperations, accounts: beforeAccounts, records: beforeRecords)
+    var allowance: [FinamiPaymentIntegrityIssue: Int] = [:]
+    for issue in before { allowance[issue, default: 0] += 1 }
+    for issue in after {
+        guard let count = allowance[issue], count > 0 else { return false }
+        allowance[issue] = count - 1
+    }
+    return true
+}
+
 // The first occurrence can be partially paid. Extra principal reduces remaining debt,
 // but never pretends that the bank waived or moved multiple due dates.
 func finamiApplyInstallment(_ o: inout Obligation, scheduled: Date, amount: Int64, calendar: Calendar = .current) -> Bool {
     guard o.kind == .installment, o.due == scheduled, amount > 0, amount <= o.remaining, o.nextCharge > 0 else { return false }
     let due = o.nextCharge
+    if var rows = o.confirmedSchedule {
+        guard o.confirmedScheduleValid, !rows.isEmpty, amount <= due || amount == o.remaining else { return false }
+        // Other excess payments need a new bank schedule; never invent an allocation.
+        if amount == o.remaining { rows.removeAll() }
+        else if amount == due { rows.removeFirst() }
+        else { rows[0].amount -= amount }
+        o.paid += amount
+        o.confirmedSchedule = rows
+        if let first = rows.first { o.due = first.date }
+        return true
+    }
     if amount < due { o.currentDuePaid = max(0,o.currentDuePaid ?? 0) + amount }
     else {
         if o.remaining > amount { guard let next=calendar.date(byAdding:.month,value:1,to:o.due),next>o.due else{return false};o.due=next }

@@ -152,7 +152,7 @@ struct Reports: View {
     private func categoryLink(_ category: String, amount: Int64, snapshot: FinamiReportSnapshot) -> some View {
         NavigationLink {
             FinamiReportCategoryOperations(category: category, interval: snapshot.interval, account: selectedAccount == "all" ? nil : selectedAccount)
-        } label: { reportRow(category, amount: amount, icon: finamiOperationIcon(Operation(kind: .expense, category: category)), tint: .orange) }.buttonStyle(.plain)
+        } label: { reportRow(category, amount: amount, icon: finamiCategoryDisplayIcon(category, kind: .expense), tint: .orange) }.buttonStyle(.plain)
     }
     private func movementLine(_ title: String, _ amount: Int64, tint: Color = .secondary, masked: Bool = false) -> some View {
         HStack(alignment: .firstTextBaseline) {
@@ -366,8 +366,16 @@ struct FinamiReportReviewList: View {
     let maskAmounts: Bool
     var includeInbox = false
     var inboxOnly = false
-    @State private var edited: Operation?
-    @State private var capture: CapturedPayment?
+    private enum ReviewSheet: Identifiable {
+        case operation(Operation), incoming(CapturedPayment)
+        var id: String {
+            switch self {
+            case .operation(let value): return "operation-" + value.id
+            case .incoming(let value): return "incoming-" + value.id
+            }
+        }
+    }
+    @State private var reviewSheet: ReviewSheet?
     private var entries: [Operation] {
         guard !inboxOnly else { return [] }
         let selected = Set(ids)
@@ -380,7 +388,7 @@ struct FinamiReportReviewList: View {
             Section {
                 if entries.isEmpty && (!includeInbox || s.capturePending.isEmpty) { Text("Усі операції уточнено").foregroundStyle(.secondary) }
                 ForEach(entries) { o in
-                    Button { edited = o } label: {
+                    Button { reviewSheet = .operation(o) } label: {
                         OperationRow(o: o).environment(\.finamiMask, maskAmounts || s.db.accounts.first(where: { $0.id == o.account })?.hideAmounts == true)
                     }.buttonStyle(.plain).accessibilityIdentifier("qa.review.operation." + o.id)
                 }
@@ -390,14 +398,14 @@ struct FinamiReportReviewList: View {
                 Section("Вхідні операції (\(s.capturePending.count))") {
                     if s.capturePending.isEmpty { Text("Немає нових повідомлень").foregroundStyle(.secondary) }
                     ForEach(s.capturePending) { e in
-                        Button { capture = e } label: {
+                        Button { reviewSheet = .incoming(e) } label: {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(e.merchant.isEmpty ? e.source : e.merchant)
                                 Text(maskAmounts || s.privateAmounts || e.account.isEmpty || s.db.accounts.first(where: { $0.id == e.account })?.hideAmounts == true ? "••••" : s.visibleMoney(e.minor, e.currency)).font(.caption)
                                 Text(e.account.isEmpty ? "Обрати рахунок" : s.accountName(e.account)).font(.caption).foregroundStyle(.secondary)
                                 Text(e.date.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary)
                                 if s.captureMatch(e) { Label(s.captureRepeat(e) ? "Повтор повідомлення" : "Можливий дублікат", systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange) }
-                            }
+                            }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).contentShape(Rectangle())
                         }.buttonStyle(.plain).accessibilityIdentifier("qa.inbox.event." + e.id)
                     }
                     if let warning = s.captureWarning { Text(warning).font(.caption).foregroundStyle(.orange) }
@@ -406,8 +414,12 @@ struct FinamiReportReviewList: View {
             }
         }.navigationTitle(inboxOnly ? "Вхідні операції" : "Уточнення операцій")
             .onAppear { if includeInbox || inboxOnly { s.refreshCaptures(auto: false) } }
-            .sheet(item: $edited) { OpEditor(original: $0) }
-            .sheet(item: $capture) { CaptureReview(event: $0) }
+            .sheet(item: $reviewSheet) { item in
+                switch item {
+                case .operation(let operation): OpEditor(original: operation)
+                case .incoming(let event): CaptureReview(event: event)
+                }
+            }
     }
 }
 

@@ -4,11 +4,21 @@ import UIKit
 
 struct FinamiPayment: Identifiable {
     var id:String; var name:String; var kind:String; var date:Date; var amount:Int64; var currency:String; var remaining:Int64?; var subscription:Bool; var recurringAmount:Int64? = nil
+    var confirmedSchedule: [FinamiScheduleRow]? = nil
+    func occurrences(component: Calendar.Component, step: Int, interval: DateInterval) -> [FinamiPlannedOccurrence] {
+        if let rows = confirmedSchedule {
+            return rows.enumerated().compactMap { index, row in
+                guard row.date >= interval.start, row.date < interval.end else { return nil }
+                return .init(id: id + "|" + String(row.date.timeIntervalSinceReferenceDate), paymentID: id, date: row.date, amount: row.amount, projected: index > 0)
+            }
+        }
+        return finamiPlannedOccurrences(id:id,start:date,amount:amount,remaining:remaining,subsequentAmount:recurringAmount,component:component,step:step,interval:interval)
+    }
     var overdue:Bool { Calendar.current.startOfDay(for:date) < Calendar.current.startOfDay(for:Date()) }
 }
 extension Store {
     var upcomingPayments:[FinamiPayment] {
-        let debts = db.obligations.filter { $0.remaining > 0 && [.installment,.owe,.recurring].contains($0.kind) }.map { o in FinamiPayment(id:o.id,name:o.name,kind:o.kind.title,date:o.due,amount:o.nextCharge,currency:"UAH",remaining:o.remaining,subscription:false,recurringAmount:o.monthly > 0 ? o.monthly : nil) }
+        let debts = db.obligations.filter { $0.remaining > 0 && [.installment,.owe,.recurring].contains($0.kind) }.map { o in FinamiPayment(id:o.id,name:o.name,kind:o.kind.title,date:o.due,amount:o.nextCharge,currency:"UAH",remaining:o.remaining,subscription:false,recurringAmount:o.monthly > 0 ? o.monthly : nil,confirmedSchedule:o.confirmedSchedule) }
         let subs = (db.subscriptions ?? []).filter(\.active).map { r in FinamiPayment(id:r.id,name:r.name,kind:"Підписка",date:r.next,amount:r.amount,currency:r.currency,remaining:nil,subscription:true) }
         return (debts+subs).sorted { $0.date < $1.date }
     }
@@ -19,15 +29,22 @@ extension Store {
         var total: Int64 = 0
         for p in upcomingPayments where p.currency == currency {
             let period = p.subscription ? db.subscriptions?.first(where: {$0.id == p.id})?.period : nil
+            if let rows = p.confirmedSchedule {
+                total += rows.filter { $0.date >= start && $0.date < end }.reduce(0) { $0 + $1.amount }
+                continue
+            }
             total += finamiScheduledAmounts(start:p.date, amount:p.amount, remaining:p.remaining, subsequentAmount:p.recurringAmount, component:period?.component ?? .month, step:period?.step ?? 1, from:start, until:end, calendar:cal).reduce(0,+)
         }
         return total
     }
     // One atomic write advances the schedule, records the chosen account, and optionally adds a ledger entry.
     func confirmPayment(_ payment: FinamiPayment, mode: FinamiPaymentMode, accountID: String, operationID: String, paidDate: Date, kind: Kind, allowSeparate: Bool = false, operationDraft: Operation? = nil, learnCategory: Bool = false, actualAmount: Int64? = nil, searchDays: Int = 7) -> Bool {
-        guard let live=upcomingPayments.first(where:{$0.id==payment.id}),live.date==payment.date,live.amount==payment.amount,live.amount>0, live.currency == payment.currency, live.kind == payment.kind, live.subscription == payment.subscription, paidDate <= Date(), live.remaining == payment.remaining else {error="Платіж уже змінено. Відкрий його знову.";return false}
+        guard let live=upcomingPayments.first(where:{$0.id==payment.id && $0.subscription==payment.subscription}),live.date==payment.date,live.amount==payment.amount,live.amount>0, live.currency == payment.currency, live.kind == payment.kind, live.subscription == payment.subscription, paidDate <= Date(), live.remaining == payment.remaining, live.confirmedSchedule == payment.confirmedSchedule else {error="Платіж уже змінено. Відкрий його знову.";return false}
         let amount = actualAmount ?? payment.amount
         guard amount > 0, (payment.kind == "Розстрочка" && !payment.subscription ? amount <= (live.remaining ?? 0) : amount == live.amount) else { error="Сума не відповідає залишку або плановому платежу."; return false }
+        if live.confirmedSchedule != nil, amount > live.amount, amount != live.remaining {
+            error = "Для дострокової часткової оплати потрібен оновлений графік банку. Можна сплатити поточний внесок або весь залишок."; return false
+        }
         if payment.subscription && mode != .existing && !allowSeparate && !finamiRecentSubscriptionPayments(db.paidRecords ?? [], paymentID: payment.id, currency: payment.currency, amount: amount, date: paidDate).isEmpty {
             error = "Схожу оплату цієї підписки вже записано. Перевір історію або підтвердь, що це інший платіж."; return false
         }
@@ -62,7 +79,7 @@ extension Store {
             var next:Date?=nil
             var obligationBefore: Obligation?
             if payment.subscription,let i=d.subscriptions?.firstIndex(where:{$0.id==payment.id}),var r=d.subscriptions?[i] {
-                let end=Calendar.current.date(byAdding:r.period.component,value:r.period.step,to:r.next) ?? r.next
+                guard let end=Calendar.current.date(byAdding:r.period.component,value:r.period.step,to:r.next), end > r.next else { return }
                 r.payments.append(.init(date:record.paidDate,amount:amount,currency:payment.currency,through:end));r.next=end;d.subscriptions?[i]=r;next=end
             } else if let i=d.obligations.firstIndex(where:{$0.id==payment.id}) {
                 obligationBefore=d.obligations[i]
@@ -79,7 +96,7 @@ extension Store {
             }
             d.reminders?.removeAll{$0.linkedID==payment.id}
             if let next=next { for r in previous { var copy=r;copy.date=next.addingTimeInterval(r.date.timeIntervalSince(payment.date)); if copy.date>Date() || next == payment.date {renewed.append(copy)} };d.reminders=(d.reminders ?? [])+renewed }
-            if let before=obligationBefore,let after=d.obligations.first(where:{$0.id==before.id}) {record.obligationUndo = .init(beforePaid:before.paid,beforeDue:before.due,beforeProgress:before.currentDuePaid,afterPaid:after.paid,afterDue:after.due,afterProgress:after.currentDuePaid,target:before.target,monthly:before.monthly,priorReminders:previous,renewedReminders:renewed)}
+            if let before=obligationBefore,let after=d.obligations.first(where:{$0.id==before.id}) {record.obligationUndo = .init(beforePaid:before.paid,beforeDue:before.due,beforeProgress:before.currentDuePaid,afterPaid:after.paid,afterDue:after.due,afterProgress:after.currentDuePaid,target:before.target,monthly:before.monthly,priorReminders:previous,renewedReminders:renewed,beforeSchedule:before.confirmedSchedule,afterSchedule:after.confirmedSchedule)}
             d.paidRecords = (d.paidRecords ?? []) + [record]
         }
         guard ok, (db.paidRecords ?? []).contains(where: { $0.id == record.id }) else { return false }
@@ -89,7 +106,7 @@ extension Store {
     func canUndoObligationPayment(_ id: String) -> Bool {
         guard let record=db.paidRecords?.first(where:{$0.id==id}),let u=record.obligationUndo,
               db.paidRecords?.last(where:{$0.paymentID==record.paymentID})?.id==id,
-              let o=db.obligations.first(where:{$0.id==record.paymentID}), o.paid==u.afterPaid,o.due==u.afterDue,o.currentDuePaid==u.afterProgress,o.target==u.target,o.monthly==u.monthly,
+              let o=db.obligations.first(where:{$0.id==record.paymentID}), o.paid==u.afterPaid,o.due==u.afterDue,o.currentDuePaid==u.afterProgress,o.target==u.target,o.monthly==u.monthly,o.confirmedSchedule==u.afterSchedule,
               let fingerprint=finamiReminderFingerprint((db.reminders ?? []).filter{$0.linkedID==o.id}),fingerprint==finamiReminderFingerprint(u.renewedReminders) else {return false}
         return true
     }
@@ -97,7 +114,7 @@ extension Store {
         guard canUndoObligationPayment(id),let record=db.paidRecords?.first(where:{$0.id==id}),let u=record.obligationUndo else {error="Графік змінився або ця оплата не підтримує безпечне скасування.";return false}
         let ok=change { d in
             guard let i=d.obligations.firstIndex(where:{$0.id==record.paymentID}) else{return}
-            d.obligations[i].paid=u.beforePaid;d.obligations[i].due=u.beforeDue;d.obligations[i].currentDuePaid=u.beforeProgress
+            d.obligations[i].paid=u.beforePaid;d.obligations[i].due=u.beforeDue;d.obligations[i].currentDuePaid=u.beforeProgress;d.obligations[i].confirmedSchedule=u.beforeSchedule
             d.paidRecords?.removeAll{$0.id==id};d.reminders?.removeAll{$0.linkedID==record.paymentID};d.reminders=(d.reminders ?? [])+u.priorReminders
         }
         if ok {u.renewedReminders.forEach{ReminderScheduler.cancel($0)};Task { @MainActor in for r in u.priorReminders where r.date>Date() {do {try await ReminderScheduler.schedule(r)} catch {self.error="Графік відновлено. Нагадування: "+error.localizedDescription}} }}
@@ -109,6 +126,7 @@ extension Store {
 struct FinamiPaymentCard:View {
     @EnvironmentObject var s:Store
     @Environment(\.finamiMask) private var masked
+    private var hidePayment: Bool { masked || !FinamiWidgetPrivacyPolicy.showsPayment(subscription: payment.subscription, id: payment.id, hiddenSubscriptions: s.db.preferences?.designHiddenSubscriptions ?? []) }
     var payment:FinamiPayment
     var showRemaining = true
     var showDate = true
@@ -117,14 +135,14 @@ struct FinamiPaymentCard:View {
     var body:some View { VStack(alignment:.leading,spacing:dashboardSize == .small ? 5 : dashboardSize == .large ? 16 : 10) {
         HStack(alignment:.top) { VStack(alignment:.leading,spacing:5) { Text(payment.kind).font(.caption).foregroundStyle(.secondary);Text(payment.name).font(.headline).fixedSize(horizontal:false,vertical:true) };Spacer(minLength:8);if showImage && dashboardSize != .small { if let data=s.db.paymentPhotos?[payment.id],let image=FinamiImageCache.shared.image(data) {Image(uiImage:image).resizable().scaledToFill().frame(width:62,height:62).clipShape(RoundedRectangle(cornerRadius:14)).accessibilityHidden(true)}else{FinamiBrandTile(name:payment.name,icon:payment.subscription ? "repeat" : "creditcard.fill",tint:.indigo,side:62,paymentStyle:true)} } }
         if let loan=s.db.obligations.first(where:{$0.id==payment.id}) {
-            if s.db.preferences?.modernPaymentTotal != false { LabeledContent("Загальна сума",value:masked ? "••••" : s.visibleMoney(loan.target,payment.currency)).font(.caption) }
-            if s.db.preferences?.modernPaymentMonthly != false && loan.monthly > 0 { LabeledContent("Щомісячний платіж",value:masked ? "••••" : s.visibleMoney(loan.monthly,payment.currency)).font(.caption) }
+            if s.db.preferences?.modernPaymentTotal != false { LabeledContent("Загальна сума",value:hidePayment ? "••••" : s.visibleMoney(loan.target,payment.currency)).font(.caption) }
+            if s.db.preferences?.modernPaymentMonthly != false && loan.monthly > 0 { LabeledContent(loan.confirmedSchedule == nil ? "Щомісячний платіж" : "Регулярний внесок (довідково)",value:hidePayment ? "••••" : s.visibleMoney(loan.monthly,payment.currency)).font(.caption) }
         }
         Text("До сплати").font(.caption).foregroundStyle(.secondary)
-        Text(masked ? "••••" : s.visibleMoney(payment.amount,payment.currency)).font(dashboardSize == .small ? .title3.bold() : dashboardSize == .medium ? .title.bold() : .largeTitle.bold()).monospacedDigit().fixedSize(horizontal:false,vertical:true)
+        Text(hidePayment ? "••••" : s.visibleMoney(payment.amount,payment.currency)).accessibilityIdentifier("qa.payment.amount").font(dashboardSize == .small ? .title3.bold() : dashboardSize == .medium ? .title.bold() : .largeTitle.bold()).monospacedDigit().fixedSize(horizontal:false,vertical:true)
         if showDate { Label(payment.date.formatted(.dateTime.day().month(.wide).locale(Locale(identifier:"uk_UA"))),systemImage:"calendar").foregroundStyle(payment.overdue ? Color.orange : Color.secondary) }
         if payment.overdue {Label("Прострочено",systemImage:"exclamationmark.circle").font(.caption).foregroundStyle(.orange)}
-        if showRemaining, let remaining=payment.remaining {FinamiMetric(title:"Залишок",value:masked ? "••••" : s.visibleMoney(remaining))}
+        if showRemaining, let remaining=payment.remaining {FinamiMetric(title:"Залишок",value:hidePayment ? "••••" : s.visibleMoney(remaining))}
         HStack {Text("Деталі платежу").font(.subheadline.weight(.medium));Spacer();Image(systemName:"chevron.right")}.foregroundStyle(.tint)
     }.padding(dashboardSize == .small ? 6 : dashboardSize == .large ? 20 : 14).frame(maxWidth:.infinity,alignment:.leading).modifier(FinamiCardStyle(tint:.indigo)) }
 }
@@ -139,6 +157,13 @@ struct FinamiPaymentDetails:View {
     @Environment(\.finamiMask) private var maskAmounts
     @EnvironmentObject var s:Store; @Environment(\.dismiss) var dismiss
     var payment:FinamiPayment
+    private var hidePayment: Bool { maskAmounts || s.privateAmounts || !FinamiWidgetPrivacyPolicy.showsPayment(subscription: payment.subscription, id: payment.id, hiddenSubscriptions: s.db.preferences?.designHiddenSubscriptions ?? []) }
+    private func historyAmount(_ record: FinamiPaidRecord) -> String {
+        let hiddenAccount = s.db.accounts.contains { $0.id == record.accountID && $0.hideAmounts == true }
+        let linked = s.db.operations.first { $0.id == record.operationID }
+        let hiddenTransfer = linked.map { operation in operation.kind == .transfer && s.db.accounts.contains { $0.id == operation.destination && $0.hideAmounts == true } } ?? false
+        return hidePayment || hiddenAccount || hiddenTransfer ? "••••" : s.visibleMoney(record.amount, record.currency)
+    }
     @State private var photo:PhotosPickerItem?
     @State private var confirm=false
     @State private var paymentSaved=false
@@ -146,7 +171,10 @@ struct FinamiPaymentDetails:View {
     @State private var photoLoading=false
     @State private var historyOperation: Operation?
     var body:some View { NavigationStack { Form {
-        Section {FinamiPaymentCard(payment:payment)}
+        Section {FinamiPaymentCard(payment:payment).environment(\.finamiMask, hidePayment)}
+        if let facts = s.db.obligations.first(where: { $0.id == payment.id })?.bankContractSnapshot {
+            FinamiBankFactsView(facts: facts, masked: hidePayment)
+        }
         Section("Керування") {
             Button {confirm=true} label: { Label("Сплатив з картки / рахунку", systemImage:"creditcard.fill") }.accessibilityIdentifier("qa.payment.pay")
             if payment.subscription,let r=s.db.subscriptions?.first(where:{$0.id==payment.id}) {NavigationLink("Редагувати підписку") {SubscriptionEditor(original:r)}}
@@ -162,7 +190,7 @@ struct FinamiPaymentDetails:View {
         if !(s.db.paidRecords ?? []).filter({$0.paymentID == payment.id}).isEmpty {
             Section("Історія оплат") {
                 ForEach((s.db.paidRecords ?? []).filter{$0.paymentID == payment.id}.sorted{$0.paidDate > $1.paidDate}) { record in
-                    VStack(alignment:.leading, spacing:4) { Text(maskAmounts ? "••••" : s.visibleMoney(record.amount,record.currency)).bold(); Text(record.paidDate.formatted(date:.abbreviated,time:.omitted) + " · " + (record.accountID.map{s.accountName($0)} ?? "Без списання")).font(.caption); if let id = record.operationID {
+                    VStack(alignment:.leading, spacing:4) { Text(historyAmount(record)).accessibilityIdentifier("qa.payment.history.amount." + record.id).bold(); Text(record.paidDate.formatted(date:.abbreviated,time:.omitted) + " · " + (record.accountID.map{s.accountName($0)} ?? "Без списання")).font(.caption); if let id = record.operationID {
                         if let op=s.db.operations.first(where:{$0.id == id}) { Button("Відкрити списання") { historyOperation=op } }
                         else { Text("Пов’язану операцію видалено").font(.caption).foregroundStyle(.orange) }
                     } }
@@ -175,7 +203,7 @@ struct FinamiPaymentDetails:View {
             NavigationLink {ReminderEditor(original:.init(title:payment.name,date:max(Date().addingTimeInterval(3600),payment.date.addingTimeInterval(-86400)),linkedID:payment.id,hideDetails:true))} label:{Label("Додати нагадування",systemImage:"bell.badge")}
             Text("Можна створити кілька нагадувань із власними датою та часом.").font(.caption)
         }
-    }.navigationTitle("Деталі платежу").toolbar{ToolbarItem(placement:.cancellationAction){Button("Готово"){dismiss()}}}.sheet(isPresented:$confirm,onDismiss:{if paymentSaved {dismiss()}}) { FinamiPaymentCheckout(payment:payment,onComplete:{paymentSaved=true;confirm=false}) }
+    }.navigationTitle("Деталі платежу").toolbar{ToolbarItem(placement:.cancellationAction){Button("Готово"){dismiss()}}}.sheet(isPresented:$confirm,onDismiss:{if paymentSaved {dismiss()}}) { FinamiPaymentCheckout(payment:payment,onComplete:{paymentSaved=true;confirm=false}).environment(\.finamiMask, hidePayment) }
         .sheet(item:$historyOperation) { OpEditor(original:$0) }
         .confirmationDialog("Прибрати розстрочку з активного плану?", isPresented: $archiveInstallment, titleVisibility: .visible) {
             Button("Видалити в архів", role: .destructive) {
@@ -233,6 +261,7 @@ struct FinamiPaymentCheckout: View {
     private var candidates: [Operation] { s.paymentLookup.matches(account:accountID, currency:payment.currency, amount:amount, date:paidDate, used:false, searchDays:mode == .existing ? searchDays : 7) }
     private var valid: Bool {
         guard let mode,amount>0,amount <= (payment.remaining ?? payment.amount) else { return false }
+        if payment.confirmedSchedule != nil && amount > payment.amount && amount != payment.remaining { return false }
         if mode == .markOnly { return !needsSeparateConfirmation || acceptNew }
         guard accounts.contains(where:{$0.id==accountID}) else { return false }
         if mode == .existing { return candidates.contains(where:{$0.id==selectedOperation}) }
@@ -240,7 +269,7 @@ struct FinamiPaymentCheckout: View {
     }
     var body: some View {
         NavigationStack { Form {
-            Section { LabeledContent("Платіж",value:payment.name); LabeledContent("Плановий платіж",value:displayedAmount(payment.amount,currency:payment.currency,account:accountID)); if payment.kind == "Розстрочка" { FinamiField("Фактично сплачено (порожньо = планова сума)",text:$enteredAmount,keyboard:.decimalPad); Text("Часткова оплата залишає поточну дату; дострокова оплата зменшує борг. Графік банку перевір окремо.").font(.caption) }; DatePicker("Дата оплати",selection:$paidDate,in:...Date(),displayedComponents:.date) }
+            Section { LabeledContent("Платіж",value:payment.name); LabeledContent("Плановий платіж",value:displayedAmount(payment.amount,currency:payment.currency,account:accountID)); if payment.kind == "Розстрочка" { FinamiField("Фактично сплачено (порожньо = планова сума)",text:$enteredAmount,keyboard:.decimalPad); Text(payment.confirmedSchedule == nil ? "Часткова оплата залишає поточну дату; дострокова оплата зменшує борг. Графік банку перевір окремо." : "Підтверджений графік: сплати частину внеску, поточний внесок або весь борг. Для іншої дострокової суми спочатку онови графік банку.").font(.caption) }; DatePicker("Дата оплати",selection:$paidDate,in:...Date(),displayedComponents:.date) }
             if !recentPayments.isEmpty {
                 Section("Уже записані оплати") {
                     ForEach(recentPayments) { record in

@@ -10,123 +10,6 @@ enum FinamiScanMode: String, CaseIterable, Identifiable {
     case transactions = "Операції", installment = "Розстрочка", balance = "Рахунок"
     var id: String { rawValue }
 }
-private struct ScanPhoto: Identifiable {
-    let id: String
-    let lines: [String]
-    let image: Data?
-    var warning: String? = nil
-    var mergedDraft: ScanInstallmentDraft? = nil
-    var sourceIDs: [String]? = nil
-    var bankHint: String? = nil
-    var ocrRegions: [ScanTextRegion] = []
-    var bank: String? { FinamiScanParser.bank(lines.joined(separator: "\n")) ?? (mergedDraft?.pumbParts == true ? "ПУМБ" : bankHint) }
-}
-private enum ScanFailure: LocalizedError {
-    case image, empty
-    var errorDescription: String? { self == .image ? "Не вдалося відкрити фото або воно перевищує 25 МБ." : "Текст не знайдено. Спробуй чіткіший скриншот." }
-}
-private func recognizeScan(_ data: Data, knownDigest: String? = nil, installment: Bool = false, bankHint: String? = nil) throws -> ScanPhoto {
-    guard data.count <= 25_000_000, let source = CGImageSourceCreateWithData(data as CFData, nil) else { throw ScanFailure.image }
-    let options: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceThumbnailMaxPixelSize: 3000]
-    guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { throw ScanFailure.image }
-    let request = VNRecognizeTextRequest()
-    request.recognitionLevel = .accurate
-    request.usesLanguageCorrection = true
-    if installment {
-        request.minimumTextHeight = 0.006
-        request.customWords = ["розстрочка", "залишилось", "залишок", "щомісячний", "платіж", "погашення", "грн", "ПУМБ", "Сплачуйте частинами", "Внесено", "Залишилося", "Оформлено"]
-    }
-    let available = (try? request.supportedRecognitionLanguages()) ?? []
-    let preferred = ["uk-UA", "en-US", "ru-RU"].filter { available.contains($0) }
-    if !preferred.isEmpty { request.recognitionLanguages = preferred }
-    var warning: String? = nil
-    var recognized = request
-    do { try VNImageRequestHandler(cgImage: image, options: [:]).perform([request]) } catch {
-        let retry = VNRecognizeTextRequest()
-        retry.recognitionLevel = .accurate
-        do { try VNImageRequestHandler(cgImage: image, options: [:]).perform([retry]); recognized = retry }
-        catch { warning = "Vision не зміг розпізнати текст: " + error.localizedDescription }
-    }
-    if (recognized.results ?? []).isEmpty {
-        let retry = VNRecognizeTextRequest(); retry.recognitionLevel = .accurate; retry.usesLanguageCorrection = false
-        if (try? VNImageRequestHandler(cgImage: image, options: [:]).perform([retry])) != nil, !(retry.results ?? []).isEmpty { recognized = retry; warning = nil }
-    }
-    // Preserve horizontal reading order in both Vision passes. The second pass
-    // disables language correction only when the installment fields are incomplete.
-    func rows(_ request: VNRecognizeTextRequest) -> [String] {
-        let observations = (request.results ?? []).compactMap { o -> (CGRect, String)? in
-            guard let text = o.topCandidates(1).first?.string else { return nil }
-            return (o.boundingBox, text)
-        }.sorted { $0.0.midY > $1.0.midY }
-        var groups: [[(CGRect, String)]] = []
-        for observation in observations {
-            if let first = groups.last?.first, abs(first.0.midY - observation.0.midY) < min(first.0.height, observation.0.height) * 0.45 {
-                groups[groups.count - 1].append(observation)
-            } else { groups.append([observation]) }
-        }
-        return groups.map { $0.sorted { $0.0.minX < $1.0.minX }.map { $0.1 }.joined(separator: " ") }
-    }
-    func regionsFor(_ request: VNRecognizeTextRequest) -> [ScanTextRegion] {
-        (request.results ?? []).flatMap { observation -> [ScanTextRegion] in
-            guard let candidate = observation.topCandidates(1).first else { return [] }
-            let ranges = FinamiScanParser.installmentSubregionRanges(candidate.string)
-            let parts = ranges.compactMap { range -> ScanTextRegion? in
-                guard let box = try? candidate.boundingBox(for: range) else { return nil }
-                return ScanTextRegion(text: String(candidate.string[range]), bounds: box.boundingBox)
-            }
-            if !ranges.isEmpty && parts.count == ranges.count { return parts }
-            return [ScanTextRegion(text: candidate.string, bounds: observation.boundingBox)]
-        }
-    }
-    func installmentDraft(_ request: VNRecognizeTextRequest, lines: [String]) -> ScanInstallmentDraft {
-        let regions = regionsFor(request)
-        let bank = FinamiScanParser.bank(lines.joined(separator: "\n")) ?? bankHint
-        let rules = FinamiOCRProfiles.rules(bank)
-        let normalized = lines.map { FinamiOCRProfiles.rewrite($0, rules: rules) }
-        let normalizedRegions = regions.map { ScanTextRegion(text: FinamiOCRProfiles.rewrite($0.text, rules: rules), bounds: $0.bounds) }
-        return FinamiScanParser.installment(normalized, regions: normalizedRegions)
-    }
-    var lines = rows(recognized)
-    var mergedDraft: ScanInstallmentDraft?
-    if installment {
-        var drafts = [installmentDraft(recognized, lines: lines)]
-        func incomplete(_ d: ScanInstallmentDraft) -> Bool { d.total == nil || d.remaining == nil || d.monthly == nil || d.due == nil }
-        func appendPass(_ cg: CGImage, correction: Bool) {
-            let alternate = VNRecognizeTextRequest()
-            alternate.recognitionLevel = .accurate
-            alternate.usesLanguageCorrection = correction
-            alternate.minimumTextHeight = 0.004
-            if !preferred.isEmpty { alternate.recognitionLanguages = preferred }
-            if (try? VNImageRequestHandler(cgImage: cg, options: [:]).perform([alternate])) != nil {
-                let extra = rows(alternate)
-                if !extra.isEmpty {
-                    drafts.append(installmentDraft(alternate, lines: extra))
-                    var seen = Set(lines)
-                    lines += extra.filter { seen.insert($0).inserted }
-                }
-            }
-        }
-        if incomplete(drafts[0]) { appendPass(image, correction: false) }
-        if incomplete(finamiMergeInstallments(drafts).draft) {
-            // Bounded grayscale contrast pass, preserving the original orientation.
-            let enhanced = CIImage(cgImage: image).applyingFilter("CIColorControls", parameters: ["inputSaturation": 0.0, "inputContrast": 1.35])
-            let context = CIContext(options: [.cacheIntermediates: false])
-            if let cg = context.createCGImage(enhanced, from: enhanced.extent) { appendPass(cg, correction: false) }
-        }
-        let structured = drafts.filter { $0.pumbParts }
-        let merged = finamiMergeInstallments(structured.isEmpty ? drafts : structured)
-        mergedDraft = merged.draft
-        if !merged.conflicts.isEmpty { warning = "OCR: суперечливі поля залишено для перевірки: " + merged.conflicts.joined(separator: ", ") }
-        if let detected = FinamiScanParser.bank(lines.joined(separator: "\n")), let bankHint, detected != bankHint {
-            warning = (warning.map { $0 + " · " } ?? "") + "Знайдено інший банк: " + detected + ". Перевір договір."
-        }
-    }
-    if lines.isEmpty && warning == nil { warning = "Текст не знайдено. Можна заповнити чернетку вручну." }
-    let previewOptions: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceThumbnailMaxPixelSize: 1600]
-    let jpeg = CGImageSourceCreateThumbnailAtIndex(source, 0, previewOptions as CFDictionary).flatMap { UIImage(cgImage: $0).jpegData(compressionQuality: 0.7) }
-    let digest = knownDigest ?? SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-    return ScanPhoto(id: digest, lines: lines, image: jpeg, warning: warning, mergedDraft: mergedDraft, bankHint: bankHint, ocrRegions: installment ? regionsFor(recognized) : [])
-}
 struct FinamiScanView: View {
     @EnvironmentObject private var s: Store
     @State private var mode: FinamiScanMode
@@ -517,9 +400,15 @@ private struct ScanTransactionsReview: View {
             return op
         }
         guard operations.count == chosen.count else { return }
-        if s.change({ d in
+        let attachmentHash: String?
+        do { attachmentHash = try (attach ? photo.image.map { try s.stageScanImage($0) } : nil) }
+        catch { message = error.localizedDescription; return }
+        if s.change(forceSnapshot: true, { d in
             d.operations.append(contentsOf: operations)
-            if attach, let image = photo.image { var images = d.scanImages ?? [:]; images[photo.id] = image; d.scanImages = images }
+            if let attachmentHash {
+                var hashes = d.scanFileHashes ?? [:]; hashes[photo.id] = attachmentHash; d.scanFileHashes = hashes
+                d.scanImages?.removeValue(forKey: photo.id)
+            }
         }) { dismiss() } else { message = "Запис не збережено. Перевір повідомлення про помилку." }
     }
 }
@@ -543,7 +432,19 @@ private struct ScanInstallmentReview: View {
     private let foreign: Bool
     private let recognizedDue: Bool
     private let scanDraft: ScanInstallmentDraft
+    @State private var keepBankFacts = true
     @State private var keepSchedule = false
+    @State private var useSchedule = false
+    @State private var replaceSchedule = false
+    private var parsedTotal: Int64? { bankMinor(total) }
+    private var parsedRemaining: Int64? { bankMinor(remaining) }
+    private var parsedMonthly: Int64? { bankMinor(monthly) }
+    private var proposedSchedule: [FinamiScheduleRow]? {
+        guard let r = parsedRemaining else { return nil }
+        return Obligation.outstandingSchedule(from: scheduleRows, remaining: r, firstDue: due)
+    }
+    private var hasActiveSchedule: Bool { existing.first(where: { $0.id == targetID })?.confirmedSchedule != nil }
+
     private var scheduleRows: [FinamiScheduleRow] { finamiScheduleRows(photo.lines) }
     @State private var sourceAssignment = "total"
     @State private var learnLabels = false
@@ -559,31 +460,45 @@ private struct ScanInstallmentReview: View {
         _due = State(initialValue: d.due ?? Date()); foreign = d.foreignCurrency; recognizedDue = d.due != nil
     }
     private var existing: [Obligation] { s.db.obligations.filter { $0.kind == .installment || $0.kind == .owe } }
-    private var exact: Bool { existing.contains { o in
+    private var exact: Bool { (existing + (s.db.removedInstallments ?? [])).contains { o in
         let incoming = Set((photo.sourceIDs ?? []) + [photo.id]); let prior = Set((o.scanSourceIDs ?? []) + [o.scanFingerprint].compactMap { $0 })
         return o.id != targetID && !incoming.isDisjoint(with: prior)
     } }
-    private var similar: Bool { existing.contains { o in
-        o.id != targetID && (o.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() || (o.target == bankMinor(total) && o.monthly == bankMinor(monthly)))
-    } }
-    private var reminderDate: Date? { Calendar.current.date(byAdding: .day, value: -lead, to: due).flatMap { Calendar.current.date(bySettingHour: 9, minute: 0, second: 0, of: $0) } }
-    private var valid: Bool {
-        guard !remind || ((reminderDate ?? .distantPast) > Date() && (bankMinor(remaining) ?? 0) > 0) else { return false }
-        guard checked, dateChecked, !foreign, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              let t = bankMinor(total), let r = bankMinor(remaining), let m = bankMinor(monthly), FinamiScanParser.validInstallment(total: t, remaining: r, monthly: m),
-              targetID.isEmpty || existing.contains(where: { $0.id == targetID }) else { return false }
-        return !exact && (!similar || duplicateOverride)
+    private var similar: Bool {
+        let normalizedName = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let targetVal = parsedTotal
+        let monthlyVal = parsedMonthly
+        return existing.contains { o in
+            o.id != targetID && (o.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normalizedName || (o.target == targetVal && o.monthly == monthlyVal))
+        }
     }
+    private var reminderDate: Date? { Calendar.current.date(byAdding: .day, value: -lead, to: due).flatMap { Calendar.current.date(bySettingHour: 9, minute: 0, second: 0, of: $0) } }
+    private var blockers: [String] {
+        let totalVal = parsedTotal
+        let remainingVal = parsedRemaining
+        let monthlyVal = parsedMonthly
+        var reasons = FinamiScanParser.installmentBlockers(name: name, total: totalVal, remaining: remainingVal, monthly: monthlyVal,
+            dateChecked: dateChecked, checked: checked, foreign: foreign,
+            targetExists: targetID.isEmpty || existing.contains(where: { $0.id == targetID }),
+            exact: exact, similar: similar, duplicateOverride: duplicateOverride,
+            reminderValid: !remind || ((reminderDate ?? .distantPast) > Date() && (remainingVal ?? 0) > 0))
+        if useSchedule && proposedSchedule == nil { reasons.append("Дати або сума графіка не відповідають залишку. Перевір першу дату та всі внески.") }
+        if useSchedule && existing.first(where: { $0.id == targetID })?.kind == .owe { reasons.append("Підтверджений графік доступний лише для розстрочок.") }
+        if hasActiveSchedule && !useSchedule && !replaceSchedule { reasons.append("Для оновлення підтвердженого графіка обери новий графік або явно вимкни попередній.") }
+        return reasons
+    }
+    private var valid: Bool { blockers.isEmpty }
     var body: some View {
         Form {
             ScanSourceSection(photo: photo)
             Section("Новий запис або оновлення") {
                 Picker("Запис", selection: $targetID) { Text("Створити розстрочку").tag(""); ForEach(existing) { Text($0.name).tag($0.id) } }
                 Text("Оновлення змінює дані договору, але не створює операцію списання. Історія рахунків не змінюється.").font(.caption)
-                if exact { Label("Скриншот вже пов’язаний з іншим договором. Вибери його для оновлення.", systemImage: "exclamationmark.triangle").foregroundStyle(.orange) }
+                if exact { Label("Скриншот вже пов’язаний з іншим договором. Вибери його для оновлення або спочатку віднови з архіву.", systemImage: "exclamationmark.triangle").foregroundStyle(.orange) }
                 else if similar { Toggle("Це інший договір, не дубль", isOn: $duplicateOverride) }
             }
             pumbDetails
+            bankFactsDetails
             Section("Дані договору · UAH") {
                 let filled = [total, remaining, monthly].filter { !$0.isEmpty }.count
                 Label("Заповнено сум: \(filled) із 3", systemImage: filled == 3 ? "checkmark.circle" : "exclamationmark.circle").font(.caption).foregroundStyle(filled == 3 ? Color.green : Color.orange)
@@ -593,9 +508,7 @@ private struct ScanInstallmentReview: View {
                 FinamiField("Щомісячний платіж", text: $monthly, keyboard: .decimalPad)
                 if let t = bankMinor(total), let r = bankMinor(remaining), t >= r, r >= 0 { LabeledContent("Вже погашено", value: s.visibleMoney(t-r)) }
                 DatePicker(scanDraft.pumbParts ? "Наступний ненульовий платіж" : "Наступний платіж", selection: $due)
-                Toggle("Дату перевірено", isOn: $dateChecked)
                 if foreign { Text("Виявлено іноземну валюту. Модель розстрочок поки підтримує лише гривню; імпорт цього договору заблоковано.").foregroundStyle(.orange) }
-                Toggle("Я перевірив усі дані", isOn: $checked)
                 if photo.bank != nil && photo.sourceIDs == nil {
                     Toggle("Запам’ятати виправлені підписи та позиції", isOn: $learnLabels)
                     Text("Підписи й позиції запам’ятовуються лише після підтвердження. Позиції працюють на екрані з тією самою структурою. Суми не зберігаються у правилах.").font(.caption).foregroundStyle(.secondary)
@@ -647,6 +560,8 @@ private struct ScanInstallmentReview: View {
                 Section("Графік зі скриншота") {
                     ForEach(scheduleRows) { row in LabeledContent(row.date.formatted(date: .abbreviated, time: .omitted), value: s.visibleMoney(row.amount)) }
                     Toggle("Зберегти як довідковий графік", isOn: $keepSchedule)
+                    Toggle("Використовувати підтверджений графік", isOn: $useSchedule)
+                    if useSchedule { Text(proposedSchedule == nil ? "Не збігається з датою чи залишком боргу." : "Сума внесків від вибраної дати збігається із залишком. Перевір, що це перший несплачений внесок і всі наступні. Нульові внески не створять списання.").font(.caption) }
                     Text("Перевір всі дати та суми. Це знайдені рядки, не підтвердження оплати і не автоматичне списання.").font(.caption)
                 }
             }
@@ -655,20 +570,26 @@ private struct ScanInstallmentReview: View {
                 Toggle("Створити нагадування", isOn: $remind)
                 if remind { Picker("Нагадати за", selection: $lead) { Text("У день платежу").tag(0); Text("1 день").tag(1); Text("3 дні").tag(3); Text("7 днів").tag(7) }; Text("Час: 09:00").font(.caption); if (reminderDate ?? .distantPast) <= Date() { Text("Час нагадування минув. Обери інший термін або вимкни нагадування.").foregroundStyle(.orange) } }
                 if !targetID.isEmpty { Text("Якщо дата змінилася, одноразові пов’язані нагадування будуть перенесені або вимкнені, якщо вже минули. Повторювані перевір у меню нагадувань.").font(.caption) }
-                if !valid {
-                    if !checked || !dateChecked { Text("Підтвердь дату та перевірку всіх даних.").font(.caption).foregroundStyle(.orange) }
-                    if name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { Text("Вкажи назву договору.").font(.caption).foregroundStyle(.orange) }
-                    if !FinamiScanParser.validInstallment(total: bankMinor(total) ?? -1, remaining: bankMinor(remaining) ?? -1, monthly: bankMinor(monthly) ?? -1) { Text("Перевір загальний кредит, залишок і щомісячний платіж.").font(.caption).foregroundStyle(.orange) }
-                    if similar && !duplicateOverride { Text("Перевір, чи це новий договір, або обери існуючий.").font(.caption).foregroundStyle(.orange) }
+            }
+            Section("Підтвердження та збереження") {
+                if hasActiveSchedule && !useSchedule { Toggle("Вимкнути попередній підтверджений графік", isOn: $replaceSchedule) }
+                Toggle("Дату перевірено", isOn: $dateChecked).accessibilityIdentifier("qa.scan.confirm.date")
+                Toggle("Я перевірив усі дані", isOn: $checked).accessibilityIdentifier("qa.scan.confirm.all")
+                if blockers.isEmpty {
+                    Label("Готово до збереження", systemImage: "checkmark.circle").foregroundStyle(.green)
+                } else {
+                    Text(blockers.joined(separator: "\n")).font(.caption).foregroundStyle(.orange)
+                        .accessibilityIdentifier("qa.scan.blockers")
                 }
-                Button(targetID.isEmpty ? "Додати розстрочку" : "Оновити договір") { save() }.disabled(!valid || busy)
+                Button(targetID.isEmpty ? "Додати розстрочку" : "Оновити договір") { save() }
+                    .disabled(!valid || busy).accessibilityIdentifier("qa.scan.save.installment")
             }
         }.navigationTitle("Перевірка розстрочки").onChange(of: targetID) { id in
-            duplicateOverride = false; checked = false; dateChecked = false
+            duplicateOverride = false; checked = false; dateChecked = false; useSchedule = false; replaceSchedule = false
             if let old = existing.first(where: { $0.id == id }) {
                 if name.isEmpty { name = old.name }; if total.isEmpty { total = amountText(old.target) }; if remaining.isEmpty { remaining = amountText(old.remaining) }; if monthly.isEmpty { monthly = amountText(old.monthly) }
             }
-        }.onChange(of: due) { _ in dateChecked = false }.onChange(of: name) { _ in checked = false; duplicateOverride = false }.onChange(of: total) { _ in checked = false; duplicateOverride = false }.onChange(of: remaining) { _ in checked = false }.onChange(of: monthly) { _ in checked = false; duplicateOverride = false }
+        }.onChange(of: keepBankFacts) { _ in checked = false }.onChange(of: useSchedule) { _ in checked = false }.onChange(of: replaceSchedule) { _ in checked = false }.onChange(of: due) { _ in dateChecked = false }.onChange(of: name) { _ in checked = false; duplicateOverride = false }.onChange(of: total) { _ in checked = false; duplicateOverride = false }.onChange(of: remaining) { _ in checked = false }.onChange(of: monthly) { _ in checked = false; duplicateOverride = false }
     }
     @ViewBuilder private var pumbDetails: some View {
             if scanDraft.pumbParts {
@@ -682,6 +603,29 @@ private struct ScanInstallmentReview: View {
                     if scanDraft.nextAmount == 0 && (scanDraft.remaining ?? 0) > 0 { Text("Найближчий внесок банку нульовий. Вкажи дату першого ненульового платежу, а не дату нульового внеску.").font(.caption).foregroundStyle(.orange) }
                 }
             }
+    }
+    private var hasBankFacts: Bool {
+        scanDraft.firstContribution != nil || scanDraft.totalBankFee != nil || scanDraft.monthlyBankFee != nil ||
+        scanDraft.paymentCount != nil || scanDraft.paidCount != nil || scanDraft.nextAmount != nil ||
+        scanDraft.bankNextDue != nil || scanDraft.opened != nil || scanDraft.finalDue != nil
+    }
+    @ViewBuilder private var bankFactsDetails: some View {
+        if hasBankFacts {
+            Section("Дані банку на момент імпорту") {
+                if let value = scanDraft.firstContribution { LabeledContent("Перший внесок", value: s.visibleMoney(value)) }
+                if let value = scanDraft.totalBankFee { LabeledContent("Загальна комісія", value: s.visibleMoney(value)) }
+                if let value = scanDraft.monthlyBankFee { LabeledContent("Щомісячна комісія", value: s.visibleMoney(value)) }
+                if !scanDraft.pumbParts {
+                    if let count = scanDraft.paymentCount { LabeledContent("Кількість платежів", value: String(count)) }
+                    if let paid = scanDraft.paidCount { LabeledContent("Сплачено платежів", value: String(paid)) }
+                    if let value = scanDraft.nextAmount { LabeledContent("Найближчий внесок", value: s.visibleMoney(value)) }
+                    if let date = scanDraft.opened { LabeledContent("Оформлено", value: date.formatted(date: .abbreviated, time: .omitted)) }
+                    if let date = scanDraft.finalDue { LabeledContent("Кінцева дата", value: date.formatted(date: .abbreviated, time: .omitted)) }
+                }
+                Toggle("Зберегти ці довідкові дані", isOn: $keepBankFacts)
+                Text("Перевір значення. Комісія та перший внесок не додаються до боргу або списань автоматично. Якщо дані помилкові, вимкни їх збереження.").font(.caption)
+            }
+        }
     }
     private func assign(_ line: String) {
         checked = false; duplicateOverride = false
@@ -702,10 +646,23 @@ private struct ScanInstallmentReview: View {
         let previous = existing.first { $0.id == targetID }
         var o = previous ?? Obligation(kind: .installment)
         o.name = name.trimmingCharacters(in: .whitespacesAndNewlines); o.target = t; o.paid = t-r; o.monthly = m; o.due = due; o.scanFingerprint = photo.id
+        if let previous, previous.paid != o.paid || previous.monthly != o.monthly || previous.due != o.due { o.currentDuePaid = nil }
         if scanDraft.pumbParts, let next = scanDraft.nextAmount, next > 0, due == scanDraft.bankNextDue, next < min(m, r), m - next <= o.paid { o.currentDuePaid = m - next }
         else if scanDraft.pumbParts { o.currentDuePaid = nil }
+        if hasBankFacts && keepBankFacts {
+            o.bankContractSnapshot = .init(capturedAt: Date(), firstContribution: scanDraft.firstContribution,
+                totalBankFee: scanDraft.totalBankFee, monthlyBankFee: scanDraft.monthlyBankFee,
+                paymentCount: scanDraft.paymentCount, paidCount: scanDraft.paidCount, nextAmount: scanDraft.nextAmount,
+                bankNextDue: scanDraft.bankNextDue, opened: scanDraft.opened, finalDue: scanDraft.finalDue)
+        }
         o.scanSourceIDs = Array(Set((previous?.scanSourceIDs ?? []) + [previous?.scanFingerprint].compactMap { $0 } + (photo.sourceIDs ?? []) + [photo.id])).sorted()
-        if keepSchedule { o.importedSchedule = scheduleRows }
+        if keepSchedule || useSchedule { o.importedSchedule = scheduleRows }
+        if useSchedule {
+            guard let rows = proposedSchedule else { busy = false; return }
+            o.confirmedSchedule = rows; o.currentDuePaid = nil
+        } else {
+            o.confirmedSchedule = nil
+        }
         if attach && photo.image != nil { o.scanImageID = photo.id }
         let oldReminders = (s.db.reminders ?? []).filter { $0.linkedID == o.id }
         var changed: [PersonalReminder] = []
@@ -717,9 +674,15 @@ private struct ScanInstallmentReview: View {
         if remind && r > 0, let day = Calendar.current.date(byAdding: .day, value: -lead, to: due), let when = Calendar.current.date(bySettingHour: 9, minute: 0, second: 0, of: day), when > Date(), !oldReminders.contains(where: { $0.date == when }), !changed.contains(where: { $0.date == when }) {
             changed.append(PersonalReminder(title: o.name, date: when, linkedID: o.id))
         }
-        if s.change({ d in
+        let attachmentHash: String?
+        do { attachmentHash = try (attach ? photo.image.map { try s.stageScanImage($0) } : nil) }
+        catch { busy = false; s.error = error.localizedDescription; return }
+        if s.change(forceSnapshot: true, { d in
             if let i = d.obligations.firstIndex(where: { $0.id == o.id }) { d.obligations[i] = o } else { d.obligations.append(o) }
-            if attach, let image = photo.image { var images = d.scanImages ?? [:]; images[photo.id] = image; d.scanImages = images }
+            if let attachmentHash {
+                var hashes = d.scanFileHashes ?? [:]; hashes[photo.id] = attachmentHash; d.scanFileHashes = hashes
+                d.scanImages?.removeValue(forKey: photo.id)
+            }
             var reminders = d.reminders ?? []; let ids = Set(changed.map(\.id)); reminders.removeAll { ids.contains($0.id) }; reminders.append(contentsOf: changed); d.reminders = reminders
         }) {
             if learnLabels, photo.sourceIDs == nil, let bank = photo.bank {
@@ -752,7 +715,7 @@ struct FinamiScanAttachment: View {
     var body: some View {
         ScrollView {
             if !reveal { Button("Показати конфіденційний скриншот") { reveal = true }.padding() }
-            else if let data = s.db.scanImages?[imageID], let image = UIImage(data: data) { Image(uiImage: image).resizable().scaledToFit().padding() }
+            else if let data = s.scanImageData(imageID), let image = UIImage(data: data) { Image(uiImage: image).resizable().scaledToFit().padding() }
             else { Text("Вкладення недоступне").padding() }
         }.navigationTitle("Скриншот").onDisappear { reveal = false }
     }

@@ -32,8 +32,11 @@ struct FinamiPlanSnapshot {
             let events=calendarEvents(interval:DateInterval(start:start,end:end)).filter{!$0.paid}
             for event in events { addPayment(event.amount,event.currency,event.date) }
             let late=upcomingPayments.filter{$0.date < start && $0.amount > 0}
-            overdue=late.count
-            for payment in late { addPayment(payment.amount,payment.currency,start) }
+            for payment in late {
+                if let rows = payment.confirmedSchedule {
+                    for row in rows where row.date < start { overdue += 1; addPayment(row.amount,payment.currency,start) }
+                } else { overdue += 1; addPayment(payment.amount,payment.currency,start) }
+            }
         }
         if settings.planned > 0 { entries.append(.init(date:start,amount:-settings.planned)) }
         if let date=settings.incomeDate, settings.expected > 0 { entries.append(.init(date:cal.startOfDay(for:date),amount:settings.expected)) }

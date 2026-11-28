@@ -15,7 +15,10 @@ import WidgetKit
             return
         }
         let own = store.includedAccounts.filter { $0.code == "UAH" && $0.hideAmounts != true }.reduce(Int64(0)) { $0 + store.ownFunds($1) }
-        let payment = store.upcomingPayments.first
+        let first = store.upcomingPayments.first
+        let payment = first.flatMap { item in
+            FinamiWidgetPrivacyPolicy.showsPayment(subscription: item.subscription, id: item.id, hiddenSubscriptions: store.db.preferences?.designHiddenSubscriptions ?? []) ? item : nil
+        }
         let snapshot = FinamiWidgetSnapshot(ownUAH: own, dueAmount: payment?.amount, dueCurrency: payment?.currency, dueDate: payment?.date, updated: Date())
         if let old = FinamiWidgetSnapshot.read(), old.ownUAH == snapshot.ownUAH, old.dueAmount == snapshot.dueAmount, old.dueCurrency == snapshot.dueCurrency, old.dueDate == snapshot.dueDate, Date().timeIntervalSince(old.updated) < 3600 { return }
         do {

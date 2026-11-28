@@ -41,6 +41,9 @@ struct ScanInstallmentDraft {
     var finalDue: Date?
     var opened: Date?
     var monthlyEstimated = false
+    var firstContribution: Int64?
+    var totalBankFee: Int64?
+    var monthlyBankFee: Int64?
 }
 enum FinamiScanParser {
     static let number = #"[+−-]?\s*(?:\d{1,3}(?:[ \u00A0\u202F]\d{3})+|\d+)(?:[,.]\d{1,2})?"#
@@ -259,7 +262,9 @@ enum FinamiScanParser {
             }
             // Only the header above the progress belongs to the contract total.
             // A competing amount in this area invalidates the assumption.
-            d.total = single(rows[..<index].flatMap(amounts).filter { $0 > 0 })
+            d.total = single(rows[..<index].filter { row in
+                !["перший внесок", "початковий внесок", "комісія"].contains { row.lowercased().contains($0) }
+            }.flatMap(amounts).filter { $0 > 0 })
         }
         if let issue = low.firstIndex(where: { $0.contains("оформлено") }) {
             d.opened = single(dates(rows[issue]))
@@ -320,7 +325,85 @@ enum FinamiScanParser {
         }
         return d
     }
+    // Extra bank facts are evidence, never an additional debit or an assumption
+    // that the fee is included in the principal. Only explicit labels qualify.
     static func installment(_ input: [String], reference: Date = Date(), regions: [ScanTextRegion] = []) -> ScanInstallmentDraft {
+        var draft = installmentBase(input, reference: reference, regions: regions)
+        let rows = input.map(bankClean).filter { !$0.isEmpty }
+        func unique<T: Hashable>(_ values: [T]) -> T? { Set(values).count == 1 ? values.first : nil }
+        func labelled(_ labels: [String]) -> [String] {
+            rows.indices.compactMap { index in
+                let row = rows[index]
+                let lower = row.lowercased()
+                guard let label = labels.first(where: { lower == $0 || lower.hasPrefix($0 + ":") || lower.hasPrefix($0 + " ") }) else { return nil }
+                let suffix = lower.dropFirst(label.count).trimmingCharacters(in: CharacterSet(charactersIn: ": "))
+                if suffix.isEmpty, index + 1 < rows.count {
+                    let next = rows[index + 1]
+                    let numeric = next.range(of: #"^[+−-]?[\d\s,.₴$]+(?:грн\.?|UAH|USD)?$"#, options: [.regularExpression, .caseInsensitive]) != nil
+                    let dateOnly = next.range(of: #"^\d{1,2}[./]\d{1,2}[./]\d{4}$"#, options: .regularExpression) != nil
+                    if numeric || dateOnly { return row + " " + next }
+                }
+                return row
+            }
+        }
+        func amount(_ labels: [String]) -> Int64? {
+            let candidates = labelled(labels)
+            let values = candidates.compactMap { row -> Int64? in
+                guard !row.contains("%"), let m = money(row), m.currency == "UAH", m.minor >= 0 else { return nil }
+                return m.minor
+            }
+            return values.count == candidates.count ? unique(values) : nil
+        }
+        func count(_ labels: [String]) -> Int? {
+            unique(labelled(labels).compactMap { row -> Int? in
+                guard let token = matches(#"(?<![\d.,])\d{1,3}(?![\d.,])"#, in: row).first,
+                      matches(#"\d+"#, in: row).count == 1, let n = Int(token), n <= 600 else { return nil }
+                return n
+            })
+        }
+        func explicitDate(_ labels: [String]) -> Date? { unique(labelled(labels).compactMap(installmentDate)) }
+        draft.firstContribution = amount(["перший внесок", "початковий внесок", "перший платіж"])
+        draft.totalBankFee = amount(["загальна комісія", "комісія за весь строк", "комісія за весь період"])
+        draft.monthlyBankFee = amount(["щомісячна комісія", "комісія за місяць"])
+        if !draft.pumbParts {
+            draft.paymentCount = count(["кількість платежів", "всього платежів"])
+            draft.paidCount = count(["сплачено платежів", "внесено платежів"])
+            let progress = rows.flatMap { matches(#"(?i)(?:сплачено|внесено)\s+\d{1,3}\s+(?:з|із)\s+\d{1,3}\s+(?:щомісячних\s+)?платежів"#, in: $0) }
+            let pairs = progress.map { matches(#"\d+"#, in: $0).compactMap(Int.init) }.filter { $0.count == 2 && $0[0] <= $0[1] && (1...600).contains($0[1]) }
+            if let pair = unique(pairs) {
+                if draft.paidCount == nil { draft.paidCount = pair[0] }
+                else if draft.paidCount != pair[0] { draft.paidCount = nil }
+                if draft.paymentCount == nil { draft.paymentCount = pair[1] }
+                else if draft.paymentCount != pair[1] { draft.paymentCount = nil }
+            }
+            if draft.paymentCount == 0 { draft.paymentCount = nil }
+            if let paid = draft.paidCount, let total = draft.paymentCount, paid > total || total == 0 {
+                draft.paymentCount = nil; draft.paidCount = nil
+            }
+            draft.opened = explicitDate(["дата оформлення", "оформлено"])
+            draft.finalDue = explicitDate(["кінцева дата", "дата завершення", "дата останнього платежу"])
+            draft.nextAmount = amount(["наступний платіж", "сума наступного платежу"])
+            draft.bankNextDue = explicitDate(["наступний платіж", "дата наступного платежу"])
+            // Zero is not a regular payment. Do not manufacture a date or charge.
+            if let next = draft.nextAmount {
+                let regular = amount(["щомісячний платіж", "регулярний платіж", "щомісячний внесок", "сума щомісячного платежу"])
+                if let regular, regular > 0 { draft.monthly = regular }
+                else if next == 0 { draft.monthly = nil }
+                if next == 0 { draft.due = nil }
+            }
+            if draft.name.isEmpty, let bank = bank(rows.joined(separator: "\n")) {
+                let products = ["оплата частинами", "покупка частинами", "миттєва розстрочка", "платіж частинами"]
+                let product = rows.first { row in products.contains(row.lowercased()) }
+                if let product { draft.name = bank + " · " + product }
+            }
+        }
+        if let count = draft.paymentCount, !(1...600).contains(count) { draft.paymentCount = nil }
+        if let paid = draft.paidCount, !(0...600).contains(paid) || paid > (draft.paymentCount ?? 600) { draft.paidCount = nil }
+        // A fee in a foreign currency must not pass as a UAH contract.
+        draft.foreignCurrency = draft.foreignCurrency || rows.contains { hasUnsupportedCurrency($0) || money($0)?.currency == "USD" }
+        return draft
+    }
+    private static func installmentBase(_ input: [String], reference: Date, regions: [ScanTextRegion]) -> ScanInstallmentDraft {
         let lines = input.map(bankClean).filter { !$0.isEmpty }
         if let pumb = pumbParts(lines, regions: regions) { return pumb }
         let plan = purchasePlan(lines, reference: reference)
@@ -525,6 +608,23 @@ enum FinamiScanParser {
     static func validInstallment(total: Int64, remaining: Int64, monthly: Int64) -> Bool {
         total > 0 && remaining >= 0 && remaining <= total && monthly >= 0 && (remaining == 0 || monthly > 0)
     }
+    // Single source of truth for the review screen and its save guard.
+    static func installmentBlockers(name: String, total: Int64?, remaining: Int64?, monthly: Int64?,
+                                    dateChecked: Bool, checked: Bool, foreign: Bool,
+                                    targetExists: Bool, exact: Bool, similar: Bool, duplicateOverride: Bool,
+                                    reminderValid: Bool) -> [String] {
+        var result: [String] = []
+        if name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { result.append("Вкажи назву договору.") }
+        if !validInstallment(total: total ?? -1, remaining: remaining ?? -1, monthly: monthly ?? -1) { result.append("Перевір загальний кредит, залишок і щомісячний платіж.") }
+        if foreign { result.append("Виявлено іноземну валюту. Імпорт розстрочок підтримує лише UAH.") }
+        if !dateChecked { result.append("Підтвердь дату платежу.") }
+        if !checked { result.append("Підтвердь перевірку всіх даних.") }
+        if !targetExists { result.append("Обраний договір більше не існує.") }
+        if exact { result.append("Скриншот уже прив’язаний до іншого договору. Обери його для оновлення.") }
+        else if similar && !duplicateOverride { result.append("Перевір можливий дубль або обери існуючий договір.") }
+        if !reminderValid { result.append("Перевір дату нагадування або вимкни його.") }
+        return result
+    }
     static func samePayment(account: String, signed: Int64, date: Date, otherAccount: String, otherSigned: Int64, otherDate: Date, calendar: Calendar = .current) -> Bool {
         account == otherAccount && signed == otherSigned && calendar.isDate(date, inSameDayAs: otherDate)
     }
@@ -556,6 +656,12 @@ func finamiMergeInstallments(_ drafts: [ScanInstallmentDraft]) -> FinamiInstallm
     result.bankNextDue = unique(drafts.compactMap(\.bankNextDue), "Найближча дата банку")
     result.finalDue = unique(drafts.compactMap(\.finalDue), "Кінцева дата")
     result.opened = unique(drafts.compactMap(\.opened), "Дата оформлення")
+    result.firstContribution = unique(drafts.compactMap(\.firstContribution), "Перший внесок")
+    result.totalBankFee = unique(drafts.compactMap(\.totalBankFee), "Загальна комісія")
+    result.monthlyBankFee = unique(drafts.compactMap(\.monthlyBankFee), "Щомісячна комісія")
+    if let paid = result.paidCount, let count = result.paymentCount, paid > count {
+        result.paidCount = nil; result.paymentCount = nil; conflicts.append("Прогрес платежів")
+    }
     result.monthlyEstimated = drafts.contains { $0.monthlyEstimated } && result.monthly != nil
     if result.pumbParts && (!conflicts.isEmpty && (result.nextAmount == nil || result.bankNextDue == nil || result.finalDue == nil)) { result.due = nil }
     return FinamiInstallmentMerge(draft: result, conflicts: conflicts)
@@ -571,9 +677,9 @@ func finamiScheduleRows(_ lines: [String], reference: Date = Date()) -> [FinamiS
     var candidates: [FinamiScheduleRow] = []
     for line in lines {
         let lower = line.lowercased()
-        guard !["залиш", "баланс", "всього", "ліміт", "розстрочка на", "сплачено платежів", "погашено"].contains(where: { lower.contains($0) }),
+        guard !["залиш", "баланс", "всього", "ліміт", "розстрочка на", "сплачено платежів", "погашено", "комісія", "оформлено", "дата оформлення", "перший внесок", "початковий внесок", "кінцева дата", "дата завершення"].contains(where: { lower.contains($0) }),
               let date = FinamiScanParser.nextPaymentDate(line, reference: reference),
-              let amount = FinamiScanParser.money(line), amount.currency == "UAH", amount.minor > 0 else { continue }
+              let amount = FinamiScanParser.money(line), amount.currency == "UAH", amount.minor >= 0 else { continue }
         candidates.append(.init(date: date, amount: amount.minor))
     }
     return Dictionary(grouping: candidates, by: \.date).values.compactMap { group in
