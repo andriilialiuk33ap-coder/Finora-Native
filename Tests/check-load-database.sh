@@ -64,6 +64,8 @@ cat >> "$tmp/Load.swift" <<'SWIFT'
     let inconsistentStore = Store(url)
     await inconsistentStore.loadDatabase()
     precondition(!inconsistentStore.ready && !inconsistentStore.loading && inconsistentStore.error?.contains("Запис заблоковано") == true)
+    precondition(inconsistentStore.error?.contains("Операція №1") == true)
+    precondition(inconsistentStore.error?.contains(inconsistent.operations[0].id) == true)
     let unchangedGroup = try Data(contentsOf: url)
     precondition(unchangedGroup == inconsistentBytes)
     print("PASS: inconsistent grouped conversion blocked at startup; original bytes preserved")
