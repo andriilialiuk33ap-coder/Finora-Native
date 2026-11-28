@@ -3,6 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
+swift test --scratch-path "$tmp/swiftpm"
 swiftc -warnings-as-errors -typecheck Finora/BankCore.swift Finora/MoneyCore.swift Finora/AutomationCore.swift Finora/FinamiScanCore.swift
 swiftc Finora/BankCore.swift Finora/MoneyCore.swift Finora/AutomationCore.swift Tests/main.swift -o "$tmp/finami-core-tests"
 "$tmp/finami-core-tests"
@@ -23,8 +24,13 @@ bash Tests/check-build63-layout.sh
 bash Tests/check-build64-brand-ocr.sh
 bash Tests/check-build64-ocr-geometry.sh
 bash Tests/check-build67-ocr.sh
+bash Tests/check-build69-review.sh
 python3 Tests/check-build64-assets.py
 bash Tests/check-load-database.sh
+bash Tests/check-storage-recovery.sh
+bash Tests/check-stable-safety.sh
+bash Tests/check-installment-schedule.sh
+bash Tests/check-architecture-progress.sh
 bash Tests/check-encryption-macos.sh
-for file in Finora/*.swift UITests/*.swift FinamiWidgets/*.swift WidgetShared/*.swift; do swiftc -frontend -parse "$file"; done
+while IFS= read -r -d '' file; do swiftc -frontend -parse "$file"; done < <(find Finora UITests FinamiWidgets WidgetShared -name '*.swift' -print0)
 echo 'PASS: Swift syntax (not iOS compilation)'

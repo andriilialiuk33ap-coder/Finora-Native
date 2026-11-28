@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-{ echo 'import Foundation'; echo 'let cash="cash"'; sed -n '/^enum Kind:/,/^struct AccountActivity/p' Finora/Finora.swift | sed '$d'; } > "$tmp/Models.swift"
+{ echo 'import Foundation'; cat Finora/Domain/Ledger/LedgerModels.swift Finora/Domain/Ledger/LedgerIndex.swift; } > "$tmp/Models.swift"
 cat > "$tmp/main.swift" <<'SWIFT'
 import Foundation
 func check(_ condition: @autoclosure () -> Bool, _ name: String) { precondition(condition(),name); print("PASS: " + name) }
@@ -22,6 +22,11 @@ let empty = FinamiExportReport(operations:[],account:nil,accountNames:[:],includ
 check(empty.sheets.count == 6 && empty.operationRows.count == 1,"empty period exports header without error")
 let account = FinamiExportReport(operations:[ops[3]],account:"b",accountNames:[:],includeAmounts:true,includeNotes:false)
 check(account.sheets[0].rows[2][1].text == "10" && account.sheets[0].rows[1][1].text == "0","destination account transfer not counted as income")
+check(sheets["Категорії"]?[1][2].text == "20", "net category agrees with summary while gross remains available")
+let mixed = FinamiExportReport(operations:ops,account:"b",accountNames:[:],includeAmounts:true,includeNotes:true)
+check(mixed.operationRows.count == 2 && mixed.sheets[4].rows.count == 1 && mixed.sheets[2].rows.count == 1, "account-filtered export excludes unrelated rows and categories")
+check(hidden.sheets[2].rows.dropFirst().allSatisfy { $0[1].text == "—" && $0[2].text == "—" }, "both gross and net category columns respect masking")
+check(report.operationRows[3][11].text == "-5" && hidden.operationRows[3][11].text == "—", "refund contribution explicit and privacy preserved")
 let parts = finamiWorkbookParts(report.sheets)
 check(parts["xl/worksheets/sheet5.xml"] != nil,"real prepared report generates workbook XML")
 SWIFT
