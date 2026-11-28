@@ -61,7 +61,7 @@ struct Root: View {
   @State private var widgetCalendar = false
   @State private var widgetPlanning = false
   private func routeWidget() {
-    guard !lockEnabled || unlocked, let action = store.widgetRoute else { return }
+    guard store.storageHealthy, !lockEnabled || unlocked, let action = store.widgetRoute else { return }
     store.widgetRoute = nil
     if action == "balance" { tab = 2 }
     if action == "quick" { tab = 0; widgetAdd = true }
@@ -78,6 +78,8 @@ struct Root: View {
           Text(authError).foregroundStyle(.secondary)
           Button("Розблокувати", action: unlock).buttonStyle(.borderedProminent)
         }.onAppear(perform: unlock)
+      } else if !store.storageHealthy {
+        FinamiRecoveryView()
       } else {
         VStack(spacing: 0) {
         TabView(selection: $tab) {

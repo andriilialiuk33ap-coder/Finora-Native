@@ -19,6 +19,14 @@ enum FinamiDatabaseSafety {
             }
         }
     }
+    struct OperationFailure: LocalizedError {
+        let index: Int
+        let id: String
+        let underlying: Error
+        var errorDescription: String? {
+            "Операція №\(index + 1) (ID: \(id)): \(underlying.localizedDescription)"
+        }
+    }
     static func validate(_ db: Database) throws {
         var sum: Int64 = 0
         func add(_ value: Int64, signed: Bool = false) throws {
@@ -46,22 +54,24 @@ enum FinamiDatabaseSafety {
             if let d = a.reconciliationDate { try date(d) }
         }
         if accountCodes.values.contains("USD"), fxRate(db.currencyPreferences?.usdRate ?? "") == nil { throw Failure.ledger }
-        for o in db.operations {
-            guard let sourceCode = accountCodes[o.account],
-                  sourceCode != "USD" || (o.sourceMinor != nil && fxRate(o.exchangeRate ?? "") != nil),
-                  finamiValidGroupedBankParts(o) else { throw Failure.ledger }
-            if o.kind == .transfer {
-                guard o.account != o.destination, let destinationCode = accountCodes[o.destination],
-                      destinationCode != "USD" || o.destinationMinor != nil else { throw Failure.ledger }
-                if o.groupedBankParts != nil {
-                    guard sourceCode == "USD", destinationCode == "UAH", o.sourceMinor != nil, o.destinationMinor == o.amount else { throw Failure.ledger }
+        for (index, o) in db.operations.enumerated() {
+            do {
+                guard let sourceCode = accountCodes[o.account],
+                      sourceCode != "USD" || (o.sourceMinor != nil && fxRate(o.exchangeRate ?? "") != nil),
+                      finamiValidGroupedBankParts(o) else { throw Failure.ledger }
+                if o.kind == .transfer {
+                    guard o.account != o.destination, let destinationCode = accountCodes[o.destination],
+                          destinationCode != "USD" || o.destinationMinor != nil else { throw Failure.ledger }
+                    if o.groupedBankParts != nil {
+                        guard sourceCode == "USD", destinationCode == "UAH", o.sourceMinor != nil, o.destinationMinor == o.amount else { throw Failure.ledger }
+                    }
                 }
-            }
-            guard o.amount > 0, (o.sourceMinor ?? o.amount) > 0, (o.destinationMinor ?? o.amount) > 0 else { throw Failure.amount }
-            try add(o.amount); try add(o.sourceMinor ?? 0); try add(o.destinationMinor ?? 0)
-            try add(o.bankFee ?? 0, signed: true); try add(o.originalAmount ?? 0, signed: true)
-            try date(o.date)
-            for p in o.groupedBankParts ?? [] { try add(p.amount); try date(p.date); try add(p.originalAmount ?? 0, signed: true) }
+                guard o.amount > 0, (o.sourceMinor ?? o.amount) > 0, (o.destinationMinor ?? o.amount) > 0 else { throw Failure.amount }
+                try add(o.amount); try add(o.sourceMinor ?? 0); try add(o.destinationMinor ?? 0)
+                try add(o.bankFee ?? 0, signed: true); try add(o.originalAmount ?? 0, signed: true)
+                try date(o.date)
+                for p in o.groupedBankParts ?? [] { try add(p.amount); try date(p.date); try add(p.originalAmount ?? 0, signed: true) }
+            } catch { throw OperationFailure(index: index, id: o.id, underlying: error) }
         }
         // Validate links only after all ledger amounts are bounded, before any sign arithmetic.
         var linkedRows = db.operations

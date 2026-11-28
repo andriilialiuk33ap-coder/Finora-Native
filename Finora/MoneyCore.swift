@@ -30,3 +30,12 @@ func finamiMinorText(_ minor: Int64) -> String {
     let fraction = magnitude % 100
     return (minor < 0 ? "-" : "") + String(magnitude / 100) + "." + (fraction < 10 ? "0" : "") + String(fraction)
 }
+
+// Convert decimal major units once, with explicit half-away-from-zero rounding.
+func finamiLegacyMinor(_ major: Decimal) -> Int64? {
+    guard !major.isNaN, major > 0, major <= 10_000_000_000 else { return nil }
+    var scaled = major * 100, rounded = Decimal()
+    NSDecimalRound(&rounded, &scaled, 0, .plain)
+    guard rounded > 0, rounded <= 1_000_000_000_000 else { return nil }
+    return NSDecimalNumber(decimal: rounded).int64Value
+}

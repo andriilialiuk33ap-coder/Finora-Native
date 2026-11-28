@@ -98,7 +98,7 @@ import UserNotifications
   @Published var capturePending: [CapturedPayment] = []
   @Published var captureWarning: String? = nil
   var captureRefreshInProgress = false
-  private var ready = true
+  @Published private var ready = true
   private let url: URL = {
     let folder = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
     #if DEBUG && targetEnvironment(simulator)
@@ -321,6 +321,23 @@ import UserNotifications
     return money(n)
   }
   func accountName(_ id: String) -> String { db.accounts.first { $0.id == id }?.name ?? "Рахунок" }
+  // Recovery never publishes unvalidated financial data or writes through normal editing paths.
+  func recoveryOriginal() throws -> Data {
+    guard !loading, !ready, !backgroundCommitInProgress else { throw CocoaError(.fileReadUnknown) }
+    return try Data(contentsOf: url)
+  }
+  func validateRecovery(_ data: Data) throws {
+    let candidate = try JSONDecoder().decode(Database.self, from: data)
+    try FinamiDatabaseSafety.validate(candidate)
+  }
+  func applyRecovery(_ data: Data, expectedOriginal: Data) {
+    do {
+      guard try recoveryOriginal() == expectedOriginal else { throw CocoaError(.fileWriteUnknown) }
+      try validateRecovery(data)
+      // Preserve local attachment references and use the existing quarantining commit.
+      restoreDatabase(data, localSnapshot: true, recovery: true)
+    } catch { self.error = "Відновлення не виконано: " + error.localizedDescription }
+  }
   func restore(_ data: Data) { restoreDatabase(data, localSnapshot: false) }
   func restoreSnapshot(_ snapshot: URL) {
     do {
@@ -328,7 +345,7 @@ import UserNotifications
       restoreDatabase(try Data(contentsOf: snapshot), localSnapshot: true)
     } catch { self.error = "Не вдалося відкрити локальну копію: " + error.localizedDescription }
   }
-  private func restoreDatabase(_ data: Data, localSnapshot: Bool) {
+  private func restoreDatabase(_ data: Data, localSnapshot: Bool, recovery: Bool = false) {
     guard !backgroundCommitInProgress else { error = writeBusyMessage; return }
     guard !loading else { error = "Дочекайся завантаження бази."; return }
     do {
@@ -368,8 +385,11 @@ import UserNotifications
         error = "Це локальна копія з окремими файлами. Для перенесення використай повний JSON або зашифровану копію."
         return
       }
+      if recovery, decoded.appearanceRevision != nil, FileManager.default.fileExists(atPath: appearanceURL.path) {
+        decoded.preferences = try FinamiAppearanceSidecar<AppearancePreferences>.resolve(base: decoded.preferences, revision: decoded.appearanceRevision, data: Data(contentsOf: appearanceURL))
+      }
       decoded = FinamiScanStorage.externalized(decoded, file: url)
-      _ = write(decoded, forceSnapshot: true)
+      if write(decoded, forceSnapshot: true) { error = nil }
     } catch { self.error = "Не вдалося відновити JSON: \(error.localizedDescription)" }
   }
   func importLegacy(_ data: Data) {
@@ -378,11 +398,11 @@ import UserNotifications
       var incoming: [Operation] = []
       for (kind, rows) in [(Kind.expense, old.items), (.income, old.incomes)] {
         for row in rows {
-          guard row.amt.isFinite, row.amt > 0, row.amt <= 1e10, row.ts.isFinite, abs(row.ts) < 1e14
+          guard let minor = finamiLegacyMinor(row.amt), row.ts.isFinite, abs(row.ts) < 1e14
           else { throw CocoaError(.fileReadCorruptFile) }
           incoming.append(
             Operation(
-              kind: kind, amount: Int64((row.amt * 100).rounded()),
+              kind: kind, amount: minor,
               date: Date(timeIntervalSince1970: row.ts / 1000), category: row.cat ?? "Інше",
               note: row.note ?? "", account: db.accounts.first(where:{$0.code=="UAH"})?.id ?? cash))
         }
@@ -405,8 +425,8 @@ import UserNotifications
             d.expenseCategories.append(o.category)
           }
         }
-        if d.budget == 0, let b = old.budget, b.isFinite, b > 0, b <= 1e10 {
-          d.budget = Int64((b * 100).rounded())
+        if d.budget == 0, let b = old.budget, let minor = finamiLegacyMinor(b) {
+          d.budget = minor
         }
       }) {
         error =
