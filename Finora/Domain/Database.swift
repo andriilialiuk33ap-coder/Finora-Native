@@ -48,12 +48,12 @@ struct Database: Codable {
 }
 struct Legacy: Decodable {
   struct Entry: Decodable {
-    var amt: Double
+    var amt: Decimal
     var ts: Double
     var cat: String?
     var note: String?
   }
   var items: [Entry]
   var incomes: [Entry]
-  var budget: Double?
+  var budget: Decimal?
 }
