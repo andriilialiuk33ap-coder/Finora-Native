@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-{ echo 'import Foundation'; echo 'let cash="cash"'; sed -n '/^enum Kind:/,/^enum ObligationKind:/p' Finora/Finora.swift | sed '$d'; sed -n '/^enum OperationSort:/,/^func ruleKey/p' Finora/IzanamiFeatures.swift | sed '$d'; } > "$tmp/Models.swift"
+{ echo 'import Foundation'; cat Finora/Domain/Ledger/LedgerModels.swift Finora/Domain/Ledger/LedgerIndex.swift; sed -n '/^enum OperationSort:/,/^func ruleKey/p' Finora/IzanamiFeatures.swift | sed '$d'; } > "$tmp/Models.swift"
 cat > "$tmp/main.swift" <<'SWIFT'
 import Foundation
 func check(_ condition: @autoclosure () -> Bool, _ label: String) { precondition(condition(),label); print("PASS: " + label) }
@@ -27,5 +27,5 @@ check(search("1250,50",hidden:true).isEmpty, "global mask hides amount")
 check(search("Сільпо",hidden:true) == ["e"], "masked merchant still searchable")
 check(Set(search("   ")) == Set(["e","t"]), "blank search returns all")
 SWIFT
-swiftc -swift-version 5 -warnings-as-errors "$tmp/Models.swift" Finora/FinamiHistoryQuery.swift "$tmp/main.swift" -o "$tmp/test"
+swiftc -swift-version 5 -warnings-as-errors "$tmp/Models.swift" Finora/FinamiHistoryQuery.swift Finora/MoneyCore.swift "$tmp/main.swift" -o "$tmp/test"
 "$tmp/test"

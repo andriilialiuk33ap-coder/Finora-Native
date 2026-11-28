@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-{ echo 'import Foundation'; echo 'let cash="cash"'; echo 'struct PersonalReminder: Codable {}'; sed -n '/^enum Kind:/,/^struct Database:/p' Finora/Finora.swift | sed '$d'; } > "$tmp/Models.swift"
+{ echo 'import Foundation'; echo 'struct PersonalReminder: Codable {}'; cat Finora/Domain/Ledger/LedgerModels.swift Finora/Domain/Ledger/LedgerIndex.swift Finora/Domain/PaymentModels.swift Finora/Domain/FinancialRecords.swift; } > "$tmp/Models.swift"
 cat > "$tmp/main.swift" <<'SWIFT'
 import Foundation
 func require(_ condition: @autoclosure () -> Bool, _ label: String) { if !condition() { fatalError(label) }; print("PASS: " + label) }

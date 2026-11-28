@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-{ echo 'import Foundation'; echo 'let cash="cash"'; sed -n '/^enum Kind:/,/^struct AccountActivity/p' Finora/Finora.swift | sed '$d'; } > "$tmp/Models.swift"
+{ echo 'import Foundation'; cat Finora/Domain/Ledger/LedgerModels.swift Finora/Domain/Ledger/LedgerIndex.swift; } > "$tmp/Models.swift"
 # Compile the actual AccountEditor calculation without SwiftUI, using a minimal store.
 {
 cat <<'SWIFT'
@@ -19,7 +19,7 @@ struct AccountEditorCalculation {
     var opening="0", limitText="0", actualText="0", actualMode="net", ownText="0", usedText="0"
     var correctBalance=false
 SWIFT
-sed -n '/^  var newOpening: Int64? {/,/^  var existingAccount:/p' Finora/Finora.swift | sed '$d'
+sed -n '/^  var newOpening: Int64? {/,/^  var existingAccount:/p' Finora/FinamiAccountViews.swift | sed '$d'
 echo '}'
 } > "$tmp/AccountEditorCalculation.swift"
 cat > "$tmp/main.swift" <<'SWIFT'

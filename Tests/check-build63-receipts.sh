@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-{ echo 'import Foundation'; echo 'let cash="cash"'; echo 'let expenseDefaults=["Без категорії", "Інше"]; let incomeDefaults=["Без категорії", "Інше"]'; sed -n '/^enum Kind:/,/^struct Legacy:/p' Finora/Finora.swift | sed '$d'; sed -n '/^struct AppearancePreferences:/,/^struct IzanamiTheme:/p' Finora/IzanamiFeatures.swift | sed '$d'; cat <<'SWIFT'
+{ echo 'import Foundation'; cat Finora/Domain/Ledger/LedgerModels.swift Finora/Domain/Ledger/LedgerIndex.swift Finora/Domain/PaymentModels.swift Finora/Domain/FinancialRecords.swift Finora/Domain/Database.swift; sed -n '/^struct AppearancePreferences:/,/^struct IzanamiTheme:/p' Finora/IzanamiFeatures.swift | sed '$d'; cat <<'SWIFT'
 struct DashboardItem: Codable { var categorySelection: [String]? = nil }
 struct SubscriptionRecord: Codable {}
 struct PersonalReminder: Codable { var id = UUID().uuidString; var linkedID: String? = nil }
@@ -88,6 +88,68 @@ var foreign = reimburse; foreign[1].entryCurrency="USD"
 check(!finamiSynchronizeRefundLinks(&foreign),"cross-currency compensation rejected")
 reimburse[0].category="Renamed"
 check(finamiSynchronizeRefundLinks(&reimburse) && reimburse[1].expenseGroup=="Renamed","compensation follows original category rename")
+// Independent reference values for a cross-module scenario.
+let fixedDate = Calendar.current.dateInterval(of:.month,for:Date())!.start.addingTimeInterval(60)
+let bankA = Account(id:"audit-a",name:"Audit A",opening:100000)
+let bankB = Account(id:"audit-b",name:"Audit B",opening:20000)
+let purchase = Operation(id:"audit-buy",kind:.expense,amount:10000,date:fixedDate,category:"Food",account:bankA.id)
+let refund = Operation(id:"audit-refund",kind:.refund,amount:1500,date:fixedDate,category:"Food",account:bankA.id,refundOriginalID:purchase.id)
+let compensation = Operation(id:"audit-comp",kind:.receipt,amount:2500,date:fixedDate,category:"🍽️ Компенсація витрат",account:bankB.id,refundOriginalID:purchase.id,receiptTreatment:.reimbursement)
+let fee = Operation(id:"audit-fee",kind:.movementOut,amount:2100,date:fixedDate,account:bankA.id,sourceBank:"А-БАНК",originalAmount:2000,originalCurrency:"UAH",bankFee:100)
+let auditSalary = Operation(kind:.income,amount:50000,date:fixedDate,account:bankA.id)
+let auditTransfer = Operation(kind:.transfer,amount:4000,date:fixedDate,account:bankA.id,destination:bankB.id)
+let auditLoan = Operation(id:"audit-loan",kind:.creditRepayment,amount:3000,date:fixedDate,account:bankB.id)
+var auditRows = [purchase,refund,compensation,fee,auditSalary,auditTransfer,auditLoan]
+check(finamiSynchronizeRefundLinks(&auditRows),"consistency fixture links both refund and compensation")
+let fixedReport = FinamiReportSnapshot(operations:auditRows,date:fixedDate,annual:false,account:nil)
+let fixedDashboard = FinamiDashboardMetrics(operations:auditRows)
+let fixedLedger = FinamiLedgerIndex(operations:auditRows)
+check(fixedLedger.balance(bankA)==135400 && fixedLedger.balance(bankB)==23500,"reference balances include each real movement once")
+check(fixedReport.totals.income==50000 && fixedReport.totals.expense==6100 && fixedReport.totals.net==43900,"reference report separates transfer, principal, fee, refunds and compensation")
+check(fixedDashboard.income==50000 && fixedDashboard.expense==6100 && fixedDashboard.categories.first(where:{$0.key=="Food"})?.value==6000,"reference dashboard agrees with net spending")
+check(fixedReport.categories["🏦 Комісії"]==100 && fixedDashboard.categories.first(where:{$0.key=="🏦 Комісії"})?.value==100,"embedded fee in shared category totals")
+check(AccountActivity(account:bankA,operations:auditRows,month:fixedDate).spending==8600 && AccountActivity(account:bankB,operations:auditRows,month:fixedDate).spending == -2500,"native account spending sums to report for UAH")
+let fixtureExport = FinamiExportReport(operations:auditRows,account:nil,accountNames:[:],includeAmounts:true,includeNotes:false)
+let exportCategories = fixtureExport.sheets.first{$0.name=="Категорії"}!.rows
+check(exportCategories.first{$0[0].text=="Food"}?[2].text=="60" && exportCategories.first{$0[0].text=="🏦 Комісії"}?[2].text=="1","export net categories equal independent expected values")
+check(fixtureExport.sheets.first{$0.name=="Витрати"}!.rows.count==5,"expense export includes embedded fee record as well as offsets")
+check(exportCategories.first{$0[0].text=="🏦 Комісії"}?[1].text=="1","gross fee excludes the neutral principal movement")
+var editedRows = auditRows; editedRows[0].amount=12000; editedRows[0].category="Renamed"
+check(finamiSynchronizeRefundLinks(&editedRows),"edit propagates linked categories")
+let edited = FinamiReportSnapshot(operations:editedRows,date:fixedDate,annual:false,account:nil)
+check(edited.totals.expense==8100 && edited.categories["Renamed"]==8000 && edited.categories["Food"]==nil && FinamiLedgerIndex(operations:editedRows).balance(bankA)==133400,"amount and category edit updates ledger and reports")
+let restoredRows = try JSONDecoder().decode([Operation].self,from:JSONEncoder().encode(editedRows))
+check(restoredRows==editedRows && FinamiDashboardMetrics(operations:restoredRows).expense==8100,"roundtrip preserves edited accounting")
+let deletedRows = restoredRows.filter{$0.id != "audit-fee"}
+check(FinamiLedgerIndex(operations:deletedRows).balance(bankA)==135500 && FinamiReportSnapshot(operations:deletedRows,date:fixedDate,annual:false,account:nil).totals.expense==8000,"deleting a debit restores balance and removes fee")
+let validRecord = FinamiPaidRecord(id:"audit-pay",paymentID:"deleted-schedule",scheduledDate:fixedDate,paidDate:fixedDate,amount:3000,currency:"UAH",accountID:bankB.id,operationID:auditLoan.id)
+let markOnly = FinamiPaidRecord(id:"mark",paymentID:"schedule",scheduledDate:fixedDate,paidDate:fixedDate,amount:1000,currency:"USD",accountID:nil,operationID:nil)
+func paymentIssues(_ records:[FinamiPaidRecord], _ rows:[Operation] = auditRows, _ accounts:[Account] = [bankA,bankB]) -> [FinamiPaymentIntegrityIssue] { finamiPaymentIntegrityIssues(operations:rows,accounts:accounts,records:records) }
+func preserves(_ before:[FinamiPaidRecord],_ after:[FinamiPaidRecord],rows:[Operation] = auditRows) -> Bool { finamiPaymentIntegrityPreserved(beforeOperations:auditRows,beforeAccounts:[bankA,bankB],beforeRecords:before,afterOperations:rows,afterAccounts:[bankA,bankB],afterRecords:after) }
+check(paymentIssues([validRecord,markOnly]).isEmpty && preserves([], [validRecord,markOnly]),"valid link and mark-only payment accepted; archived history allowed")
+var duplicate=validRecord; duplicate.id="dup"
+check(paymentIssues([validRecord,duplicate]).contains{$0.kind == .duplicateLink} && !preserves([validRecord],[validRecord,duplicate]),"duplicate ledger payment link rejected")
+check(paymentIssues([validRecord,validRecord]).contains{$0.kind == .duplicateRecord},"duplicate payment record identity diagnosed")
+check(preserves([validRecord,duplicate],[validRecord,duplicate]) && preserves([validRecord,duplicate],[validRecord]),"legacy defects remain visible and repairable")
+var triple=duplicate; triple.id="triple"
+check(!preserves([validRecord,duplicate],[validRecord,duplicate,triple]),"existing duplicate count cannot increase")
+var mismatch=validRecord; mismatch.amount=2999
+check(paymentIssues([mismatch]).contains{$0.kind == .wrongAmount} && !preserves([], [mismatch]),"wrong native debit amount rejected")
+mismatch=validRecord; mismatch.accountID=bankA.id
+check(paymentIssues([mismatch]).contains{$0.kind == .wrongAccount},"wrong source account detected")
+mismatch=validRecord; mismatch.currency="USD"
+check(paymentIssues([mismatch]).contains{$0.kind == .wrongCurrency} && !preserves([], [mismatch]),"wrong native currency rejected")
+mismatch=validRecord; mismatch.operationID="missing"
+check(paymentIssues([mismatch]).contains{$0.kind == .missingDebit} && !preserves([], [mismatch]),"orphan payment rejected")
+var wrongRows=auditRows; wrongRows[wrongRows.count-1].kind = .income
+check(paymentIssues([validRecord],wrongRows).contains{$0.kind == .wrongDebit} && !preserves([validRecord],[validRecord],rows:wrongRows),"income cannot serve as debit")
+var invalid=markOnly; invalid.amount=0
+check(paymentIssues([invalid]).contains{$0.kind == .invalidRecord},"zero payment history rejected")
+let foreignAccount=Account(id:"usd",name:"USD account",currency:"USD")
+let foreignDebit=Operation(kind:.expense,amount:40000,date:fixedDate,account:foreignAccount.id,sourceMinor:1000,entryCurrency:"USD",exchangeRate:"40")
+let foreignRecord=FinamiPaidRecord(paymentID:"sub",scheduledDate:fixedDate,paidDate:fixedDate,amount:1000,currency:"USD",accountID:foreignAccount.id,operationID:foreignDebit.id)
+check(paymentIssues([foreignRecord],[foreignDebit],[foreignAccount]).isEmpty,"USD link compares native amount rather than converted UAH")
+
 SWIFT
-swiftc -O -warnings-as-errors "$tmp/Models.swift" Finora/BankCore.swift Finora/MoneyCore.swift Finora/FinamiScanCore.swift Finora/AutomationCore.swift Finora/FinamiCategoryCore.swift Finora/FinamiIntelligenceCore.swift Finora/FinamiPaymentCore.swift Finora/FinamiQualityCore.swift Finora/FinamiReportCore.swift Finora/FinamiNextCore.swift Finora/FinamiBalanceCore.swift "$tmp/main.swift" -o "$tmp/test"
+swiftc -O -warnings-as-errors "$tmp/Models.swift" Finora/BankCore.swift Finora/MoneyCore.swift Finora/FinamiScanCore.swift Finora/AutomationCore.swift Finora/FinamiCategoryCore.swift Finora/FinamiIntelligenceCore.swift Finora/FinamiPaymentCore.swift Finora/FinamiQualityCore.swift Finora/FinamiReportCore.swift Finora/FinamiExportCore.swift Finora/FinamiExportReport.swift Finora/FinamiNextCore.swift Finora/FinamiBalanceCore.swift "$tmp/main.swift" -o "$tmp/test"
 "$tmp/test"

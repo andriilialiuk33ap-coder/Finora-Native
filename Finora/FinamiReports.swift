@@ -152,7 +152,7 @@ struct Reports: View {
     private func categoryLink(_ category: String, amount: Int64, snapshot: FinamiReportSnapshot) -> some View {
         NavigationLink {
             FinamiReportCategoryOperations(category: category, interval: snapshot.interval, account: selectedAccount == "all" ? nil : selectedAccount)
-        } label: { reportRow(category, amount: amount, icon: finamiCategoryDisplayIcon(category, kind: .expense), tint: .orange) }.buttonStyle(.plain)
+        } label: { reportRow(category, amount: amount, icon: finamiOperationIcon(Operation(kind: .expense, category: category)), tint: .orange) }.buttonStyle(.plain)
     }
     private func movementLine(_ title: String, _ amount: Int64, tint: Color = .secondary, masked: Bool = false) -> some View {
         HStack(alignment: .firstTextBaseline) {

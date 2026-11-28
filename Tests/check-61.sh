@@ -42,7 +42,7 @@ final class Store {
     var dashboardMonthCache:[DateInterval:[Operation]]=[:]
     init(_ ops:[Operation]) { db=Database(operations:ops) }
 SWIFT
-sed -n '/^  func month(_ date: Date)/,/^  }/p' Finora/Finora.swift >> "$tmp/Month.swift"
+sed -n '/^  func month(_ date: Date)/,/^  }/p' Finora/FinamiStore.swift >> "$tmp/Month.swift"
 cat >> "$tmp/Month.swift" <<'SWIFT'
 }
 @main struct Harness {

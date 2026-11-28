@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-{ echo 'import Foundation'; echo 'let cash="cash"'; sed -n '/^enum Kind:/,/^enum ObligationKind:/p' Finora/Finora.swift | sed '$d'; } > "$tmp/Models.swift"
+{ echo 'import Foundation'; cat Finora/Domain/Ledger/LedgerModels.swift Finora/Domain/Ledger/LedgerIndex.swift; } > "$tmp/Models.swift"
 cat > "$tmp/main.swift" <<'SWIFT'
 import Foundation
 let oldAccount = Data(#"{"id":"cash","name":"Cash","opening":10000}"#.utf8)
@@ -35,7 +35,7 @@ SWIFT
 swiftc "$tmp/Models.swift" "$tmp/main.swift" -o "$tmp/model-test"
 "$tmp/model-test"
 # Compile the actual non-UI Store extension against a small in-memory persistence adapter.
-{ echo 'import Foundation'; echo 'let cash="cash"'; echo 'let expenseDefaults=["Без категорії"]; let incomeDefaults=["Без категорії"]'; sed -n '/^enum Kind:/,/^struct Legacy:/p' Finora/Finora.swift | sed '$d'; sed -n '/^struct CapturePreferences:/,/^struct AutomationCenter:/p' Finora/AutomationView.swift | sed '$d'; cat <<'SWIFT'
+{ echo 'import Foundation'; cat Finora/Domain/Ledger/LedgerModels.swift Finora/Domain/Ledger/LedgerIndex.swift Finora/Domain/PaymentModels.swift Finora/Domain/FinancialRecords.swift Finora/Domain/Database.swift; sed -n '/^struct CapturePreferences:/,/^struct AutomationCenter:/p' Finora/AutomationView.swift | sed '$d'; cat <<'SWIFT'
 struct DashboardItem: Codable {}
 struct AppearancePreferences: Codable {}
 struct SubscriptionRecord: Codable {}
@@ -45,10 +45,12 @@ func suggestedCategory(_ merchant: String,kind: Kind,database: Database) -> Stri
 @MainActor final class Store {
     var db=Database()
     var capturePending:[CapturedPayment]=[]
+    var captureRefreshInProgress=false
     var captureWarning:String?=nil
     var currentRate:Decimal?=nil
     var failWrite=false
     var writes=0
+    var databaseVersion: UInt64 { UInt64(writes) }
     var storageHealthy=true
     var loading=false
     func change(_ update:(inout Database)->Void)->Bool {

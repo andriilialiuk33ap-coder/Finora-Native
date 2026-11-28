@@ -3,7 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 grep -qx "// END_PAYMENT_STORE_CORE" Finora/FinamiPayments.swift
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-{ echo 'import Foundation'; echo 'let cash="cash"'; echo 'let expenseDefaults=["Без категорії", "💳 Розстрочка"]; let incomeDefaults=["Без категорії"]'; sed -n '/^enum Kind:/,/^struct Legacy:/p' Finora/Finora.swift | sed '$d'; sed -n '/^enum OperationSort:/,/^func ruleKey/p' Finora/IzanamiFeatures.swift | sed '$d'; grep '^func ruleKey(' Finora/IzanamiFeatures.swift; sed -n '/^enum SubscriptionPeriod:/,/^func currencyMoney/p' Finora/IzanamiFeatures.swift | sed '$d'; sed -n '/^struct FinamiPayment:/,/^\/\/ END_PAYMENT_STORE_CORE$/p' Finora/FinamiPayments.swift | sed '$d'; cat <<'SWIFT'
+{ echo 'import Foundation'; cat Finora/Domain/Ledger/LedgerModels.swift Finora/Domain/Ledger/LedgerIndex.swift Finora/Domain/PaymentModels.swift Finora/Domain/FinancialRecords.swift Finora/Domain/Database.swift; sed -n '/^enum OperationSort:/,/^func ruleKey/p' Finora/IzanamiFeatures.swift | sed '$d'; grep '^func ruleKey(' Finora/IzanamiFeatures.swift; sed -n '/^enum SubscriptionPeriod:/,/^func currencyMoney/p' Finora/IzanamiFeatures.swift | sed '$d'; sed -n '/^struct FinamiPayment:/,/^\/\/ END_PAYMENT_STORE_CORE$/p' Finora/FinamiPayments.swift | sed '$d'; cat <<'SWIFT'
 struct DashboardItem: Codable {}
 struct AppearancePreferences: Codable { var theme = "old" }
 struct ForecastPreferences: Codable {}
@@ -12,7 +12,7 @@ struct PersonalReminder: Codable { var id = UUID().uuidString; var title = ""; v
 @MainActor enum ReminderScheduler { static func cancel(_ r: PersonalReminder) {}; static func schedule(_ r: PersonalReminder) async throws {} }
 @MainActor final class Store {
     var db=Database(); var error: String?; var currentRate: Decimal?; var failWrite=false
-    func change(_ update:(inout Database)->Void)->Bool { if failWrite {return false};var copy=db;update(&copy);guard finamiLinkedOperationsPreserved(before:db,after:copy) else{return false};db=copy;return true }
+    func change(_ update:(inout Database)->Void)->Bool { if failWrite {return false};var copy=db;update(&copy);guard finamiLinkedOperationsPreserved(before:db,after:copy), finamiPaymentIntegrityPreserved(beforeOperations:db.operations,beforeAccounts:db.accounts,beforeRecords:db.paidRecords ?? [],afterOperations:copy.operations,afterAccounts:copy.accounts,afterRecords:copy.paidRecords ?? []) else{return false};db=copy;return true }
 }
 SWIFT
 } > "$tmp/Models.swift"
@@ -21,6 +21,30 @@ import Foundation
 @main struct Harness {
     static func check(_ test: @autoclosure () -> Bool, _ label: String) { precondition(test(),label); print("PASS: " + label) }
     @MainActor static func main() throws {
+        do {
+            let start = Date().addingTimeInterval(-86400 * 2)
+            let later = start.addingTimeInterval(86400 * 43)
+            let rows = [FinamiScheduleRow(date:start,amount:2500), .init(date:later,amount:7500)]
+            let scheduleStore = Store()
+            let account = Account(id:"schedule",name:"Schedule",opening:20000)
+            scheduleStore.db.accounts = [account]
+            scheduleStore.db.obligations = [Obligation(kind:.installment,name:"Irregular",target:10000,monthly:5000,due:start,confirmedSchedule:rows)]
+            let first = scheduleStore.upcomingPayments[0]
+            check(first.amount == 2500 && first.date == start, "confirmed first installment uses bank amount")
+            let occurrences = first.occurrences(component:.month,step:1,interval:.init(start:start,end:later.addingTimeInterval(86400)))
+            check(occurrences.map(\.amount) == [2500,7500] && occurrences.map(\.date) == [start,later], "calendar and export share exact irregular dates")
+            check(!scheduleStore.confirmPayment(first,mode:.markOnly,accountID:"",operationID:"",paidDate:start,kind:.expense,actualAmount:3000), "ambiguous extra partial payment rejected")
+            check(scheduleStore.confirmPayment(first,mode:.markOnly,accountID:"",operationID:"",paidDate:start,kind:.expense,actualAmount:500), "confirmed installment partial payment")
+            let partial = scheduleStore.upcomingPayments[0]
+            check(partial.amount == 2000 && partial.date == start && partial.remaining == 9500, "confirmed partial keeps due date")
+            check(!scheduleStore.confirmPayment(first,mode:.markOnly,accountID:"",operationID:"",paidDate:start,kind:.expense), "confirmed stale payment rejected")
+            check(scheduleStore.confirmPayment(partial,mode:.markOnly,accountID:"",operationID:"",paidDate:start,kind:.expense), "confirmed first row settled")
+            check(scheduleStore.upcomingPayments[0].date == later && scheduleStore.upcomingPayments[0].amount == 7500, "confirmed next actual date not calendar month")
+            if let record = scheduleStore.db.paidRecords?.last {
+                check(scheduleStore.undoObligationPayment(record.id), "confirmed schedule undo")
+                check(scheduleStore.upcomingPayments[0].amount == 2000 && scheduleStore.db.operations.isEmpty, "undo restores row without fake ledger debit")
+            } else { preconditionFailure("missing undo record") }
+        }
         let partialDate = Date().addingTimeInterval(-3600)
         let partialAccount=Account(id:"partial",name:"Test",opening:100000)
         let partialStore=Store();partialStore.db.accounts=[partialAccount]

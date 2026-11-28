@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-{ echo 'import Foundation'; echo 'let cash="cash"'; echo 'struct PersonalReminder: Codable { var id = UUID().uuidString; var linkedID: String? = nil }; struct Database { var operations: [Operation] = []; var paidRecords: [FinamiPaidRecord]? = nil; var obligations: [Obligation] = []; var removedInstallments: [Obligation]? = nil; var reminders: [PersonalReminder]? = nil; var partnerGroups: [FinamiPartnerGroup]? = nil }'; sed -n '/^enum Kind:/,/^struct Database:/p' Finora/Finora.swift | sed '$d'; } > "$tmp/Models.swift"
+{ echo 'import Foundation'; echo 'struct PersonalReminder: Codable { var id = UUID().uuidString; var linkedID: String? = nil }; struct Database { var operations: [Operation] = []; var paidRecords: [FinamiPaidRecord]? = nil; var obligations: [Obligation] = []; var removedInstallments: [Obligation]? = nil; var reminders: [PersonalReminder]? = nil; var partnerGroups: [FinamiPartnerGroup]? = nil }'; cat Finora/Domain/Ledger/LedgerModels.swift Finora/Domain/Ledger/LedgerIndex.swift Finora/Domain/PaymentModels.swift Finora/Domain/FinancialRecords.swift; } > "$tmp/Models.swift"
 cat > "$tmp/main.swift" <<'SWIFT'
 import Foundation
 func check(_ condition:@autoclosure ()->Bool,_ title:String){precondition(condition(),title);print("PASS: "+title)}
