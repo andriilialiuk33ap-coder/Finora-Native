@@ -6,7 +6,8 @@ final class FinamiUITests: XCTestCase {
         continueAfterFailure = false
         app = XCUIApplication()
         app.launchArguments = ["--finami-qa", "--finami-qa-reset"]
-        let fixtures = ["testIncomingOperationsFromJournal":"--finami-qa-inbox-fixture",
+        let fixtures = ["testHiddenSubscriptionFromSearch":"--finami-qa-hidden-subscription-fixture",
+                        "testIncomingOperationsFromJournal":"--finami-qa-inbox-fixture",
                         "testHomeReviewOpensMatchingOperations":"--finami-qa-home-review-fixture",
                         "testHomeAccountTemplateAndRightPersist":"--finami-qa-home-accounts-fixture",
                         "testAllUpcomingPaymentsAndArchive":"--finami-qa-upcoming-fixture",
@@ -209,14 +210,26 @@ final class FinamiUITests: XCTestCase {
     }
     func testPumbZeroNextPaymentOCR() {
         assertInstallmentImage(fixtureID: "qa.scan.fixture.pumb.zero", screenshot: "ocr-pumb-zero", expected: ["12000.00", "4000.00", "4000.00"])
-        for label in ["Дату перевірено", "Я перевірив усі дані"] {
-            let toggle = app.switches[label]
-            for _ in 0..<10 { if toggle.exists && toggle.isHittable { break }; app.swipeUp() }
-            visible(toggle); toggle.tap()
+        for id in ["qa.scan.confirm.date", "qa.scan.confirm.all"] {
+            let toggle = app.switches[id]
+            for _ in 0..<20 { if toggle.exists && toggle.isHittable { break }; app.swipeUp() }
+            visible(toggle); XCTAssertTrue(toggle.isHittable)
+            if toggle.value as? String != "1" {
+                toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5)).tap()
+            }
+            awaitValue(toggle, "1")
         }
-        let save = app.buttons["Додати розстрочку"]
-        for _ in 0..<15 { if save.exists && save.isHittable { break }; app.swipeUp() }
-        visible(save); XCTAssertTrue(save.isEnabled); save.tap()
+        let save = app.buttons["qa.scan.save.installment"]
+        for _ in 0..<10 { if save.exists && save.isHittable { break }; app.swipeUp() }
+        visible(save)
+        if !save.isEnabled {
+            capture("ocr-pumb-save-blocked")
+            let detail = app.staticTexts["qa.scan.blockers"]
+            let attachment = XCTAttachment(string: app.debugDescription)
+            attachment.name = "ocr-pumb-save-blockers"; attachment.lifetime = .keepAlways; add(attachment)
+            XCTFail("Save blocked: " + (detail.exists ? detail.label : "unknown reason")); return
+        }
+        save.tap()
         visible(app.navigationBars["Finami Scan"])
         XCTAssertTrue(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.navigationBars["Перевірка розстрочки"])], timeout: 15) == .completed)
         app.terminate(); app.launchArguments = ["--finami-qa"]; app.launch()
@@ -306,7 +319,14 @@ final class FinamiUITests: XCTestCase {
         visible(inbox); XCTAssertTrue(inbox.isHittable); inbox.tap()
         visible(app.navigationBars["Вхідні операції"])
         let event = app.buttons["qa.inbox.event.00000000-0000-4000-8000-000000000068"]
-        visible(event); event.tap(); visible(app.navigationBars["Перевірка платежу"])
+        visible(event); XCTAssertTrue(event.isHittable); event.tap()
+        let review = app.navigationBars["Перевірка платежу"]
+        if !review.waitForExistence(timeout: 15) {
+            capture("inbox-review-missing")
+            let detail = XCTAttachment(string: app.debugDescription)
+            detail.name = "inbox-review-accessibility"; detail.lifetime = .keepAlways; add(detail)
+            XCTFail("Incoming event did not open its review"); return
+        }
         visible(app.staticTexts["QA Inbox Shop"])
         let discard = app.buttons["Відхилити подію"]
         for _ in 0..<8 { if discard.exists && discard.isHittable { break }; app.swipeUp() }
@@ -368,6 +388,10 @@ final class FinamiUITests: XCTestCase {
         test.tap()
         let result = XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == true AND label == %@", "Парсер: Тест пройдено"), object: status)], timeout: 15)
         XCTAssertEqual(result, .completed, "Parser result: \(status.label)")
+        let safety = app.staticTexts["qa.diagnostics.safety"]
+        visible(safety)
+        let safe = XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == true AND label == %@", "Фінансові межі: Тест пройдено"), object: safety)], timeout: 15)
+        XCTAssertEqual(safe, .completed, "Safety result: \(safety.label)")
         capture("diagnostics")
     }
     func testAccountReportFieldsIndependentAndPersist() {
@@ -461,6 +485,22 @@ final class FinamiUITests: XCTestCase {
         visible(result); result.tap()
         visible(app.navigationBars["Звірити баланс"])
         capture("search-reconciliation")
+    }
+    func testHiddenSubscriptionFromSearch() {
+        tabButton("Ще").tap()
+        let link = app.descendants(matching:.any).matching(identifier:"qa.search.open").firstMatch
+        visible(link); link.tap()
+        let field = app.textFields["qa.search.field"]
+        visible(field); field.tap(); field.typeText("QA Private Subscription")
+        let row = app.buttons["qa.search.payment.qa-private-subscription"]
+        visible(row); row.tap()
+        visible(app.navigationBars["Деталі платежу"])
+        let amount = app.staticTexts["qa.payment.amount"]
+        visible(amount); XCTAssertEqual(amount.label, "••••")
+        let history = app.staticTexts["qa.payment.history.amount.qa-private-history"]
+        for _ in 0..<10 { if history.exists && history.isHittable { break }; app.swipeUp() }
+        visible(history); XCTAssertEqual(history.label, "••••")
+        capture("hidden-subscription-details")
     }
     func testCategoryIconAndNamePersist() {
         tabButton("Ще").tap()
