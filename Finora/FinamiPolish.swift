@@ -158,10 +158,14 @@ struct FinamiMenuLabel: View {
 
 // Category artwork is decorative. Transaction direction remains visible in the signed amount.
 func finamiOperationIcon(_ operation: Operation) -> String {
-    if operation.kind == .transfer { return "arrow.left.arrow.right" }
-    if operation.kind == .income || operation.kind == .receipt { return "arrow.down.left" }
-    if operation.kind != .expense { return operation.kind.incoming ? "arrow.down.left" : "arrow.up.right" }
-    let name = operation.category.lowercased()
+    finamiCategoryDisplayIcon(operation.category, kind: operation.kind)
+}
+
+func finamiCategoryDisplayIcon(_ category: String, kind: Kind) -> String {
+    if kind == .transfer { return "arrow.left.arrow.right" }
+    if kind == .income || kind == .receipt { return "arrow.down.left" }
+    if kind != .expense { return kind.incoming ? "arrow.down.left" : "arrow.up.right" }
+    let name = category.lowercased()
     let icons: [(String, String)] = [("продукт", "cart"), ("кава", "cup.and.saucer"), ("харч", "fork.knife"), ("транспорт", "bus"), ("таксі", "car"), ("пальн", "fuelpump"), ("авто", "car"), ("здоров", "cross.case"), ("житл", "house"), ("комунал", "house"), ("підпис", "repeat"), ("покуп", "bag"), ("зв’яз", "iphone"), ("подорож", "airplane"), ("подар", "gift"), ("освіт", "book"), ("розваг", "gamecontroller")]
     return icons.first(where: { name.contains($0.0) })?.1 ?? "arrow.up.right"
 }
