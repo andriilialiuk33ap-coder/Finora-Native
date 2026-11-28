@@ -10,8 +10,7 @@ struct FinamiWidgetProvider: TimelineProvider {
     func getSnapshot(in context: Context, completion: @escaping (FinamiWidgetEntry) -> Void) { completion(.init(date: Date(), summary: context.isPreview ? nil : FinamiWidgetSnapshot.read())) }
     func getTimeline(in context: Context, completion: @escaping (Timeline<FinamiWidgetEntry>) -> Void) {
         let now = Date(), summary = FinamiWidgetSnapshot.read()
-        var entries = [FinamiWidgetEntry(date: now, summary: summary)]
-        if let summary { entries.append(.init(date: summary.updated.addingTimeInterval(86400), summary: nil)) }
+        let entries = [FinamiWidgetEntry(date: now, summary: summary)]
         completion(Timeline(entries: entries, policy: .after(now.addingTimeInterval(1800))))
     }
 }
