@@ -1,0 +1,908 @@
+FULL REGRESSION (before final graphic asset changes)
+PASS: signed decimal
+PASS: decimal rounding
+PASS: invalid amount
+PASS: invalid date
+PASS: PUMB account amount and fee
+PASS: A-BANK fee not counted twice
+PASS: MCC classification
+PASS: identical legitimate rows retained
+PASS: partial reimport
+PASS: reimport duplicate protection
+PASS: mono original currency and held exclusion
+PASS: mono id duplicate protection
+PASS: XLSX shared strings
+PASS: XLSX sparse columns
+PASS: USD historical UAH conversion
+PASS: UAH to USD transfer
+PASS: negative native balance
+PASS: invalid FX rates
+PASS: FX amount limit
+PASS: MCC invalid numeric safety
+PASS: PUMB summary parsing
+PASS: A-BANK summary parsing
+PASS: statement reconciliation match
+PASS: statement mismatch warning
+PASS: unused limit is not own money
+PASS: credit-funded purchase
+PASS: partial repayment
+PASS: over-limit borrowing
+PASS: own money plus unused credit
+PASS: opening card components validation
+PASS: PUMB ambiguous incoming is not income
+PASS: PUMB purchase remains expense
+PASS: incoming repayment neutral
+PASS: outgoing repayment neutral
+PASS: loan draw neutral
+PASS: purchase refund
+PASS: explicit salary
+PASS: cash withdrawal is not automatically expense
+PASS: unknown incoming even on debit card
+PASS: Wallet minor units and source
+PASS: Wallet invalid negative amount
+PASS: Wallet unsupported currency
+PASS: Wallet nonfinite amount
+PASS: Wallet missing account
+PASS: SMS amount, merchant and ignore balance
+PASS: credit SMS not automatically income
+PASS: repayment not automatic expense
+PASS: USD message
+PASS: OTP rejected
+PASS: declined payment rejected
+PASS: multiple amounts rejected
+PASS: missing currency rejected
+PASS: balance-only rejected
+PASS: contradictory incoming sign rejected
+PASS: same account/amount/time possible duplicate
+PASS: different card not matched
+PASS: different direction not matched
+PASS: two distinct events stored without overwriting
+PASS: idempotent queue cleanup
+PASS: SHA256 empty vector
+PASS: SHA256 abc vector
+PASS: SHA256 multiple blocks
+PASS: repeat SMS same fingerprint despite fresh UUID and whitespace/case
+PASS: delayed replay blocked from auto-posting
+PASS: duplicate ledger idempotent
+PASS: same text on another card not exact repeat
+PASS: same amount with different message not exact repeat
+PASS: repeat ledger survives restart or backup
+PASS: queue fingerprint survives serialization
+PASS: old queue remains readable
+PASS: late cross-source duplicate sent to review
+PASS: different currency not matched
+PASS: nearby separate purchases require review rather than deletion
+PASS: different day same source not matched by amount alone
+PASS: posted statement match sent to review
+PASS: Wallet alias normalization
+PASS: Wallet full card number rejected
+PASS: Wallet alias explicit routing
+PASS: Wallet unknown alias requires review
+PASS: Wallet bank cross-account conflict requires review
+PASS: Different merchant not cross-account conflict
+=== check-model ===
+PASS: legacy Account/Operation decode; currency, credit, classification and capture source roundtrip
+PASS: capture queue waits for healthy loaded database
+PASS: actual Store wallet alias routing, cross-account duplicate review, unknown card inbox
+PASS: empty inbox clears stale status without financial mutations
+PASS: failed capture batch leaves every event queued
+PASS: two clear payments committed with one durable write; staged duplicate and incoming remain for review
+PASS: damaged file isolated and preserved without blocking valid payments
+PASS: repeated refresh does not duplicate accepted events or clear damage warning
+PASS: warning clears after queue file is repaired
+PASS: actual Store duplicate guard, replay after restart, explicit separate purchase, failed persistence retry, database compatibility
+=== check-finami ===
+PASS: Finami monthly schedule and safe voice draft (10 assertions)
+=== check-preview2 ===
+PASS: Preview 2 legacy preferences, dashboard privacy and settings roundtrip
+=== check-preview3 ===
+PASS: Preview 3 account appearance/legacy persistence, pin/order, currency-aware monthly activity, refunds, transfers and period filtering
+=== check-preview4 ===
+PASS: signed UAH expense
+PASS: narrow space thousands and decimal comma
+PASS: USD prefix
+PASS: date not interpreted as money
+PASS: ambiguous two currencies skipped
+PASS: percentage not a money amount
+PASS: unsupported currency not converted silently
+PASS: separate balance amount not a transaction
+PASS: calendar validation
+PASS: multiple transaction drafts, skip balance and credit
+PASS: inherit date header for draft review
+PASS: signed currency-less rows remain drafts; balance and unsigned numbers ignored
+PASS: installment labelled and next-line fields
+PASS: conflicting fields not guessed
+PASS: foreign currency installment flagged
+PASS: remaining constraints
+PASS: completed and active installments
+PASS: balance fields distinct from available credit
+PASS: bank recognition and ambiguity
+PASS: same-day same-account same-direction duplicate
+PASS: opposite directions not duplicates
+PASS: different accounts not duplicates
+PASS: legacy operation decode
+PASS: operation scan metadata roundtrip
+PASS: legacy installment decode
+PASS: installment metadata roundtrip
+PASS: P8 alternate labels, colon, next-line name and Ukrainian date
+PASS: P8 separate amounts and slash date
+PASS: P8 short date not interpreted as payment
+PASS: P8 ambiguous combined fields not guessed
+PASS: P8 source amount selection
+PASS: P8 derive remaining from explicitly paid principal
+PASS: P8 no generic paid derivation with unknown fees
+PASS: QA: amounts and date above labels retain correct fields
+PASS: QA: amounts and date below labels retain correct fields
+PASS: QA: a value between two unmatched labels is not guessed
+=== check-preview5 ===
+PASS: Preview 5 legacy preferences and independent report privacy
+=== check-preview6 ===
+PASS: monthly totals, net refunds, review, transfers and repayment exclusion
+PASS: previous month, half-open boundaries, signed category totals
+PASS: account filter, incoming transfers counted as activity only, recorded UAH amount
+PASS: annual rollup and empty reports
+PASS: subset ordering preserves hidden slots and rejects invalid IDs
+PASS: legacy preference compatibility and independent balance/report settings
+=== check-preview9 ===
+PASS: screenshot layout A: merged columns and yearless date
+PASS: screenshot layout B: separate columns and card digits
+PASS: next-year rollover
+PASS: impossible date rejected
+PASS: day never used as money
+PASS: conflicting screenshot values not guessed
+PASS: PUMB push: amount and merchant, credit card is not repayment
+PASS: title and body supplied separately in Shortcuts
+PASS: PUMB push date, not import time
+PASS: PUMB ambiguous payment: balance excluded, manual review
+PASS: truncated push remains draft
+PASS: PUMB detail screenshot: amount, merchant, date, no balance
+PASS: same push cannot auto-post twice
+PASS: OTP bank name does not trigger security-code filter
+PASS: security-code messages still rejected
+PASS: shared shortcut URL syntax
+PASS: invalid and spoofed shortcut URLs rejected
+PASS: owner export: bare iCloud hostname normalized
+PASS: empty existing preference falls back to bundled template
+PASS: invalid existing preference falls back to bundled template
+PASS: valid custom template preserved
+PASS: reject noncanonical or external sharing links
+=== check-preview10 ===
+PASS: masked card and bank parsed
+PASS: unique same-bank card routing
+PASS: never route to different bank on suffix alone
+PASS: duplicate card masks require review
+PASS: multiple masks not guessed
+PASS: full card number not retained
+PASS: complementary screenshot fields combined
+PASS: conflicting contract amounts blank
+PASS: schedule explicit rows, duplicate rows and conflicting dates excluded
+PASS: multiple card masks block automatic routing
+PASS: bank available separated from actual transaction
+PASS: balance currency mismatch rejected
+PASS: legacy capture decodes
+=== check-preview102 ===
+PASS: manual run without input is silent
+PASS: whitespace input ignored
+PASS: literal placeholder not a payment
+PASS: balance not a payment
+PASS: security code not queued
+PASS: declined payment not queued
+PASS: multiple currencies not queued
+PASS: missing notification title not guessed
+PASS: oversize payment not queued
+PASS: conflicting bank not queued
+PASS: rejected events never touch inbox
+PASS: split PUMB notification accepted
+PASS: second PUMB payment accepted for review
+PASS: accepted events persisted to actual temporary inbox
+PASS: auto normalized and purchase metadata correct
+PASS: merchant and date preserved
+PASS: available balance separated; merchantless payment reviewed
+PASS: configured bank and card route correctly
+PASS: storage failure has separate diagnostic
+PASS: read-only sample test passes
+PASS: self-test creates no queued payment
+=== check-preview103 ===
+PASS: PUMB income, net spending and refunds
+PASS: PUMB incoming and outgoing transfers by direction
+PASS: unclassified amounts visible, separate from income
+PASS: credit flows kept separate
+PASS: transfer-only accounts included
+PASS: aggregate counts transfers once and both directions once
+PASS: account and monthly spending reconciliation
+PASS: account and monthly income reconciliation
+PASS: account filter respects destination and direction
+PASS: review IDs scoped to unresolved entries
+PASS: confirmed income updates report without changing balance
+PASS: explicit income labels suggest review type, never automatic purchase
+PASS: ordinary deposit not income
+PASS: ads and ambiguous movements not income hints
+PASS: transfer not income even with conflicting explicit label
+PASS: explicit PUMB income statement row
+PASS: old queued events decode without income hint
+=== check-preview104 ===
+PASS: legacy preferences preserve detailed reports
+PASS: 13 unique independent report fields
+PASS: compact preset shows only expense and income
+PASS: other account retains detailed settings
+PASS: all fields can be hidden without resetting defaults
+PASS: editing second account leaves first unchanged
+PASS: per-account settings survive JSON reload
+PASS: custom selection uses stable order and removes duplicates
+PASS: unknown future field ignored safely
+PASS: only nonzero optional movements and existing review action shown
+PASS: global income hiding overrides account preferences
+PASS: selected fields use original report totals
+PASS: review action only when needed
+PASS: restore detailed preset for one account only
+=== check-preview105 ===
+PASS: indexed balances match legacy including all kinds, FX and same-account transfer
+PASS: history includes both transfer legs without duplication
+PASS: account activity unchanged for a
+PASS: account activity unchanged for b
+PASS: account activity unchanged for c
+PASS: opening balance is not frozen in index
+PASS: rebuild after deletion and addition
+PASS: same period cached report equivalent
+PASS: account filter invalidates cache key
+PASS: period change invalidates cache key
+PASS: month versus year changes cache key
+PASS: cache clear after write matches direct report
+PASS: 20k-operation benchmark identical checksum
+BENCH: 20,000 synthetic operations, 20 accounts, 1,000 balance queries: legacy 4522.98 ms, indexed including build 18.32 ms
+=== check-51 ===
+PASS: partial payment commits once
+PASS: partial next charge and unchanged date
+PASS: stale partial request cannot repeat
+PASS: early principal payment
+PASS: next full payment preserved after early payment
+PASS: safe last payment unlink restores schedule
+PASS: undo leaves actual ledger unchanged
+PASS: undo recorded debit restores original schedule without deleting statement
+PASS: unlink keeps account balance
+PASS: record installment and selected account
+PASS: installment remaining decreases and due advances
+PASS: single native debit; other account unaffected
+PASS: principal excluded from expense and history linked
+PASS: repeat tap cannot debit twice
+PASS: installment archive removes future obligations
+PASS: archive preserves actual debit and history, detaches partner group
+PASS: duplicate archive rejected
+PASS: archive survives backup and restores original schedule
+PASS: duplicate restore rejected
+PASS: reject existing operation from wrong account
+PASS: similar existing operation blocks new debit without explicit override
+PASS: failed write leaves schedule and ledger unchanged
+PASS: existing bank operation linked without new debit; final installment closes
+PASS: already linked operation excluded
+PASS: mark only does not touch ledger
+PASS: subscription paid from account with expense
+PASS: subscription existing debit links without checkbox
+PASS: linked subscription advances one period without second debit
+PASS: recent linked charge shown in subscription history despite next cycle
+PASS: used charge not selectable again
+PASS: used charge discoverable for display
+PASS: used list respects selected account
+PASS: history not attributed to another subscription
+PASS: recent warning respects currency
+PASS: old history not treated as recent charge
+PASS: cannot reuse linked charge even for next cycle
+PASS: mark only cannot repeat recent subscription charge silently
+PASS: new debit cannot repeat recent subscription charge silently
+PASS: operation editor cannot bypass recent charge guard
+PASS: blocked duplicate attempts preserve ledger and schedule
+PASS: explicit separate payment mark only changes schedule, not ledger
+PASS: direct transfer links explicitly to installment
+PASS: all schedule views use updated balance and due
+PASS: one transfer debit and credit, no duplicate operation
+PASS: already linked operation cannot pay another installment
+PASS: link earlier operation directly from editor
+PASS: link earlier debit without second debit
+PASS: linked debit cannot be deleted by edit or batch
+PASS: linked debit amount cannot change silently
+PASS: linked debit note can change
+PASS: mismatched payment amount rejected
+PASS: direct link failure leaves both schedule and ledger unchanged
+PASS: last linked repayment closes installment
+PASS: subscription direct expense advances date and records one expense
+PASS: direct linked expense preserves learning category
+PASS: wrong account rejected
+PASS: wrong currency rejected
+PASS: incoming payment rejected
+PASS: missing exchange rate blocks payment
+PASS: USD payment preserves native and reporting amounts
+PASS: new bank rows reviewed against manual payment
+PASS: attach bank row to existing payment
+PASS: attachment does not change balance or classification
+PASS: same statement contains zero new transactions
+PASS: extended statement contains only new transaction
+PASS: identical legitimate transactions preserve multiplicity
+PASS: already linked statement cannot attach twice
+PASS: different accounts do not share exact keys
+PASS: incoming transfer leg recognized
+PASS: both transfer legs attach independently
+PASS: both bank statements skip same transfer thereafter
+PASS: old operation decodes with new optional key
+PASS: payment history and statement keys survive backup roundtrip
+PASS: history query hides amount from search when privacy is enabled
+PASS: history account filter includes incoming transfer
+PASS: history lower date boundary
+PASS: amount filter excludes masked accounts
+PASS: appearance sidecar restores matching generation
+PASS: stale sidecar cannot override restored or legacy database
+PASS: 20k rows overlapping 19k prior transactions imports exactly 1k new
+BENCH: incremental statement 20,000 rows, 19,000 existing: 48.49 ms (Linux, algorithm only)
+=== check-52 ===
+PASS: PUMB alias and normalized vendor
+PASS: merchant category
+PASS: already-classified income category
+PASS: no transaction type inference
+PASS: normalized user category has priority
+PASS: conflicting learned rules do not guess
+PASS: ambiguous Apple invoice not assumed subscription
+PASS: hidden or deleted category not restored
+PASS: confirmed chain rule works across language and store numbers
+PASS: learning preserves other kinds and merchants
+PASS: generic source, transfer and empty category are not learned
+PASS: category aliases do not alter recurring and transfer matching
+PASS: three monthly charges and price change
+PASS: two purchases insufficient
+PASS: daily purchases not recurring
+PASS: accounts never merged
+PASS: aggregate Apple billing not a known contract
+PASS: stale subscription suggestion excluded
+PASS: historical reconciliation excludes later income
+PASS: credit and incoming transfer at observation
+PASS: difference remains explicit, no ledger mutation
+PASS: last installment capped; forecast is not payable
+PASS: weekly recurrence and one current payable event
+PASS: closed installment no future forecast
+PASS: gross incoming separate from true income
+PASS: equal elapsed calendar days
+PASS: full-period comparison unchanged
+PASS: comparison cache calculates expected result
+PASS: comparison invalidation after ledger change
+PASS: widget summary roundtrip
+PASS: widget summary expires after 24h
+PASS: invalidated or corrupted widget file hides financial data
+=== check-53 ===
+PASS: confirmed merchant aliases normalized
+PASS: confirmed beverage category
+PASS: confirmed coffee category
+PASS: confirmed Cyrillic aliases
+PASS: uncertain merchants remain unassigned
+PASS: additional merchant aliases
+PASS: canonical taxi variants
+PASS: short display keeps raw data untouched
+PASS: positive bank reward identified
+PASS: unidentified transfer not income
+PASS: masked statement card header
+PASS: ambiguous cards are not auto-routed
+PASS: counterparty card not statement owner
+PASS: bank spelling canonical
+PASS: same-account opposite legs flagged
+PASS: cross-account possible transfer flagged
+PASS: duplicate bank keys reported without mutation
+PASS: same bank key cannot be merged
+PASS: safe transfer retains both statement keys
+PASS: merged transfer preserves both balances
+PASS: historical link does not apply principal again
+PASS: historical operation cannot be linked twice
+PASS: bulk review groups unknown records only
+PASS: calendar future payments use normal amount after partial
+PASS: forecast agrees with calendar
+PASS: partial installment retains due date
+PASS: partial progress persists
+PASS: early repayment reduces remaining; next scheduled amount restored
+PASS: overpayment rejected
+PASS: CSV formula injection neutralized
+PASS: OOXML mandatory parts
+PASS: typed numbers, escaped XML, formula-like text remains text
+PASS: ICS date, escaping and UTF-8 folding
+PASS: generated OOXML ZIP and XML parsed
+PASS: actual XLSX opened by openpyxl, numeric and text cells
+=== check-export-report ===
+PASS: actual report builder produces six base sheets
+PASS: income sheet excludes transfers; expenses include refunds
+PASS: report totals match ledger report semantics
+PASS: gross category and net month totals preserved
+PASS: numeric amounts and original notes preserved
+PASS: CSV protects formula-like descriptions
+PASS: privacy hides amounts, notes and rate
+PASS: empty period exports header without error
+PASS: destination account transfer not counted as income
+PASS: real prepared report generates workbook XML
+=== check-532 ===
+PASS: statement owner IBAN extracted, ignores table counterparty
+PASS: no IBAN from an unlabelled transfer
+PASS: invalid IBAN rejected
+PASS: card column mask only
+PASS: IBAN exact match and two cards on one account
+PASS: wrong credit account blocked
+PASS: additional card mask matches
+PASS: ambiguous masks not auto-selected
+PASS: only contract suffix extracted before redaction
+PASS: PUMB payment row recognized
+PASS: cash withdrawal parsed, not an income
+PASS: blank direction not guessed
+PASS: refund classified by bank type
+PASS: credit contract description recognized
+PASS: independent USD amount and fee
+PASS: fee debited once in native USD and exact UAH credit
+PASS: computed rate editable at eight decimals
+PASS: invalid fee rejected
+PASS: all 13 bank legs preserved, source USD unchanged
+PASS: conversion counted once on correct account
+PASS: same statement after group imports zero new rows
+PASS: cannot group same transfer twice
+PASS: linked payment not consumed
+PASS: duplicate selection rejected
+PASS: batch correction preserves rows
+PASS: protected payment move rejected
+PASS: undo rejects intervening ledger edits
+PASS: grouped transfer protected from deletion
+PASS: AccountEditor correction uses Int64 movement
+PASS: AccountEditor correction ignores old anchor and uses complete recorded movement
+PASS: AccountEditor new account has zero movement
+PASS: AccountEditor available credit converted to net debt
+PASS: AccountEditor component correction retains negative net debt
+PASS: AccountEditor normal opening edit preserves native minor units
+PASS: dated anchor retains historical rows
+PASS: late import before anchor cannot inflate current balance
+PASS: new movement after anchor changes balance normally
+PASS: historical grouped bank credits use each bank leg date
+PASS: matching manual FX difference offered only for explicit confirmation
+PASS: bank-confirmed fee never removed as redundant
+PASS: group metadata validates sum and keys
+PASS: corrupt group total rejected
+PASS: refund matched to original purchase
+PASS: partial refund retains ledger and inherits category
+PASS: refund cannot exceed original purchase
+PASS: cannot delete purchase with linked refund
+PASS: reimport updates missing metadata without ledger mutation
+PASS: metadata update is idempotent
+PASS: group metadata roundtrip
+=== check-54 ===
+PASS: reserve stays in closing balance, daily spend capacity exact
+PASS: dated income and fixed debits, no double-counting reserve
+PASS: daily capacity constrained by cumulative cash flow
+PASS: same-day payments cannot assume incoming funds arrive first
+PASS: horizon excludes prior dates and end boundary
+PASS: last-day reserve shortfall detected
+PASS: exact reserve not shortfall
+PASS: invalid horizon and spending blocked
+PASS: overflow rejected
+PASS: daily limit floors to minor units
+PASS: envelope overrun
+PASS: refund reduces category spend
+PASS: zero limit is unset
+PASS: legacy scenario decodes without new fields
+PASS: new scenario roundtrip
+=== check-privat ===
+PASS: Privat reverse order and exact running balances
+PASS: Privat labelled account identity
+PASS: native amount and original currency preserved; embedded fee not deducted again
+PASS: bank category and redacted merchant extracted
+PASS: transfer credit is not salary
+PASS: Privat repeat import exact keys
+PASS: misaligned balance rejects entire statement
+PASS: missing page rejects entire statement
+PASS: unsupported account currency rejected
+PASS: Privat bank aliases
+PASS: installment repayment not ordinary purchase
+=== check-60 ===
+PASS: review pair is time-bounded, deterministic, not deletion
+PASS: same amount on another account not a duplicate suggestion
+PASS: opposite direction not a duplicate
+PASS: review result limit
+PASS: large subscription price increase detected
+PASS: two charges insufficient for price-change inference
+PASS: routine groceries not a subscription
+PASS: tags trimmed and deduplicated
+PASS: tag count bounded
+PASS: tags round-trip
+PASS: old JSON still decodes
+PASS: empty months preserved and chronological
+PASS: real income and refunds exact; transfer not income
+PASS: unclear amounts separate from income
+PASS: invalid month range rejected
+PASS: 8-decimal USDT conversion exact
+PASS: smallest token unit preserved
+PASS: invalid token precision, sign and exponent blocked
+PASS: token formatting exact
+PASS: embedded fee exact; salary then sale closes balance
+PASS: actual order discrepancy retained as 61 kopecks, not inferred fee
+PASS: fee on top requires extra funds
+PASS: negative token balance and duplicate ID rejected
+PASS: sale before receipt blocked
+PASS: fee cannot consume entire sale
+PASS: exchange record exact roundtrip
+PASS: shared partner cap excludes prepaid until posted
+PASS: over-limit scenario
+PASS: invalid partner debt and overflow blocked
+PASS: manual receipt linkage sums exact native UAH
+PASS: receipt cannot be selected twice
+PASS: missing receipt marked unresolved
+PASS: receipts outside three-day window blocked
+PASS: refund not treated as exchange receipt
+PASS: one bank row cannot reconcile two exchange sales
+PASS: valid partner group
+PASS: one installment cannot belong to two partner groups
+PASS: independent partner groups valid
+PASS: partner group roundtrip
+PASS: historical account positions exclude masked accounts and unused credit
+PASS: missing FX rate explicitly omitted
+PASS: 100k synthetic operations monthly rollup exact
+BENCH: 100k monthly rollup Linux: 331 ms
+=== check-61 ===
+PASS: legacy compact grid preserved
+PASS: invalid layout falls back safely
+PASS: explicit list overrides legacy grid
+PASS: credit compact card labels available credit, not own cash
+PASS: own mode never chooses credit limit
+PASS: credit mode never displays own funds
+PASS: respects explicit visible fields
+PASS: hidden fields are not reintroduced
+PASS: debit never displays credit
+PASS: profile Black Titanium valid and preserves privacy
+PASS: profile Digital Bank valid and preserves privacy
+PASS: profile Compact Pro valid and preserves privacy
+PASS: profile Liquid Glass valid and preserves privacy
+PASS: profile Emerald Analytics valid and preserves privacy
+PASS: profile White Studio valid and preserves privacy
+PASS: custom style roundtrip
+PASS: style restore leaves privacy, filters and collapsed state intact
+PASS: malformed custom preset safely bounded
+PASS: radius bounded
+PASS: restoring original style clears later card layout overrides
+PASS: cached month exactly matches Calendar month filtering on 100k operations
+PASS: cache invalidation and exact inclusive start/exclusive end
+PASS: month cache bounded to four entries
+BENCH: 100k synthetic rows, 20 same-month queries: direct 2640.735864639282 ms, cached 0.5033016204833984 ms (Linux, algorithm only)
+=== check-611 ===
+PASS: exact wrong-account statement row proposed for explicit move
+PASS: linked payment / exchange operation cannot move
+PASS: ambiguous exact key cannot move
+PASS: wrong statement identity blocked
+PASS: ambiguous account masks do not propose moves
+PASS: unverified prior IBAN not overwritten
+PASS: changed financial amount needs manual review
+PASS: refund-linked original cannot move
+PASS: reimport after reassignment idempotent
+PASS: reassignment preserves total net movement
+PASS: undo exact reassignment
+PASS: zero available is ambiguous
+PASS: credit available converts to signed net only on explicit estimation
+PASS: debit estimated net separately from holds
+PASS: shared credit formula matches confirmed bank components
+PASS: anchor plus later movement; old imports do not inflate balance
+PASS: estimated anchor provenance persists
+PASS: sources distinguished without inventing origin
+PASS: capture provenance retained
+PASS: 13 bank deposits preserve actual sum and keys
+PASS: grouped exchange counted once
+PASS: wrong-account FX credits removed from credit ledger by confirmed grouping
+=== check-62 ===
+PASS: old backup retains current dashboard
+PASS: alternate home persists without privacy changes
+PASS: design preset does not override dashboard choice
+PASS: custom style restore does not override dashboard choice
+PASS: search multiple tokens, case independent
+PASS: unmatched token excluded
+PASS: apostrophe normalization
+PASS: empty query supported
+PASS: replace existing category icon
+PASS: add icon to plain title
+PASS: empty draft accepts icon
+PASS: empty collapsed payment preview
+PASS: collapsed preview uses next amount rather than total
+PASS: overdue preview is not labelled as future
+PASS: collapsed payment privacy
+PASS: disabled amount and date remain hidden
+PASS: empty collapsed accounts
+PASS: collapsed accounts privacy
+PASS: Design 3 legacy defaults
+PASS: independent collapsed cards
+PASS: invalid styles rejected, fixed navigation
+PASS: individual account override and fallback
+PASS: theme and legacy preset preserve independent styles and privacy
+PASS: Design 3 persistence roundtrip
+PASS: individual expand persists
+PASS: four operation styles registered
+PASS: independent operation style: classicPremium
+PASS: independent operation style: compactLedger
+PASS: independent operation style: merchantCards
+PASS: independent operation style: dailyJournal
+PASS: credit fraction uses limit
+PASS: credit overflow clamped
+PASS: negative fraction clamped
+PASS: masked credit graph suppressed
+PASS: zero limit graph suppressed
+PASS: reset returns to general account style
+PASS: legacy Design 3.0 integration defaults
+PASS: style registration accounts/original
+PASS: style registration accounts/bankingSplit
+PASS: style registration accounts/creditRing
+PASS: style registration accounts/auroraCard
+PASS: style registration calendar/original
+PASS: style registration calendar/calendarPro
+PASS: style registration calendar/agendaTimeline
+PASS: style registration calendar/cashFlow
+PASS: style registration calendar/heatmap
+PASS: style registration editor/original
+PASS: style registration editor/quickEntry
+PASS: style registration editor/bankingPro
+PASS: style registration editor/minimal
+PASS: style registration editor/smartEntry
+PASS: style registration installments/paymentTimeline
+PASS: style registration installments/timelineProgressPro
+PASS: style registration operations/classicPremium
+PASS: style registration operations/compactLedger
+PASS: style registration operations/merchantCards
+PASS: style registration operations/dailyJournal
+PASS: style registration reports/original
+PASS: style registration reports/financePro
+PASS: style registration reports/analyticsBento
+PASS: style registration reports/minimalReports
+PASS: style registration reports/smartInsights
+PASS: style registration reports/bankingPremium
+PASS: style registration subscriptions/original
+PASS: style registration subscriptions/compactList
+PASS: style registration subscriptions/premiumCards
+PASS: style registration subscriptions/billingCycle
+PASS: style registration subscriptions/subscriptionPro
+PASS: style registration upcoming/original
+PASS: style registration upcoming/paymentTimeline
+PASS: style registration upcoming/paymentFocus
+PASS: style registration upcoming/bankingPro
+PASS: upcoming field independence
+PASS: chart compatibility
+PASS: report block order normalized
+PASS: report style override independent
+PASS: new preferences persist and survive theme change
+PASS: progress privacy and zero total
+PASS: annual subscription estimate periodicity
+PASS: bounded display conversion
+PASS: decimal addition
+PASS: decimal division
+PASS: reject zero divisor and negative result
+PASS: reject malformed number
+PASS: new preset restores component styles and sizes
+PASS: preset does not change privacy or individual collapsed cards
+PASS: old preset retains unsaved component settings
+PASS: simplified outgoing choices
+PASS: one income choice; review stays distinct
+PASS: one transfer; no new credit draw/top-up
+PASS: legacy credit type remains editable without coercion
+PASS: existing credit classifications preserved
+PASS: imported transfer keeps original direction
+PASS: manual transfer keeps two-sided accounting
+PASS: manual withdrawal moves funds without expense
+PASS: bank withdrawal remains one-sided; no invented cash credit
+PASS: withdrawal label persists
+PASS: old JSON remains readable
+PASS: salary remains a category of income
+PASS: Ukrainian decimal amount
+PASS: grouped Ukrainian amount
+PASS: narrow no-break thousands separator
+PASS: legacy dot amount
+PASS: trim and case-insensitive merchant
+PASS: legacy combined category and amount
+PASS: tag search
+PASS: destination account search
+PASS: destination mask hides amount
+PASS: source mask hides amount
+PASS: global mask hides amount
+PASS: masked merchant still searchable
+PASS: blank search returns all
+PASS: income counts only true income
+PASS: refund and eligible fee retained, transfer excluded
+PASS: category net amounts retained
+PASS: latest five sorted
+PASS: empty overview
+PASS: negative net retained, positive category filtering unchanged
+PASS: repeat creates a fresh manual draft with intended fields
+PASS: repeat never copies import identity or links
+PASS: global privacy blocks repeat
+PASS: account privacy blocks repeat
+PASS: missing account blocks repeat
+PASS: foreign currency excluded from repeat
+PASS: complex operations excluded from repeat
+PASS: 50k rows match previous totals
+PASS: 50k category totals match previous calculation
+PASS: 50k latest records match full sort
+BENCH: 50,000 synthetic records, metrics only: 41.84520244598389 ms (Linux, not iPhone)
+PASS: visible amount preserved exactly
+PASS: time and masked card not offered as amounts
+PASS: unlabelled amount not silently assigned to contract fields
+PASS: additional explicit PUMB-style labels and product number
+PASS: separate label/value rows
+PASS: schedule count excluded
+PASS: card suffix excluded
+PASS: time excluded
+PASS: dual OCR conflicting sum not guessed
+PASS: foreign amount not used as UAH
+PASS: anchor keeps account identity, credit limit and exact adjusted opening
+PASS: complete confirmed anchor
+PASS: atomic JSON roundtrip: -250 net, 250 used, 750 available
+PASS: saved control point survives reload
+PASS: history and other accounts unchanged
+PASS: layout and account filter survive same roundtrip
+PASS: late historical imports do not alter control balance
+PASS: new payments after control date still change balance
+PASS: future anchor rejected
+PASS: out of range anchor rejected
+PASS: three labelled values across rows
+PASS: stacked cards, reverse order and independent columns
+PASS: observation order independent
+PASS: bare decimal amount near exact label
+PASS: time, card suffix, count and short date never money
+PASS: no financial meaning invented for unlabelled amount
+PASS: two equally close labels cannot share one amount
+PASS: contradictory values for same label stay unresolved
+PASS: foreign amount flagged
+PASS: date label not payment label
+PASS: distant amount not linked
+PASS: additional explicit labels
+PASS: full parser fills fields missed by linear reading
+PASS: layout must not override contradictory text values
+PASS: split two currency values for Vision substring coordinates
+PASS: split two distinct labels without overlapping synonyms
+PASS: single label/value observation unchanged
+PASS: rename category in one candidate
+PASS: category order stays stable
+PASS: rename affects only expense and refund group
+PASS: balances and report totals unchanged
+PASS: budget follows rename
+PASS: parent and child references updated
+PASS: learned rules stay scoped
+PASS: visibility and dashboard filters follow rename
+PASS: shared income favorite retained
+PASS: merge categories
+PASS: merge adds budgets and deduplicates dashboard references
+PASS: target visibility preserved and child moved
+PASS: merge references consistent
+PASS: JSON roundtrip retains category changes
+PASS: protected fallback cannot be removed
+PASS: duplicate name rejected
+PASS: overflow fails before mutation
+PASS: refund keeps compatible expense category
+PASS: type change uses only learned income category
+PASS: neutral transfer drops report category
+PASS: incompatible category reset
+PASS: 100k payment index matches all 48 legacy queries exactly
+PASS: linked operation lookup
+PASS: recent payment index equals original history
+PASS: default search stays within 7 days
+PASS: explicit 30 day search locates earlier debit
+PASS: expanded search never offers linked debit again
+PASS: 100k financial overview equals reference sums
+BENCH: 100,000 operations; index build 28.49 ms; 48 indexed queries 1.35 ms; reference 964.68 ms (Linux)
+PASS: only explicitly included receipts are income
+PASS: gross incoming counts each receipt once
+PASS: own transfers remain separate
+PASS: pending receipt appears in attention
+PASS: actual balances include all receipts once
+PASS: dashboard matches reports
+PASS: account income matches reports
+PASS: insight model default
+PASS: monthly insights match reports
+PASS: receipt offered only for incoming or manual
+PASS: conservative accounting suggestions
+PASS: old JSON works without new field
+PASS: new records survive JSON roundtrip
+PASS: generic bank labels never learned as sender
+PASS: explicit receipt category learning
+PASS: receipt rules never classify salary
+PASS: receipt rename succeeds
+PASS: receipt category and rule synchronized
+PASS: rename does not change accounting
+PASS: incompatible category cleared
+PASS: batch converts explicitly selected inflow, preserves identity
+PASS: batch preserves balances
+PASS: batch undo restores exact rows
+PASS: undo refuses newer edit
+PASS: undo preserves unrelated imports
+PASS: mixed direction batch rejected
+PASS: invalid category rejected
+PASS: linked payments protected
+PASS: neutral bulk classification does not become income
+PASS: cross-account UAH compensation can be linked
+PASS: compensation keeps receipt category and reduces original category
+PASS: compensation reduces expense and counts gross once
+PASS: compensation does not create additional debit
+PASS: combined refund and compensation cannot exceed original
+PASS: overcompensated original is excluded
+PASS: unlinked compensation rejected
+PASS: cross-currency compensation rejected
+PASS: compensation follows original category rename
+PASS: layout order restored
+PASS: layout style restored
+PASS: layout cannot override privacy
+PASS: layout retains live category filters
+PASS: layout collapse restored
+PASS: duplicate and unknown layout IDs cannot lose blocks
+PASS: new blocks retain live collapse state
+PASS: brand alias pumb
+PASS: brand alias mono
+PASS: brand alias privat
+PASS: brand alias abank
+PASS: brand alias spotify
+PASS: brand alias netflix
+PASS: brand alias silpo
+PASS: brand alias atb
+PASS: brand alias youtube
+PASS: brand alias icloud
+PASS: no substring collision
+PASS: ambiguous brand not guessed
+PASS: account match excludes merchants
+PASS: merchant filter excludes banks
+PASS: seven profiles and universal fallback
+PASS: three explicit profile amounts
+PASS: profile isolated by bank
+PASS: no FX conversion
+PASS: time and card/limit labels cannot train
+PASS: confirmed label learned
+PASS: learned rules isolated by bank
+PASS: no transaction amount stored in rule
+PASS: learned label applies next time with UAH
+PASS: conflicting correction does not silently replace rule
+PASS: known monthly field cannot be learned as total
+PASS: unlabelled money cannot train
+PASS: spatial date recognition
+PASS: third pass cannot resurrect conflicting amount
+PASS: fresh database opens
+PASS: existing database opens and retains data
+PASS: corrupt database reports error, blocks writes and preserves original file
+PASS: corrupt appearance settings do not prevent financial data loading
+SKIP: CryptoKit/CommonCrypto test requires macOS
+PASS: Swift syntax (not iOS compilation)
+
+FINAL TARGETED TESTS
+PASS: brand alias pumb
+PASS: brand alias mono
+PASS: brand alias privat
+PASS: brand alias abank
+PASS: brand alias spotify
+PASS: brand alias netflix
+PASS: brand alias silpo
+PASS: brand alias atb
+PASS: brand alias youtube
+PASS: brand alias icloud
+PASS: no substring collision
+PASS: ambiguous brand not guessed
+PASS: account match excludes merchants
+PASS: merchant filter excludes banks
+PASS: seven profiles and universal fallback
+PASS: three explicit profile amounts
+PASS: profile isolated by bank
+PASS: no FX conversion
+PASS: time and card/limit labels cannot train
+PASS: confirmed label learned
+PASS: learned rules isolated by bank
+PASS: no transaction amount stored in rule
+PASS: learned label applies next time with UAH
+PASS: conflicting correction does not silently replace rule
+PASS: known monthly field cannot be learned as total
+PASS: unlabelled money cannot train
+PASS: spatial date recognition
+PASS: third pass cannot resurrect conflicting amount
+PASS: layout signature excludes amounts
+PASS: same layout proposes current amounts
+PASS: different bank cannot reuse learned positions
+PASS: changed anchors invalidate layout
+PASS: ambiguous position is not suggested
+PASS: two fields cannot learn same position
+PASS: insufficient structural evidence
+PASS: foreign currency rejects position suggestion
+PASS: stored geometry contains no historical amounts
+PASS: bundled graphic asset pumb
+PASS: bundled graphic asset mono
+PASS: bundled graphic asset privat
+PASS: bundled graphic asset abank
+PASS: bundled graphic asset spotify
+PASS: bundled graphic asset netflix
+PASS: bundled graphic asset silpo
+PASS: bundled graphic asset atb
+PASS: bundled graphic asset youtube
+PASS: bundled graphic asset icloud

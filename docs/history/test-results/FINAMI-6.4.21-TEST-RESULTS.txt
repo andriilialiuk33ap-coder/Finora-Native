@@ -1,0 +1,106 @@
+Build 69: local targeted tests (Linux; no Xcode).
+PASS: PUMB confirmed valid amounts permit saving
+PASS: unconfirmed date has explicit blocker
+PASS: unconfirmed data has explicit blocker
+PASS: both confirmations independent
+PASS: empty name blocked
+PASS: missing total blocked
+PASS: excess remaining blocked
+PASS: zero regular payment with debt blocked
+PASS: fully repaid loan allowed
+PASS: foreign currency remains blocked
+PASS: missing update target blocked
+PASS: exact duplicate cannot be overridden
+PASS: possible duplicate needs explicit override
+PASS: invalid reminder blocked
+PASS: all blockers visible together
+PASS: PUMB product header and suggested name
+PASS: all three monetary fields from structured PUMB layout
+PASS: payment count and explicit estimate provenance
+PASS: zero charge and bank date distinct from monthly amount
+PASS: separate three dates and first nonzero charge
+PASS: structured fields accepted by installment form
+PASS: separate cells from OCR
+PASS: partial or irregular amounts do not invent monthly payment
+PASS: multiple remaining periods with zero charge require schedule confirmation
+PASS: fully paid loan retains regular instalment
+PASS: positive next charge retains next date
+PASS: competing header amounts not guessed
+PASS: foreign currency in combined row blocks UAH import
+PASS: both amounts and dates offered for manual assignment
+PASS: time excluded
+PASS: Vision passes preserve structured evidence
+PASS: unrelated screenshot not assumed PUMB
+PASS: three labelled values across rows
+PASS: stacked cards, reverse order and independent columns
+PASS: observation order independent
+PASS: bare decimal amount near exact label
+PASS: time, card suffix, count and short date never money
+PASS: no financial meaning invented for unlabelled amount
+PASS: two equally close labels cannot share one amount
+PASS: contradictory values for same label stay unresolved
+PASS: foreign amount flagged
+PASS: date label not payment label
+PASS: distant amount not linked
+PASS: additional explicit labels
+PASS: full parser fills fields missed by linear reading
+PASS: layout must not override contradictory text values
+PASS: split two currency values for Vision substring coordinates
+PASS: split two distinct labels without overlapping synonyms
+PASS: single label/value observation unchanged
+PASS: layout signature excludes amounts
+PASS: same layout proposes current amounts
+PASS: different bank cannot reuse learned positions
+PASS: changed anchors invalidate layout
+PASS: ambiguous position is not suggested
+PASS: two fields cannot learn same position
+PASS: insufficient structural evidence
+PASS: foreign currency rejects position suggestion
+PASS: stored geometry contains no historical amounts
+PASS: brand alias pumb
+PASS: brand alias mono
+PASS: brand alias privat
+PASS: brand alias abank
+PASS: brand alias spotify
+PASS: brand alias netflix
+PASS: brand alias silpo
+PASS: brand alias atb
+PASS: brand alias youtube
+PASS: brand alias icloud
+PASS: no substring collision
+PASS: ambiguous brand not guessed
+PASS: account match excludes merchants
+PASS: merchant filter excludes banks
+PASS: seven profiles and universal fallback
+PASS: three explicit profile amounts
+PASS: profile isolated by bank
+PASS: no FX conversion
+PASS: time and card/limit labels cannot train
+PASS: confirmed label learned
+PASS: learned rules isolated by bank
+PASS: no transaction amount stored in rule
+PASS: learned label applies next time with UAH
+PASS: conflicting correction does not silently replace rule
+PASS: known monthly field cannot be learned as total
+PASS: unlabelled money cannot train
+PASS: spatial date recognition
+PASS: third pass cannot resurrect conflicting amount
+bash: Tests/check-build54.sh: No such file or directory
+The last command referenced a nonexistent script; correct queue/planning script rerun below:
+PASS: reserve stays in closing balance, daily spend capacity exact
+PASS: dated income and fixed debits, no double-counting reserve
+PASS: daily capacity constrained by cumulative cash flow
+PASS: same-day payments cannot assume incoming funds arrive first
+PASS: horizon excludes prior dates and end boundary
+PASS: last-day reserve shortfall detected
+PASS: exact reserve not shortfall
+PASS: invalid horizon and spending blocked
+PASS: overflow rejected
+PASS: daily limit floors to minor units
+PASS: envelope overrun
+PASS: refund reduces category spend
+PASS: zero limit is unset
+PASS: legacy scenario decodes without new fields
+PASS: new scenario roundtrip
+Swift frontend parse of Finora and UITests: exit 0.
+Full regression not run for this build.
