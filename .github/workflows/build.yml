@@ -4,41 +4,9 @@ on:
 permissions:
   contents: read
 jobs:
-  build:
-    runs-on: macos-15-intel
-    timeout-minutes: 40
-    steps:
-      - uses: actions/checkout@v4
-      - name: Record version and commit
-        run: |
-          git rev-parse HEAD
-          grep -E 'MARKETING_VERSION|CURRENT_PROJECT_VERSION' project.yml
-          xcodebuild -version
-      - name: Test bank and currency logic
-        run: bash Tests/run-regression.sh
-      - name: Generate Xcode project
-        run: |
-          command -v xcodegen || brew install xcodegen
-          xcodegen generate
-      - name: Resolve Swift packages
-        run: xcodebuild -resolvePackageDependencies -project Finora.xcodeproj -scheme Finora
-      - name: Build unsigned iPhone application
-        run: |
-          xcodebuild -project Finora.xcodeproj -scheme Finora -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
-          app=build/Build/Products/Release-iphoneos/Finora.app
-          test -d "$app/PlugIns/FinamiWidgets.appex"
-          for key in CFBundleVersion CFBundleShortVersionString; do
-            parent=$(/usr/libexec/PlistBuddy -c "Print :$key" "$app/Info.plist")
-            widget=$(/usr/libexec/PlistBuddy -c "Print :$key" "$app/PlugIns/FinamiWidgets.appex/Info.plist")
-            echo "$key: app=$parent widget=$widget"
-            test "$parent" = "$widget"
-          done
-          mkdir -p dist/Payload
-          cp -R build/Build/Products/Release-iphoneos/Finora.app dist/Payload/
-          cd dist
-          zip -qry Finami.ipa Payload
-      - uses: actions/upload-artifact@v4
-        with:
-          name: Finami-IPA
-          path: dist/Finami.ipa
-          if-no-files-found: error
+  tested-ipa:
+    # Same commit, Xcode toolchain, regression tests and XCUITest release gate.
+    # No separate route to publish an untested IPA.
+    uses: ./.github/workflows/simulator.yml
+    with:
+      build_ipa: true

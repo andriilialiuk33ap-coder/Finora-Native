@@ -1,5 +1,11 @@
 name: Test Finami on iOS Simulator
 on:
+  workflow_call:
+    inputs:
+      build_ipa:
+        description: 'Build unsigned IPA after all tests pass'
+        type: boolean
+        default: true
   workflow_dispatch:
     inputs:
       build_ipa:
@@ -7,9 +13,9 @@ on:
         type: boolean
         default: true
   push:
-    paths: ['Finora/**', 'FinamiWidgets/**', 'WidgetShared/**', 'Config/**', 'Tests/**', 'UITests/**', 'project.yml', 'project-widget-groups.yml', '.github/workflows/simulator.yml']
+    paths: ['Finora/**', 'FinamiWidgets/**', 'WidgetShared/**', 'Config/**', 'Tests/**', 'UITests/**', 'project.yml', 'project-widget-groups.yml', '.github/workflows/simulator.yml', '.github/workflows/build.yml']
   pull_request:
-    paths: ['Finora/**', 'FinamiWidgets/**', 'WidgetShared/**', 'Config/**', 'Tests/**', 'UITests/**', 'project.yml', 'project-widget-groups.yml', '.github/workflows/simulator.yml']
+    paths: ['Finora/**', 'FinamiWidgets/**', 'WidgetShared/**', 'Config/**', 'Tests/**', 'UITests/**', 'project.yml', 'project-widget-groups.yml', '.github/workflows/simulator.yml', '.github/workflows/build.yml']
 permissions:
   contents: read
 concurrency:
@@ -80,6 +86,20 @@ jobs:
       - name: Execute XCUITest interactions and actual Vision OCR
         run: |
           xcodebuild test-without-building -project Finora.xcodeproj -scheme Finora -configuration Debug -destination "platform=iOS Simulator,id=$SIM_DEVICE" -derivedDataPath simulator-build -parallel-testing-enabled NO -resultBundlePath simulator-results/FinamiQA.xcresult CODE_SIGNING_ALLOWED=NO 2>&1 | tee simulator-results/ui-tests.log
+      - name: Enforce nonempty successful UI test result
+        run: |
+          xcrun xcresulttool get test-results summary --path simulator-results/FinamiQA.xcresult > simulator-results/test-summary.json
+          python3 - <<'PYTHON'
+          import json, re
+          summary = json.load(open('simulator-results/test-summary.json'))
+          expected = len(re.findall(r'^\s*func test\w+\s*\(', open('UITests/FinamiUITests.swift').read(), re.M))
+          passed = summary.get('passedTests')
+          failed = summary.get('failedTests')
+          skipped = summary.get('skippedTests')
+          if not isinstance(passed, int) or passed < expected or failed != 0 or skipped != 0:
+              raise SystemExit(f'UI release gate: expected at least {expected} passed, zero failed/skipped; summary={summary}')
+          print(f'UI release gate: {passed} passed; required {expected}')
+          PYTHON
       - name: Export test reports and attachments
         if: always()
         run: |
@@ -94,11 +114,18 @@ jobs:
             xcrun simctl shutdown "$SIM_DEVICE" || true
           fi
       - name: Build unsigned IPA (only after successful tests)
-        if: success() && github.event_name == 'workflow_dispatch' && inputs.build_ipa
+        if: success() && inputs.build_ipa
         run: |
           xcodebuild -project Finora.xcodeproj -scheme Finora -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath device-build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build 2>&1 | tee simulator-results/ipa-build.log
+          app=device-build/Build/Products/Release-iphoneos/Finora.app
+          test -d "$app/PlugIns/FinamiWidgets.appex"
+          for key in CFBundleVersion CFBundleShortVersionString; do
+            parent=$(/usr/libexec/PlistBuddy -c "Print :$key" "$app/Info.plist")
+            widget=$(/usr/libexec/PlistBuddy -c "Print :$key" "$app/PlugIns/FinamiWidgets.appex/Info.plist")
+            test "$parent" = "$widget"
+          done
           mkdir -p dist/Payload
-          cp -R device-build/Build/Products/Release-iphoneos/Finora.app dist/Payload/
+          cp -R "$app" dist/Payload/
           (cd dist && zip -qry Finami.ipa Payload)
       - uses: actions/upload-artifact@v4
         if: always()
@@ -108,7 +135,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
       - uses: actions/upload-artifact@v4
-        if: success() && github.event_name == 'workflow_dispatch' && inputs.build_ipa
+        if: success() && inputs.build_ipa
         with:
           name: Finami-IPA-Tested
           path: dist/Finami.ipa
