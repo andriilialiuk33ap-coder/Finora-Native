@@ -48,7 +48,7 @@ struct ScanInstallmentDraft {
 enum FinamiScanParser {
     static let number = #"[+−-]?\s*(?:\d{1,3}(?:[ \u00A0\u202F]\d{3})+|\d+)(?:[,.]\d{1,2})?"#
     static let currency = #"(?:₴|грн\.?|UAH|USD|\$)"#
-    static let datePattern = #"(?<!\d)(?:\d{2}\.\d{2}\.\d{4}|\d{4}-\d{2}-\d{2})(?:[ T]\d{2}:\d{2}(?::\d{2})?)?(?!\d)"#
+    static let datePattern = #"(?<!\d)(?:\d{2}\.\d{2}\.\d{4}|\d{4}-\d{2}-\d{2})(?:(?:,\s*|[ T])\d{2}:\d{2}(?::\d{2})?)?(?!\d)"#
     static func matches(_ pattern: String, in text: String) -> [String] {
         guard let re = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return [] }
         return re.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap { Range($0.range, in: text).map { String(text[$0]) } }
@@ -56,7 +56,7 @@ enum FinamiScanParser {
     static func date(_ text: String) -> Date? {
         let dates = matches(datePattern, in: text)
         guard dates.count == 1 else { return nil }
-        return bankDate(dates[0].replacingOccurrences(of: "T", with: " "))
+        return bankDate(bankClean(dates[0].replacingOccurrences(of: ",", with: " ").replacingOccurrences(of: "T", with: " ")))
     }
     static func hasUnsupportedCurrency(_ text: String) -> Bool {
         !matches(#"(?i)(?:€|£|\b(?:EUR|PLN|GBP|CHF|CZK|CAD|AUD|JPY|RUB)\b|злот(?:их|ий|і)|євро)"#, in: text).isEmpty
@@ -83,6 +83,7 @@ enum FinamiScanParser {
     }
     static func bank(_ text: String) -> String? {
         let t = text.lowercased()
+        if isPrivatDetail([text]) { return "ПриватБанк" }
         let candidates: [(String,[String])] = [("monobank",["monobank","монобанк"]),("ПУМБ",["пумб","pumb"]),("А-БАНК",["а-банк","а-банку","a-bank","abank"]),("ПриватБанк",["приватбанк","приват24","privatbank"]),("ОТП",["отп банк","otp bank","otpbank"]),("Sense Bank",["sense bank","сенс банк"]),("Райффайзен",["райффайзен","raiffeisen"])]
         let found = candidates.filter { $0.1.contains(where: {t.contains($0)}) }
         return found.count == 1 ? found[0].0 : nil
@@ -90,6 +91,7 @@ enum FinamiScanParser {
     static func transactions(_ lines: [String]) -> [ScanLineDraft] {
         // A bank transaction detail screen contains balances as well as one signed payment.
         if let detail = transactionDetail(lines) { return [detail] }
+        if isPrivatDetail(lines) { return [] } // ambiguous detail must not import account balance
         var result: [ScanLineDraft] = []
         var lastDate: Date? = nil
         var previous = ""
@@ -117,12 +119,36 @@ enum FinamiScanParser {
         }
         return result
     }
+    static func isPrivatDetail(_ lines: [String]) -> Bool {
+        let text = lines.joined(separator: " ").lowercased()
+        return text.contains("статус") && (text.contains("з картки") || text.contains("3 картки")) && text.contains("залишок") && text.contains("категорія")
+    }
+    static func cardSuffix(_ lines: [String]) -> String? {
+        let found = Set(lines.flatMap { matches(#"(?:[•●*·.]{2,}\s*)+(\d{4})(?!\d)"#, in: $0) }.map { String($0.suffix(4)) })
+        return found.count == 1 ? found.first : nil
+    }
+    static func monthlySubscription(_ note: String) -> String? {
+        let key = note.lowercased().replacingOccurrences(of: #"[^\p{L}\p{N}]+"#, with: " ", options: .regularExpression).trimmingCharacters(in: .whitespaces)
+        // A merchant is evidence of a service, not proof of its billing cadence.
+        if ["youtube premium", "google youtube premium", "youtube music premium", "ютуб преміум"].contains(key) { return key.contains("music") ? "YouTube Music Premium" : "YouTube Premium" }
+        return nil
+    }
+    static func nextMonthlySubscriptionDate(_ date: Date) -> Date? {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "Europe/Kyiv") ?? .current
+        return cal.date(byAdding: .month, value: 1, to: date)
+    }
     private static func transactionDetail(_ lines: [String]) -> ScanLineDraft? {
         let clean = lines.map(bankClean)
-        guard let balanceIndex = clean.firstIndex(where: { $0.lowercased().contains("баланс після") }),
-              clean.contains(where: { $0.lowercased().contains("дата транзакції") }) else { return nil }
+        let privat = isPrivatDetail(clean)
+        guard let balanceIndex = clean.firstIndex(where: { $0.lowercased().contains(privat ? "залишок" : "баланс після") }),
+              privat || clean.contains(where: { $0.lowercased().contains("дата транзакції") }) else { return nil }
+        if privat {
+            let text = clean.joined(separator: " ").lowercased()
+            guard text.contains("успішно"), !["неуспішно", "відхилено", "скасовано", "очікує"].contains(where: { text.contains($0) }) else { return nil }
+        }
         let candidates = clean.indices.filter { $0 < balanceIndex && money(clean[$0])?.signed == true }
-        guard candidates.count == 1, let i = candidates.first, let amount = money(clean[i]) else { return nil }
+        guard candidates.count == 1, let i = candidates.first, let amount = money(clean[i]), amount.minor != 0 else { return nil }
         let merchant = i > 0 ? bankRedact(clean[i-1]) : ""
         let dates = clean.compactMap(date)
         return ScanLineDraft(id: String(i), note: merchant, money: amount, date: Set(dates).count == 1 ? dates.first : nil)

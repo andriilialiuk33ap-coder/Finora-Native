@@ -5,7 +5,7 @@ struct OperationRow: View {
   @EnvironmentObject var s: Store
   @Environment(\.finamiMask) private var masked
   var o: Operation
-  private var amountsMasked:Bool { s.privateAmounts || masked || s.db.accounts.contains {a in a.hideAmounts == true && (a.id==o.account || (o.kind == .transfer && a.id==o.destination))} }
+  private var amountsMasked:Bool { masked || s.operationAmountsMasked(o) }
   @Environment(\.dynamicTypeSize) private var dynamicTypeSize
   private var style: String { s.db.preferences?.designStyle(for: "operations") ?? "classicPremium" }
   private var size: String { s.db.preferences?.designSize(for: "operations") ?? "M" }

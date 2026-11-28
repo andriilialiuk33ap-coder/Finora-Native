@@ -13,7 +13,7 @@ struct FinamiHistoryQuery: Hashable {
     var maximum: Int64? = nil
     var reviewOnly: Bool = false
     var sourceBank: String? = nil
-    func apply(to operations: [Operation], names: [String: String], maskedAccounts: Set<String> = [], isCancelled: () -> Bool = { false }) -> [Operation] {
+    func apply(to operations: [Operation], names: [String: String], maskedAccounts: Set<String> = [], maskedOperations: Set<String> = [], forceMask: Bool = false, isCancelled: () -> Bool = { false }) -> [Operation] {
         let term = search.trimmingCharacters(in: .whitespacesAndNewlines)
         // Match both Ukrainian decimal notation and the existing dot notation.
         let normalizedAmountTerm = term.filter { !$0.isWhitespace }.replacingOccurrences(of: ",", with: ".")
@@ -25,8 +25,8 @@ struct FinamiHistoryQuery: Hashable {
             if let sourceBank, o.sourceBank != sourceBank { return false }
             if let from, o.date < from { return false }
             if let until, o.date >= until { return false }
-            let masked = hideAmounts || maskedAccounts.contains(o.account) || (o.kind == .transfer && maskedAccounts.contains(o.destination))
-            if !hideAmounts && (minimum != nil || maximum != nil) {
+            let masked = forceMask || hideAmounts || maskedOperations.contains(o.id) || maskedAccounts.contains(o.account) || (o.kind == .transfer && maskedAccounts.contains(o.destination))
+            if !hideAmounts && !forceMask && (minimum != nil || maximum != nil) {
                 if masked { return false }
                 if let minimum, o.amount < minimum { return false }
                 if let maximum, o.amount > maximum { return false }
@@ -48,6 +48,9 @@ struct FinamiHistoryQuery: Hashable {
             return legacy.localizedCaseInsensitiveContains(term)
         }
         guard !isCancelled() else { return [] }
-        return filtered.sorted { sort.orders($0,$1) }
+        // If any amounts are private, amount ordering would disclose relative values.
+        let privateSort = forceMask || hideAmounts || filtered.contains { maskedOperations.contains($0.id) || maskedAccounts.contains($0.account) || ($0.kind == .transfer && maskedAccounts.contains($0.destination)) }
+        let effectiveSort: OperationSort = privateSort && (sort == .largest || sort == .smallest) ? .newest : sort
+        return filtered.sorted { effectiveSort.orders($0,$1) }
     }
 }

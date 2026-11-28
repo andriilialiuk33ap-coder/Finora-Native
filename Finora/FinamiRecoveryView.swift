@@ -36,6 +36,14 @@ struct FinamiRecoveryView: View {
                             TextField("Сума в копійках", text: $amountText).keyboardType(.numberPad)
                             TextField("ID рахунку", text: $accountText).autocorrectionDisabled()
                             TextField("ID рахунку призначення", text: $destinationText).autocorrectionDisabled()
+                            if !recoveryAccounts.isEmpty {
+                                Menu("Вибрати рахунок за назвою") {
+                                    ForEach(recoveryAccounts, id: \.id) { a in Button(a.name) { accountText = a.id } }
+                                }
+                                Menu("Вибрати рахунок призначення") {
+                                    ForEach(recoveryAccounts, id: \.id) { a in Button(a.name) { destinationText = a.id } }
+                                }
+                            }
                             Button("Оновити чернетку") { updateOperation() }
                         }
                         if !comparison.isEmpty { Text(comparison).font(.caption).monospacedDigit() }
@@ -59,7 +67,12 @@ struct FinamiRecoveryView: View {
                         original = bytes
                         draft = String(data: bytes, encoding: .utf8) ?? ""
                         do { try store.validateRecovery(bytes); status = "JSON пройшов базову перевірку. Можлива інша помилка завантаження." }
-                        catch { status = error.localizedDescription }
+                        catch {
+                            status = error.localizedDescription
+                            if let failure = error as? FinamiDatabaseSafety.OperationFailure {
+                                selectedIndex = String(failure.index + 1); loadOperation(); status = failure.localizedDescription
+                            }
+                        }
                     } catch { status = error.localizedDescription }
                 }
                 .fileExporter(isPresented: $exporting, document: DataFile(data: original ?? Data()), contentType: .json, defaultFilename: "Finami-original") { result in
@@ -84,6 +97,15 @@ struct FinamiRecoveryView: View {
                 .confirmationDialog("Відновити стару копію?", isPresented: $confirmingSnapshot, titleVisibility: .visible) {
                     Button("Відновити копію", role: .destructive) { if let snapshot { store.restoreSnapshot(snapshot) } }
                 } message: { Text("Операції після дати копії можуть не увійти у відновлену базу. Поточний файл буде збережено в карантині.") }
+        }
+    }
+    private struct RecoveryAccount { let id: String; let name: String }
+    private var recoveryAccounts: [RecoveryAccount] {
+        guard let root = (try? JSONSerialization.jsonObject(with: Data(draft.utf8))) as? [String: Any], let rows = root["accounts"] as? [[String: Any]] else { return [] }
+        var seen = Set<String>()
+        return rows.compactMap { row in
+            guard let id = row["id"] as? String, !id.isEmpty, seen.insert(id).inserted else { return nil }
+            return RecoveryAccount(id: id, name: row["name"] as? String ?? id)
         }
     }
     private func operationDocument() throws -> ([String: Any], [[String: Any]], Int) {

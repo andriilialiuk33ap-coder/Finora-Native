@@ -10,7 +10,9 @@ import UserNotifications
   @Published private(set) var db = Database() {
     didSet {
       mutationVersion &+= 1
+      if oldValue.preferences?.hideAmounts != db.preferences?.hideAmounts || oldValue.preferences?.designHiddenSubscriptions != db.preferences?.designHiddenSubscriptions { historyCache.removeAll() }
       if assigningAppearanceOnly { return }
+      historyCache.removeAll() // payment links may change visibility
       cachedPaymentLookup = nil
       paymentRevision &+= 1
       if oldValue.operations != db.operations { ledgerIndex = nil; reportCache.removeAll(); comparisonCache.removeAll(); activityCache.removeAll(); historyCache.removeAll(); dashboardMonthCache.removeAll(); dashboardMetricsCache.removeAll() }
@@ -31,26 +33,24 @@ import UserNotifications
     return value
   }
   private var ledgerIndex: FinamiLedgerIndex?
-  private var dashboardMonthCache: [DateInterval: [Operation]] = [:]
-  private var dashboardMetricsCache: [DateInterval: FinamiDashboardMetrics] = [:]
+  private var dashboardMonthCache: FinamiBoundedCache<DateInterval, [Operation]> = .init(limit: 12)
+  private var dashboardMetricsCache: FinamiBoundedCache<DateInterval, FinamiDashboardMetrics> = .init(limit: 12)
   func dashboardMetrics(_ date: Date) -> FinamiDashboardMetrics {
     guard let interval = Calendar.current.dateInterval(of: .month, for: date) else { return FinamiDashboardMetrics(operations: month(date)) }
     if let cached = dashboardMetricsCache[interval] { return cached }
     let metrics = FinamiDashboardMetrics(operations: month(date))
-    if dashboardMetricsCache.count >= 4 { dashboardMetricsCache.removeAll(keepingCapacity: true) }
     dashboardMetricsCache[interval] = metrics
     return metrics
   }
   private struct ActivityKey: Hashable { let account: String; let currency: String; let month: Date }
-  private var activityCache: [ActivityKey: AccountActivity] = [:]
-  private var historyCache: [FinamiHistoryQuery: [Operation]] = [:]
+  private var activityCache: FinamiBoundedCache<ActivityKey, AccountActivity> = .init(limit: 64)
+  private var historyCache: FinamiBoundedCache<FinamiHistoryQuery, [Operation]> = .init(limit: 32)
   func queryHistory(_ query: FinamiHistoryQuery) -> [Operation] {
     if let cached = historyCache[query] { return cached }
     let source = query.account == "all" ? db.operations : historyForAccount(query.account)
     let names = Dictionary(db.accounts.map{($0.id,$0.name)},uniquingKeysWith:{first,_ in first})
     let masked = Set(db.accounts.filter { $0.hideAmounts == true }.map { $0.id })
-    let results = query.apply(to:source, names:names, maskedAccounts:masked)
-    if historyCache.count >= 4 { historyCache.removeAll(keepingCapacity:true) }
+    let results = query.apply(to:source, names:names, maskedAccounts:masked, maskedOperations:hiddenSubscriptionOperationIDs, forceMask:privateAmounts)
     historyCache[query] = results
     return results
   }
@@ -59,12 +59,13 @@ import UserNotifications
   func searchOperationsInBackground(_ term: String, expectedVersion: UInt64, masked: Bool) async -> [Operation]? {
     guard expectedVersion == mutationVersion, masked == privateAmounts, !Task.isCancelled else { return nil }
     let rows = db.operations
+    let hiddenOperations = hiddenSubscriptionOperationIDs
     let accounts = db.accounts
     let query = FinamiHistoryQuery(kind: "all", account: "all", category: "all", search: term, sort: .newest, hideAmounts: masked)
     let work = Task.detached(priority: .userInitiated) {
       let names = Dictionary(accounts.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
       let hidden = Set(accounts.filter { $0.hideAmounts == true }.map(\.id))
-      return query.apply(to: rows, names: names, maskedAccounts: hidden, isCancelled: { Task.isCancelled })
+      return query.apply(to: rows, names: names, maskedAccounts: hidden, maskedOperations: hiddenOperations, forceMask: masked, isCancelled: { Task.isCancelled })
     }
     let result = await withTaskCancellationHandler(operation: { await work.value }, onCancel: { work.cancel() })
     guard expectedVersion == mutationVersion, masked == privateAmounts, !Task.isCancelled else { return nil }
@@ -86,7 +87,6 @@ import UserNotifications
     let key = ActivityKey(account:account.id,currency:account.code,month:Calendar.current.dateInterval(of:.month,for:month)?.start ?? month)
     if let cached = activityCache[key] { return cached }
     let result = AccountActivity(account: account, operations: indexedLedger.history(account.id), month: month)
-    if activityCache.count >= 64 { activityCache.removeAll(keepingCapacity:true) }
     activityCache[key] = result
     return result
   }
@@ -284,7 +284,6 @@ import UserNotifications
     guard let interval = cal.dateInterval(of:.month,for:date) else { return db.operations.filter { sameMonth($0.date,date) } }
     if let cached = dashboardMonthCache[interval] { return cached }
     let values = db.operations.filter { $0.date >= interval.start && $0.date < interval.end }
-    if dashboardMonthCache.count >= 4 { dashboardMonthCache.removeAll(keepingCapacity:true) }
     dashboardMonthCache[interval] = values
     return values
   }
@@ -309,6 +308,14 @@ import UserNotifications
     guard a.code == "USD" else{return n}
     guard let rate=currentRate else{return 0}
     return fxMinor(n,rate:rate) ?? 0
+  }
+  var hiddenSubscriptionOperationIDs: Set<String> {
+    let hidden = Set(db.preferences?.designHiddenSubscriptions ?? [])
+    guard !hidden.isEmpty else { return [] }
+    return Set((db.paidRecords ?? []).filter { hidden.contains($0.paymentID) }.compactMap(\.operationID))
+  }
+  func operationAmountsMasked(_ o: Operation) -> Bool {
+    privateAmounts || hiddenSubscriptionOperationIDs.contains(o.id) || db.accounts.contains { $0.hideAmounts == true && ($0.id == o.account || (o.kind == .transfer && $0.id == o.destination)) }
   }
   var privateAmounts: Bool { db.preferences?.hideAmounts == true }
   func visibleMoney(_ n: Int64, _ code: String = "UAH") -> String { privateAmounts ? "••••" : currencyMoney(n,code) }
@@ -451,14 +458,16 @@ import UserNotifications
     return try? FinamiScanStorage.files(for: url).read(hash)
   }
 
+  private let csvDateFormatter = ISO8601DateFormatter()
   func csv() -> DataFile {
     func q(_ s: String) -> String { finamiCSVText(s) }
-    let f = ISO8601DateFormatter()
+    let f = csvDateFormatter
     let rows = db.operations.map { o in
-      [
-        f.string(from: o.date), o.displayKindTitle, amountText(o.amount), q(o.category),
+      let hidden = operationAmountsMasked(o)
+      return [
+        f.string(from: o.date), o.displayKindTitle, hidden ? "" : amountText(o.amount), q(o.category),
         q(accountName(o.account)), q(o.destination.isEmpty ? "" : accountName(o.destination)),
-        q(o.note), q(o.entryCurrency ?? "UAH"), q(o.originalCurrency ?? "UAH"), amountText(o.originalAmount ?? o.amount), q(o.exchangeRate ?? ""), amountText(o.bankFee ?? 0), q(o.sourceBank ?? ""),
+        q(o.note), q(o.entryCurrency ?? "UAH"), q(o.originalCurrency ?? "UAH"), hidden ? "" : amountText(o.originalAmount ?? o.amount), hidden ? "" : q(o.exchangeRate ?? ""), hidden ? "" : amountText(o.bankFee ?? 0), q(o.sourceBank ?? ""),
       ].joined(separator: ";")
     }
     return DataFile(
@@ -466,4 +475,25 @@ import UserNotifications
         ("\u{FEFF}Дата;Тип;Сума UAH;Категорія;Рахунок;Куди;Примітка;Валюта введення;Оригінальна валюта;Оригінальна сума;Курс;Комісія UAH;Банк\n" + rows.joined(separator: "\n"))
           .utf8))
   }
+}
+
+// Small MainActor-owned LRU. Clearing still invalidates all dependent financial data.
+private struct FinamiBoundedCache<Key: Hashable, Value> {
+  let limit: Int
+  private var values: [Key: Value] = [:]
+  private var order: [Key] = []
+  init(limit: Int) { self.limit = limit }
+  subscript(key: Key) -> Value? {
+    mutating get {
+      guard let value = values[key] else { return nil }
+      order.removeAll { $0 == key }; order.append(key)
+      return value
+    }
+    set {
+      order.removeAll { $0 == key }; values[key] = newValue
+      if newValue != nil { order.append(key) }
+      if order.count > limit { values.removeValue(forKey: order.removeFirst()) }
+    }
+  }
+  mutating func removeAll() { values.removeAll(); order.removeAll() }
 }

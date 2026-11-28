@@ -52,12 +52,15 @@ struct FinamiExportView: View {
     @State private var exporting = false
     @State private var busy = false
     @State private var status = ""
+    private var amountsAllowed: Bool {
+        includeAmounts && !s.privateAmounts && !s.db.accounts.contains { $0.hideAmounts == true } && (s.db.preferences?.designHiddenSubscriptions ?? []).isEmpty
+    }
     private var filtered: [Operation] { let cal=Calendar.current; let lower=cal.startOfDay(for:start), upper=cal.date(byAdding:.day,value:1,to:cal.startOfDay(for:end)) ?? end; return s.db.operations.filter { $0.date >= lower && $0.date < upper && (account == "all" || $0.account == account || ($0.kind == .transfer && $0.destination == account)) && (category == "all" || $0.category == category) }.sorted {$0.date < $1.date} }
     var body: some View {
         Form {
             Section("Формат") { Picker("Файл",selection:$format) { ForEach(FinamiReportExportFormat.allCases) { Text($0.rawValue).tag($0) } } }
             Section("Період") { DatePicker("Від",selection:$start,displayedComponents:.date); DatePicker("До",selection:$end,displayedComponents:.date); if format != .calendar { Picker("Рахунок",selection:$account) { Text("Усі").tag("all"); ForEach(s.db.accounts) { Text($0.name).tag($0.id) } };Picker("Категорія",selection:$category){Text("Усі").tag("all");ForEach(Array(Set(s.db.expenseCategories+s.db.incomeCategories+s.db.availableReceiptCategories)).sorted(),id:\.self){Text($0).tag($0)}} } }
-            Section("Приватність") { Toggle("Показувати суми",isOn:$includeAmounts); Toggle("Назви рахунків і платежів",isOn:$includeNames); if format != .calendar { Toggle("Оригінальні описи операцій",isOn:$includeNotes) }; Text("За замовчуванням суми, назви та банківські описи приховані. Експорт не є зашифрованою резервною копією.").font(.caption) }
+            Section("Приватність") { Toggle("Показувати суми",isOn:$includeAmounts).disabled(s.privateAmounts || s.db.accounts.contains { $0.hideAmounts == true } || !(s.db.preferences?.designHiddenSubscriptions ?? []).isEmpty); Toggle("Назви рахунків і платежів",isOn:$includeNames); if format != .calendar { Toggle("Оригінальні описи операцій",isOn:$includeNotes) }; Text("За замовчуванням суми, назви та банківські описи приховані. Експорт не є зашифрованою резервною копією.").font(.caption) }
             Section("Попередній перегляд") { if format != .calendar { LabeledContent("Операцій",value:String(filtered.count)) }; Text(format == .calendar ? "Заплановані платежі за вибраний період, без автоматичного додавання до календаря." : "Операції та підсумки вибраного періоду. Залишки рахунків і зобов’язань — поточні, якщо обрано всі рахунки.").font(.caption); Button("Створити файл") { make() }.disabled(busy || start > end); if busy { ProgressView() }; if !status.isEmpty { Text(status).font(.caption) } }
         }.disabled(busy).navigationTitle("Експорт звітів").fileExporter(isPresented:$exporting,document:document,contentType:format.type,defaultFilename:"Finami-report.\(format.ext)") { result in if case .failure(let error)=result {status=error.localizedDescription}; document=nil }
     }
@@ -74,7 +77,7 @@ struct FinamiExportView: View {
             names[item.id] = includeNames ? item.name : "Рахунок \(index + 1)"
         }
         let selectedAccount: String? = account == "all" ? nil : account
-        let report = FinamiExportReport(operations: filtered, account: selectedAccount, accountNames: names, includeAmounts: includeAmounts, includeNotes: includeNotes)
+        let report = FinamiExportReport(operations: filtered, account: selectedAccount, accountNames: names, includeAmounts: amountsAllowed, includeNotes: includeNotes)
         if chosen == .csv {
             document = DataFile(data: report.csvData)
             exporting = true
@@ -106,7 +109,7 @@ struct FinamiExportView: View {
     private func currentSheets(accountNames: [String: String]) -> [FinamiExportSheet] {
         func text(_ value: String) -> FinamiExportCell { FinamiExportCell(value) }
         func moneyCell(_ value: Int64) -> FinamiExportCell {
-            includeAmounts ? FinamiExportCell(minor: value) : FinamiExportCell("—")
+            amountsAllowed ? FinamiExportCell(minor: value) : FinamiExportCell("—")
         }
         var accounts = [[text("Рахунок"), text("Валюта"), text("Баланс")]]
         for item in s.db.accounts {
@@ -138,7 +141,7 @@ struct FinamiExportView: View {
             for occurrence in occurrences {
                 let title = includeNames ? p.name : p.kind
                 let value = NSDecimalNumber(decimal: Decimal(occurrence.amount) / 100).stringValue
-                let detail = includeAmounts ? value + " " + p.currency : "Finami · плановий платіж"
+                let detail = amountsAllowed ? value + " " + p.currency : "Finami · плановий платіж"
                 events.append(FinamiCalendarExportEvent(id: occurrence.id, date: occurrence.date, title: title, detail: detail))
             }
         }

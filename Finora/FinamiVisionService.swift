@@ -28,6 +28,10 @@ func recognizeScan(_ data: Data, knownDigest: String? = nil, installment: Bool =
     let request = VNRecognizeTextRequest()
     request.recognitionLevel = .accurate
     request.usesLanguageCorrection = true
+    if !installment {
+        request.minimumTextHeight = 0.006
+        request.customWords = ["YouTube Premium", "ПриватБанк", "Залишок", "Успішно", "Категорія", "Універсальна", "UAH"]
+    }
     if installment {
         request.minimumTextHeight = 0.006
         request.customWords = ["розстрочка", "залишилось", "залишок", "щомісячний", "платіж", "погашення", "грн", "ПУМБ", "Сплачуйте частинами", "Внесено", "Залишилося", "Оформлено"]

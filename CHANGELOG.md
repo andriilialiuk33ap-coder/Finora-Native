@@ -1,3 +1,16 @@
+## Build 92 — development candidate (6.4.41)
+
+Based on B89 Recovery Iteration 2 CI Fix. This is a partial implementation of the Build 90–92 roadmap, not a completed production release.
+
+- PrivatBank transaction detail parser: signed payment, separate balance, status, comma-separated timestamp, masked card suffix, conservative bank/account matching.
+- YouTube Premium monthly subscription suggestion with explicit confirmation; creates one expense and linked payment history in the same database mutation. Existing subscriptions are not duplicated or advanced automatically. Date and account remain subject to confirmation.
+- History global privacy override, linked hidden subscription masking, amount-sort fallback, CSV amount redaction and conservative report export masking. This is not a full privacy/security audit; free-text descriptions and explicit backup exports can contain financial data.
+- Bounded LRU caches for dashboard months/metrics, history and account activity. Broad invalidation is retained for safety.
+- Recovery account name selectors and automatic loading of the operation identified by validation.
+- Added transaction OCR regression script using a manually transcribed layout with synthetic card identifiers, integrated into CI. No actual private screenshot included.
+
+Local verification: 13 new transaction OCR checks, 16 history/privacy checks, existing Build 60, 64 brand and 67 OCR scripts, and syntax parsing of changed Swift files. Apple Vision on actual screenshot, full iOS build, UI tests, and real database migration remain pending. No claim of fixing the previously reported one-cent discrepancy. Cross-process storage, full background validation/serialization, installment currency, complete identity engine and full redesign are not implemented here.
+
 # Changelog — Finami Stable
 
 ## 6.4.41 (Build 89) — Ledger Integrity

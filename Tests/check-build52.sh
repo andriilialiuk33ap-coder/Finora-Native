@@ -26,6 +26,12 @@ check(search("1250,50",masked:["bank"]).isEmpty, "source mask hides amount")
 check(search("1250,50",hidden:true).isEmpty, "global mask hides amount")
 check(search("Сільпо",hidden:true) == ["e"], "masked merchant still searchable")
 check(Set(search("   ")) == Set(["e","t"]), "blank search returns all")
+let staleQuery = FinamiHistoryQuery(kind:"all",account:"all",category:"all",search:"1250,50",sort:.newest,hideAmounts:false)
+check(staleQuery.apply(to:ops,names:names,forceMask:true).isEmpty,"store mask overrides stale query")
+check(staleQuery.apply(to:ops,names:names,maskedOperations:["e"]).isEmpty,"hidden subscription payment not searchable by amount")
+let dated = [Operation(id:"older",kind:.expense,amount:99900,date:Date(timeIntervalSince1970:1)),Operation(id:"newer",kind:.expense,amount:100,date:Date(timeIntervalSince1970:2))]
+let sortedQuery = FinamiHistoryQuery(kind:"all",account:"all",category:"all",search:"",sort:.largest,hideAmounts:false)
+check(sortedQuery.apply(to:dated,names:[:],forceMask:true).map(\.id) == ["newer","older"],"private amount sorting falls back to date")
 SWIFT
 swiftc -swift-version 5 -warnings-as-errors "$tmp/Models.swift" Finora/FinamiHistoryQuery.swift Finora/MoneyCore.swift "$tmp/main.swift" -o "$tmp/test"
 "$tmp/test"

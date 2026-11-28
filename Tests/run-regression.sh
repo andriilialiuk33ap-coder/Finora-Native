@@ -24,6 +24,7 @@ bash Tests/check-build63-layout.sh
 bash Tests/check-build64-brand-ocr.sh
 bash Tests/check-build64-ocr-geometry.sh
 bash Tests/check-build67-ocr.sh
+bash Tests/check-build92-transaction-ocr.sh
 bash Tests/check-build69-review.sh
 python3 Tests/check-build64-assets.py
 bash Tests/check-load-database.sh

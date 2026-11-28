@@ -257,11 +257,13 @@ private struct ScanTransactionEdit: Identifiable {
     var chosen = false
     var dateChecked = false
     var duplicateOverride = false
+    var createMonthlySubscription = false
     init(_ d: ScanLineDraft) {
         id = d.id; note = d.note; amount = d.money.map { amountText(abs($0.minor)) } ?? ""
         currency = d.money?.currency ?? ""
         direction = d.money?.signed == true ? (d.money!.minor < 0 ? Kind.expense.rawValue : Kind.unclassifiedCredit.rawValue) : ""
         date = d.date ?? Date()
+        chosen = d.money != nil && d.date != nil && d.money?.signed == true
     }
     var kind: Kind? { Kind(rawValue: direction) }
     var minor: Int64? { bankMinor(amount).flatMap { $0 > 0 ? $0 : nil } }
@@ -303,6 +305,7 @@ private struct ScanTransactionsReview: View {
     private func blockers(_ row: ScanTransactionEdit) -> [String] {
         var result: [String] = []
         if !row.dateChecked { result.append("підтвердити дату") }
+        if row.createMonthlySubscription && row.date > Date() { result.append("перевірити дату оплати підписки") }
         if row.kind == nil { result.append("вибрати тип операції") }
         if row.minor == nil { result.append("ввести суму") }
         if row.currency.isEmpty { result.append("вибрати валюту") }
@@ -350,6 +353,15 @@ private struct ScanTransactionsReview: View {
                         Picker("Категорія", selection: $row.category) { ForEach(categories(row), id: \.self) { Text($0).tag($0) } }
                         Button("Запропонувати категорію") { if let k = row.kind { row.category = suggestedCategory(row.note, kind: k, database: s.db) } }
                     }
+                    if row.kind == .expense, let service = FinamiScanParser.monthlySubscription(row.note) {
+                        Label("Ймовірна підписка · " + service, systemImage: "repeat")
+                        if (s.db.subscriptions ?? []).contains(where: { FinamiScanParser.monthlySubscription($0.name) == service }) {
+                            Text("Підписка вже існує. Імпортується лише операція; оплату можна прив’язати у календарі платежів.").font(.caption)
+                        } else {
+                            Toggle("Створити щомісячну підписку", isOn: $row.createMonthlySubscription)
+                        }
+                        Text("Підтверди період. Поточна оплата буде записана один раз; наступна дата — через місяць. Наявна підписка не дублюється.").font(.caption).foregroundStyle(.secondary)
+                    }
                     DatePicker("Дата і час", selection: $row.date)
                     Toggle("Дата перевірена", isOn: $row.dateChecked)
                     if row.chosen { let pending = blockers(row); if pending.isEmpty { Label("Готово до імпорту", systemImage: "checkmark.circle").foregroundStyle(.green) } else { Text("Потрібно: " + pending.joined(separator: "; ")).font(.caption).foregroundStyle(.orange) } }
@@ -362,7 +374,8 @@ private struct ScanTransactionsReview: View {
                 .onChange(of: row.currency) { _ in if !s.db.accounts.contains(where: { $0.id == row.account && $0.code == row.currency }) { row.account = "" }; row.duplicateOverride = false }
                 .onChange(of: row.account) { _ in row.duplicateOverride = false }
                 .onChange(of: row.amount) { _ in row.duplicateOverride = false }
-                .onChange(of: row.direction) { _ in row.duplicateOverride = false; if let kind = row.kind, kind.isReportCategory { row.category = suggestedCategory(row.note, kind: kind, database: s.db) } else { row.category = "Без категорії" } }
+                .onChange(of: row.note) { _ in row.createMonthlySubscription = false }
+                .onChange(of: row.direction) { _ in row.createMonthlySubscription = false; row.duplicateOverride = false; if let kind = row.kind, kind.isReportCategory { row.category = suggestedCategory(row.note, kind: kind, database: s.db) } else { row.category = "Без категорії" } }
                 .onChange(of: row.date) { _ in row.dateChecked = false; row.duplicateOverride = false }
             }
             Button { rows.append(ScanTransactionEdit(.init(id: UUID().uuidString, note: "", money: nil, date: nil))) } label: { Label("Додати нерозпізнаний рядок", systemImage: "plus.circle") }.disabled(rows.count >= 100)
@@ -382,7 +395,10 @@ private struct ScanTransactionsReview: View {
                 if let kind = rows[i].kind, kind.isReportCategory { rows[i].category = suggestedCategory(rows[i].note, kind: kind, database: s.db) }
                 if let bank = photo.bank {
                     let matches = s.db.accounts.filter { ($0.bankName ?? $0.name).localizedCaseInsensitiveContains(bank) && $0.code == rows[i].currency }
-                    if matches.count == 1 { rows[i].account = matches[0].id }
+                    if let suffix = FinamiScanParser.cardSuffix(photo.lines) {
+                        let exact = matches.filter { $0.lastFour == suffix }
+                        if exact.count == 1 { rows[i].account = exact[0].id }
+                    } else if matches.count == 1 { rows[i].account = matches[0].id }
                 }
             }
         }
@@ -395,7 +411,7 @@ private struct ScanTransactionsReview: View {
             guard let k = row.kind, let n = row.uah, let native = row.minor else { return nil }
             var op = Operation(kind: k, amount: n, date: row.date, category: k.isReportCategory ? row.category : "Без категорії", note: bankRedact(row.note), account: row.account)
             op.sourceMinor = native; op.entryCurrency = row.currency; op.originalCurrency = row.currency; op.originalAmount = native
-            op.exchangeRate = row.currency == "USD" ? row.rate : nil; op.captureSource = "Finami Scan"; op.importBatch = batch; op.scanFingerprint = fingerprint(row)
+            op.exchangeRate = row.currency == "USD" ? row.rate : nil; op.captureSource = "Finami Scan"; op.sourceBank = photo.bank; op.importBatch = batch; op.scanFingerprint = fingerprint(row)
             if attach && photo.image != nil { op.scanImageID = photo.id }
             return op
         }
@@ -405,6 +421,18 @@ private struct ScanTransactionsReview: View {
         catch { message = error.localizedDescription; return }
         if s.change(forceSnapshot: true, { d in
             d.operations.append(contentsOf: operations)
+            for (row, op) in zip(chosen, operations) where row.createMonthlySubscription && row.kind == .expense {
+                guard let name = FinamiScanParser.monthlySubscription(row.note), let amount = row.minor,
+                      let next = FinamiScanParser.nextMonthlySubscriptionDate(row.date), row.date <= Date(),
+                      !(d.subscriptions ?? []).contains(where: { FinamiScanParser.monthlySubscription($0.name) == name }) else { continue }
+                var subscription = SubscriptionRecord()
+                subscription.name = name; subscription.amount = amount; subscription.currency = row.currency
+                subscription.period = .month; subscription.next = next
+                subscription.payments = [.init(date: row.date, amount: amount, currency: row.currency, through: next)]
+                d.subscriptions = (d.subscriptions ?? []) + [subscription]
+                let record = FinamiPaidRecord(paymentID: subscription.id, scheduledDate: row.date, paidDate: row.date, amount: amount, currency: row.currency, accountID: row.account, operationID: op.id)
+                d.paidRecords = (d.paidRecords ?? []) + [record]
+            }
             if let attachmentHash {
                 var hashes = d.scanFileHashes ?? [:]; hashes[photo.id] = attachmentHash; d.scanFileHashes = hashes
                 d.scanImages?.removeValue(forKey: photo.id)
