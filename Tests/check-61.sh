@@ -39,12 +39,14 @@ struct Database { var operations:[Operation] }
 func sameMonth(_ a:Date,_ b:Date)->Bool { Calendar.current.isDate(a,equalTo:b,toGranularity:.month) }
 final class Store {
     var db:Database { didSet { dashboardMonthCache.removeAll() } }
-    var dashboardMonthCache:[DateInterval:[Operation]]=[:]
+    var dashboardMonthCache:FinamiBoundedCache<DateInterval,[Operation]> = .init(limit: 12)
     init(_ ops:[Operation]) { db=Database(operations:ops) }
 SWIFT
 sed -n '/^  func month(_ date: Date)/,/^  }/p' Finora/FinamiStore.swift >> "$tmp/Month.swift"
+echo '}' >> "$tmp/Month.swift"
+# Use the actual production LRU implementation, not a dictionary stand-in.
+sed -n '/^private struct FinamiBoundedCache</,$p' Finora/FinamiStore.swift | sed 's/^private struct FinamiBoundedCache/struct FinamiBoundedCache/' >> "$tmp/Month.swift"
 cat >> "$tmp/Month.swift" <<'SWIFT'
-}
 @main struct Harness {
     static func main() {
         let cal=Calendar.current
@@ -59,8 +61,20 @@ cat >> "$tmp/Month.swift" <<'SWIFT'
         precondition(store.month(start).map(\.id)==[2,3])
         print("PASS: cache invalidation and exact inclusive start/exclusive end")
         for i in 1...12 { _=store.month(cal.date(byAdding:.month,value:i,to:start)!) }
-        precondition(store.dashboardMonthCache.count<=4)
-        print("PASS: month cache bounded to four entries")
+        precondition(store.dashboardMonthCache[cal.dateInterval(of:.month,for:start)!] == nil)
+        for i in 1...12 {
+            let key = cal.dateInterval(of:.month,for:cal.date(byAdding:.month,value:i,to:start)!)!
+            precondition(store.dashboardMonthCache[key] != nil)
+        }
+        print("PASS: month cache retains twelve entries and evicts oldest")
+        var lru = FinamiBoundedCache<Int,Int>(limit: 2)
+        lru[1] = 10; lru[2] = 20
+        precondition(lru[1] == 10)
+        lru[3] = 30
+        precondition(lru[2] == nil && lru[1] == 10 && lru[3] == 30)
+        lru.removeAll()
+        precondition(lru[1] == nil && lru[3] == nil)
+        print("PASS: actual cache promotes recently read entries and clears correctly")
         let refStore=Store(ops)
         var count=0;let t=Date()
         for _ in 0..<20 { count+=ops.filter{sameMonth($0.date,start)}.count }
