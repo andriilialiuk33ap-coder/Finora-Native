@@ -45,7 +45,31 @@ struct CapturePreferences: Codable {
         guard storageHealthy, !loading else { return }
         do {
             let dir = try (inbox ?? CaptureInbox.folder())
-            let scan = try CaptureInbox.scan(in: dir)
+            applyCaptureScan(try CaptureInbox.scan(in: dir), in: dir, auto: auto)
+        } catch {
+            if captureWarning != error.localizedDescription { captureWarning = error.localizedDescription }
+        }
+    }
+    // The foreground timer reads files outside the UI actor. On resume, use
+    // the live store and refuse to apply a scan prepared before a database change.
+    func refreshCapturesInBackground() async {
+        guard storageHealthy, !loading, !Task.isCancelled, !captureRefreshInProgress else { return }
+        captureRefreshInProgress = true
+        defer { captureRefreshInProgress = false }
+        let revision = databaseVersion
+        do {
+            let (dir, scan) = try await Task.detached(priority: .utility) { () throws -> (URL, CaptureInbox.Scan) in
+                let dir = try CaptureInbox.folder()
+                return (dir, try CaptureInbox.scan(in: dir))
+            }.value
+            guard !Task.isCancelled, storageHealthy, !loading, revision == databaseVersion else { return }
+            applyCaptureScan(scan, in: dir, auto: true)
+        } catch {
+            guard !Task.isCancelled else { return }
+            if captureWarning != error.localizedDescription { captureWarning = error.localizedDescription }
+        }
+    }
+    private func applyCaptureScan(_ scan: CaptureInbox.Scan, in dir: URL, auto: Bool) {
             var warnings: [String] = []
             if scan.unreadable > 0 { warnings.append("Не вдалося прочитати файли черги: \(scan.unreadable). Збережено для повторної спроби.") }
             let handled = Set(db.captureHandled ?? [])
@@ -79,9 +103,6 @@ struct CapturePreferences: Codable {
             if capturePending != pending { capturePending = pending }
             let warning = warnings.isEmpty ? nil : Array(Set(warnings)).sorted().joined(separator: "\n")
             if captureWarning != warning { captureWarning = warning }
-        } catch {
-            if captureWarning != error.localizedDescription { captureWarning = error.localizedDescription }
-        }
     }
     private static func recordCapture(_ e: CapturedPayment, operation: Operation?, learn: Bool, in d: inout Database) {
         guard !(d.captureHandled ?? []).contains(e.id) else { return }

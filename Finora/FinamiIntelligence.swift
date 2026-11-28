@@ -70,6 +70,8 @@ struct FinamiCalendarEvent: Identifiable {
     let paid: Bool
     let payment: FinamiPayment?
     var accountID: String? = nil
+    var bankSchedule: Bool = false
+    var statusTitle: String { paid ? "Сплачено" : bankSchedule ? "За графіком банку" : projected ? "Прогноз" : "Очікує оплати" }
     var tint: Color { paid ? .green : kind == "Підписка" ? .purple : kind == ObligationKind.installment.title ? .blue : .teal }
 }
 @MainActor extension Store {
@@ -77,8 +79,8 @@ struct FinamiCalendarEvent: Identifiable {
         var events: [FinamiCalendarEvent] = []
         for p in upcomingPayments {
             let period = p.subscription ? db.subscriptions?.first(where: { $0.id == p.id })?.period : nil
-            for row in finamiPlannedOccurrences(id: p.id, start: p.date, amount: p.amount, remaining: p.remaining, subsequentAmount: p.recurringAmount, component: period?.component ?? .month, step: period?.step ?? 1, interval: interval) {
-                events.append(.init(id: row.id, paymentID: p.id, date: row.date, name: p.name, currency: p.currency, amount: row.amount, kind: p.kind, projected: row.projected, paid: false, payment: row.projected ? nil : p))
+            for row in p.occurrences(component: period?.component ?? .month, step: period?.step ?? 1, interval: interval) {
+                events.append(.init(id: row.id, paymentID: p.id, date: row.date, name: p.name, currency: p.currency, amount: row.amount, kind: p.kind, projected: row.projected, paid: false, payment: row.projected ? nil : p, bankSchedule: p.confirmedSchedule != nil))
             }
         }
         for r in db.paidRecords ?? [] where r.paidDate >= interval.start && r.paidDate < interval.end {
@@ -204,6 +206,6 @@ struct FinamiCalendarGrid: View {
     }
     private func eventRow(_ e: FinamiCalendarEvent) -> some View {
         let loan = s.db.obligations.first { $0.id == e.paymentID }
-        return FinamiModernPaymentRow(name:e.name,kind:e.kind,date:e.date,currency:e.currency,due:e.amount,total:loan?.target,monthly:loan?.monthly,remaining:loan?.remaining,status:e.paid ? "Сплачено" : e.projected ? "Прогноз" : "Очікує оплати",masked:masked || (s.db.preferences?.designHiddenSubscriptions ?? []).contains(e.paymentID))
+        return FinamiModernPaymentRow(name:e.name,kind:e.kind,date:e.date,currency:e.currency,due:e.amount,total:loan?.target,monthly:loan?.monthly,remaining:loan?.remaining,status:e.statusTitle,masked:masked || (s.db.preferences?.designHiddenSubscriptions ?? []).contains(e.paymentID))
     }
 }

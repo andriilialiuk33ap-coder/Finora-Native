@@ -22,15 +22,27 @@ struct BankRow: Codable, Identifiable, Hashable {
     var cardLastFour: String? = nil
     var creditContractSuffix: String? = nil
     var categoryHint: String? = nil
-    var key: String { reference.map { source + ":" + $0 } ?? [source, String(Int64(date.timeIntervalSince1970)), String(signed), note.lowercased().split(whereSeparator: \.isWhitespace).joined(separator: " "), String(fee)].joined(separator: "|") }
+    var key: String {
+        if let reference { return source + ":" + reference }
+        let seconds = date.timeIntervalSince1970
+        let timestamp = Int64(exactly: seconds.rounded(.towardZero)).map(String.init) ?? "invalid-date"
+        return [source, timestamp, String(signed), note.lowercased().split(whereSeparator: \.isWhitespace).joined(separator: " "), String(fee)].joined(separator: "|")
+    }
 }
 struct BankBatch { var rows: [BankRow] = []; var rejected = 0; var reconciliation: String? = nil; var statementLastFour: String? = nil; var statementIBAN: String? = nil; var opening: Int64? = nil; var closing: Int64? = nil; var statementMasks: [String] = [] }
 func bankReconcile(_ batch: BankBatch, debit: Int64?, credit: Int64?) -> String {
     guard let debit, let credit else {return "Підсумки банку не розпізнано. Звірте виписку вручну."}
-    let out = batch.rows.filter{$0.signed<0}.reduce(Int64(0)){$0-$1.signed}
-    let incoming = batch.rows.filter{$0.signed>0}.reduce(Int64(0)){$0+$1.signed}
-    if out == abs(debit) && incoming == abs(credit) && batch.rejected == 0 {return "Суми рядків збігаються з підсумками виписки."}
-    return "Увага: суми рядків не збігаються з підсумками банку. Перевірте комісії, коригування й залишок перед імпортом. Різниця списань: \(Double(out-abs(debit))/100) грн; зарахувань: \(Double(incoming-abs(credit))/100) грн."
+    // Decimal avoids an overflow even for malformed externally supplied rows.
+    var out = Decimal.zero, incoming = Decimal.zero
+    for row in batch.rows {
+        if row.signed < 0 { out -= Decimal(row.signed) }
+        else { incoming += Decimal(row.signed) }
+    }
+    let expectedDebit = abs(Decimal(debit)), expectedCredit = abs(Decimal(credit))
+    if out == expectedDebit && incoming == expectedCredit && batch.rejected == 0 { return "Суми рядків збігаються з підсумками виписки." }
+    let debitDifference = NSDecimalNumber(decimal: (out - expectedDebit) / 100).stringValue
+    let creditDifference = NSDecimalNumber(decimal: (incoming - expectedCredit) / 100).stringValue
+    return "Увага: суми рядків не збігаються з підсумками банку. Перевірте комісії, коригування й залишок перед імпортом. Різниця списань: \(debitDifference) грн; зарахувань: \(creditDifference) грн."
 }
 func bankSummary(_ text:String,label:String)->Int64? {
     let clean=bankClean(text); guard let range=clean.range(of:NSRegularExpression.escapedPattern(for:label)+#"\s*:?\s*[-−]?\d+(?:[ ]\d{3})*[.,]\d{2}"#,options:[.regularExpression,.caseInsensitive]) else{return nil}
@@ -112,7 +124,7 @@ final class BankXML: NSObject, XMLParserDelegate {
     func parser(_ parser: XMLParser, didStartElement name: String, namespaceURI: String?, qualifiedName: String?, attributes a: [String:String]) {
         if name == "si" { current = ""; inShared = true }
         if name == "row" { row = [] }
-        if name == "c" { inCell = true; cell = ""; kind = a["t"] ?? ""; column = 0; for x in (a["r"] ?? "").utf8.prefix(while: { $0 >= 65 && $0 <= 90 }) { column = column * 26 + Int(x - 64) }; column -= 1 }
+        if name == "c" { inCell = true; cell = ""; kind = a["t"] ?? ""; column = 0; for x in (a["r"] ?? "").utf8.prefix(while: { $0 >= 65 && $0 <= 90 }) { if column > 256 { break }; column = column * 26 + Int(x - 64) }; column -= 1 }
         if name == "t" { inText = true }
         if name == "v" { inValue = true }
     }
@@ -139,7 +151,7 @@ struct MonoItem: Codable { var id: String; var time: Int64; var description: Str
 func monoRows(_ items: [MonoItem], account: String) -> BankBatch {
     var batch = BankBatch()
     for i in items {
-        guard i.hold != true, i.amount != 0, i.amount >= -1_000_000_000_000, i.amount <= 1_000_000_000_000, i.operationAmount >= -1_000_000_000_000, i.operationAmount <= 1_000_000_000_000 else { batch.rejected += 1; continue }
+        guard i.hold != true, i.amount != 0, i.amount >= -1_000_000_000_000, i.amount <= 1_000_000_000_000, i.operationAmount >= -1_000_000_000_000, i.operationAmount <= 1_000_000_000_000, i.commissionRate >= -1_000_000_000_000, i.commissionRate <= 1_000_000_000_000, i.time >= 0, i.time <= 253_402_300_799 else { batch.rejected += 1; continue }
         let code = [980:"UAH",840:"USD",978:"EUR",985:"PLN",826:"GBP"][i.currencyCode] ?? String(i.currencyCode)
         batch.rows.append(BankRow(source:"monobank",date:Date(timeIntervalSince1970:Double(i.time)),signed:i.amount,note:bankRedact(i.description),mcc:i.mcc,original:abs(i.operationAmount),currency:code,fee:i.commissionRate,reference:account+":"+i.id))
     }

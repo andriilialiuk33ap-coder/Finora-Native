@@ -10,8 +10,8 @@ private struct FinamiEncryptedEnvelope: Codable {
     var sealed: Data
 }
 private enum FinamiCryptoError: LocalizedError {
-    case invalid, password, random
-    var errorDescription: String? { switch self { case .invalid: return "Непідтримуваний або пошкоджений файл."; case .password: return "Неправильний пароль або пошкоджена копія."; case .random: return "Не вдалося створити ключ." } }
+    case invalid, password, random, tooLarge
+    var errorDescription: String? { switch self { case .invalid: return "Непідтримуваний або пошкоджений файл."; case .password: return "Неправильний пароль або пошкоджена копія."; case .random: return "Не вдалося створити ключ."; case .tooLarge: return "Копія завелика для поточного формату шифрованого експорту. Збережи повну JSON-копію у захищеному місці." } }
 }
 enum FinamiBackupCrypto {
     static func key(_ password: String, salt: Data) throws -> SymmetricKey {
@@ -23,6 +23,8 @@ enum FinamiBackupCrypto {
         guard status == kCCSuccess else { throw FinamiCryptoError.invalid }; return SymmetricKey(data: output)
     }
     static func seal(_ data: Data, password: String) throws -> Data {
+        // Base64 adds at least one third to the encrypted envelope.
+        guard data.count <= 112_499_900 else { throw FinamiCryptoError.tooLarge }
         var salt = [UInt8](repeating: 0, count: 16)
         let status = salt.withUnsafeMutableBytes { SecRandomCopyBytes(kSecRandomDefault, 16, $0.baseAddress!) }
         guard status == errSecSuccess else { throw FinamiCryptoError.random }
@@ -30,7 +32,7 @@ enum FinamiBackupCrypto {
         let box = try AES.GCM.seal(data, using: key(password, salt: saltData))
         guard let combined = box.combined else { throw FinamiCryptoError.invalid }
         let encoded = try JSONEncoder().encode(FinamiEncryptedEnvelope(salt: saltData, sealed: combined))
-        guard encoded.count <= 150_000_000 else { throw FinamiCryptoError.invalid }
+        guard encoded.count <= 150_000_000 else { throw FinamiCryptoError.tooLarge }
         return encoded
     }
     static func open(_ data: Data, password: String) throws -> Data {

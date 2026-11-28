@@ -11,7 +11,7 @@ struct FinamiExportReport {
         func money(_ value: Int64) -> FinamiExportCell {
             includeAmounts ? FinamiExportCell(minor: value) : FinamiExportCell("—")
         }
-        let header = ["Дата", "Тип", "Сума UAH", "Категорія", "Рахунок", "Куди", "Опис", "Комісія UAH", "Оригінальна сума", "Оригінальна валюта", "Курс"].map(text)
+        let header = ["Дата", "Тип", "Сума UAH", "Категорія", "Рахунок", "Куди", "Опис", "Комісія UAH", "Оригінальна сума", "Оригінальна валюта", "Курс", "Чисті витрати UAH"].map(text)
         let date = ISO8601DateFormatter()
         let month = DateFormatter()
         month.locale = Locale(identifier: "uk_UA")
@@ -19,10 +19,13 @@ struct FinamiExportReport {
         var total = FinamiReportTotals()
         var monthly: [String: FinamiReportTotals] = [:]
         var categories: [String: Int64] = [:]
+        var netCategories: [String: Int64] = [:]
         var allRows = [header]
         var incomeRows = [header]
         var expenseRows = [header]
         for o in operations {
+            guard account == nil || o.account == account || (o.kind == .transfer && o.destination == account) else { continue }
+            if o.expenseValue != 0 { netCategories[o.expenseGroup, default: 0] += o.expenseValue }
             total.add(o, account: account)
             monthly[month.string(from: o.date), default: FinamiReportTotals()].add(o, account: account)
             var row: [FinamiExportCell] = []
@@ -37,6 +40,7 @@ struct FinamiExportReport {
             row.append(money(o.originalAmount ?? o.amount))
             row.append(text(o.originalCurrency ?? "UAH"))
             row.append(text(includeAmounts ? (o.exchangeRate ?? "") : ""))
+            row.append(money(o.expenseValue))
             allRows.append(row)
             switch o.kind {
             case .income: incomeRows.append(row)
@@ -47,7 +51,11 @@ struct FinamiExportReport {
                 expenseRows.append(row)
                 categories[o.category, default: 0] += o.amount
             case .refund: expenseRows.append(row)
-            default: break
+            default:
+                if o.neutralFee != 0 {
+                    expenseRows.append(row)
+                    categories[o.expenseGroup, default: 0] += o.neutralFee
+                }
             }
         }
         let summary: [[FinamiExportCell]] = [
@@ -57,9 +65,9 @@ struct FinamiExportReport {
             [text("Чисті витрати"), money(total.expense)],
             [text("Чистий потік"), money(total.net)]
         ]
-        var categoryRows = [[text("Категорія"), text("Витрати UAH (брутто)")]]
-        for key in categories.keys.sorted() {
-            categoryRows.append([text(key), money(categories[key] ?? 0)])
+        var categoryRows = [[text("Категорія"), text("Витрати UAH (брутто)"), text("Чисті витрати UAH")]]
+        for key in Set(categories.keys).union(netCategories.keys).sorted() {
+            categoryRows.append([text(key), money(categories[key] ?? 0), money(netCategories[key] ?? 0)])
         }
         var monthRows = [[text("Місяць"), text("Доходи UAH"), text("Надходження UAH"), text("Витрати UAH"), text("Чистий потік UAH")]]
         for key in monthly.keys.sorted() {

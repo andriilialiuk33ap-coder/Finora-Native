@@ -1,7 +1,7 @@
 import Foundation
 
 // No SMS body, OTP, card number or bank credential is retained by this feature.
-struct CapturedPayment: Codable, Identifiable, Equatable {
+struct CapturedPayment: Codable, Identifiable, Equatable, Sendable {
     var id = UUID().uuidString
     var date = Date()
     var account: String
@@ -228,13 +228,22 @@ enum CaptureInbox {
         try FileManager.default.createDirectory(at:dir,withIntermediateDirectories:true)
         return dir
     }
+    private static let maxEventBytes = 64 * 1024
     static func enqueue(_ event: CapturedPayment, in dir: URL) throws {
+        guard valid(event) else { throw CaptureError.invalid }
+        let data = try JSONEncoder().encode(event)
+        guard data.count <= maxEventBytes else { throw CaptureError.invalid }
         try FileManager.default.createDirectory(at:dir,withIntermediateDirectories:true)
-        try JSONEncoder().encode(event).write(to:dir.appendingPathComponent(event.id+".json"),options:[.atomic,.completeFileProtectionUntilFirstUserAuthentication])
+        try data.write(to:dir.appendingPathComponent(event.id+".json"),options:[.atomic,.completeFileProtectionUntilFirstUserAuthentication])
     }
-    struct Scan {
+    struct Scan: Sendable {
         var events: [CapturedPayment] = []
         var unreadable = 0
+    }
+    private static func valid(_ event: CapturedPayment) -> Bool {
+        UUID(uuidString: event.id) != nil && event.minor > 0 && event.minor <= 1_000_000_000_000 &&
+        ["UAH", "USD"].contains(event.currency) && event.date.timeIntervalSinceReferenceDate.isFinite &&
+        (event.reportedAvailable.map { $0 >= 0 && $0 <= 1_000_000_000_000 } ?? true)
     }
     // Isolate damaged or temporarily inaccessible files. Keep them intact for retry.
     static func scan(in dir: URL) throws -> Scan {
@@ -242,9 +251,12 @@ enum CaptureInbox {
         let files = try FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles])
         for url in files where url.pathExtension == "json" {
             do {
-                guard try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else { throw CaptureError.storage }
-                let event = try JSONDecoder().decode(CapturedPayment.self, from: Data(contentsOf: url))
-                guard UUID(uuidString: event.id) != nil, url.lastPathComponent == event.id + ".json", event.minor > 0, event.minor <= 1_000_000_000_000, ["UAH", "USD"].contains(event.currency) else { throw CaptureError.storage }
+                let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+                guard values.isRegularFile == true, values.isSymbolicLink != true, let size = values.fileSize, size <= maxEventBytes else { throw CaptureError.storage }
+                let data = try Data(contentsOf: url)
+                guard data.count <= maxEventBytes else { throw CaptureError.storage }
+                let event = try JSONDecoder().decode(CapturedPayment.self, from: data)
+                guard valid(event), url.lastPathComponent == event.id + ".json" else { throw CaptureError.storage }
                 result.events.append(event)
             } catch { result.unreadable += 1 }
         }

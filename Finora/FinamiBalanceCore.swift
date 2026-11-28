@@ -124,14 +124,6 @@ func finamiRedundantFXAdjustment(_ o:Operation,original:Operation,grouped:Operat
     return difference>0 && o.kind == .expense && o.account==original.destination && o.signedNative == -difference && o.bankKey==nil && o.sourceBank==nil && o.captureSource==nil && o.scanImageID==nil && !protected.contains(o.id) && abs(o.date.timeIntervalSince(original.date))<=36*3600
 }
 
-func finamiValidGroupedBankParts(_ o:Operation)->Bool {
-    guard let parts=o.groupedBankParts else{return true}
-    guard o.kind == .transfer,!parts.isEmpty,Set(parts.map(\.key)).count==parts.count,parts.allSatisfy({!$0.key.isEmpty && $0.amount>0 && $0.amount<=1_000_000_000_000}) else{return false}
-    var sum:Int64=0
-    for p in parts {let (value,overflow)=sum.addingReportingOverflow(p.amount);guard !overflow,value<=1_000_000_000_000 else{return false};sum=value}
-    return sum==(o.destinationMinor ?? o.amount)
-}
-
 func finamiIsRefundCandidate(_ o:Operation)->Bool {
     o.kind == .refund || (o.kind == .unclassifiedCredit && (o.bankType ?? "").range(of:"повернення",options:.caseInsensitive) != nil)
 }
@@ -145,11 +137,6 @@ func finamiRefundChoices(_ refund:Operation,operations:[Operation],merchantKey:(
 }
 // A compensation is a distinct incoming operation, not a new debit or a bank refund.
 // Require a same-currency UAH original, and share the cap with actual refunds.
-func finamiCanCompensate(_ receipt: Operation, _ original: Operation) -> Bool {
-    receipt.kind == .receipt && original.kind == .expense && receipt.id != original.id && original.date <= receipt.date &&
-    (receipt.entryCurrency ?? receipt.originalCurrency ?? "UAH") == "UAH" && (original.entryCurrency ?? original.originalCurrency ?? "UAH") == "UAH" &&
-    receipt.amount > 0 && receipt.signedNative == receipt.amount && original.amount > 0 && original.signedNative == -original.amount && receipt.amount <= original.amount
-}
 func finamiCompensationChoices(_ receipt: Operation, operations: [Operation], accounts: [Account]) -> [Operation] {
     guard accounts.contains(where: { $0.id == receipt.account && $0.code == "UAH" }) else { return [] }
     let uah = Set(accounts.filter { $0.code == "UAH" }.map(\.id))
@@ -165,33 +152,6 @@ func finamiCompensationChoices(_ receipt: Operation, operations: [Operation], ac
         (used[original.id] ?? 0) <= original.amount - receipt.amount
     }.sorted { $0.date > $1.date }
 }
-func finamiSynchronizeRefundLinks(_ operations:inout [Operation])->Bool {
-    // Validate the whole candidate before propagating derived category names.
-    guard !operations.contains(where: { $0.kind == .receipt && $0.receiptTreatment == .reimbursement && $0.refundOriginalID == nil }) else { return false }
-    let linked=operations.indices.filter{operations[$0].refundOriginalID != nil}
-    if linked.isEmpty { return true }
-    let lookup=Dictionary(operations.map{($0.id,$0)},uniquingKeysWith:{a,_ in a});var sums:[String:Int64]=[:]
-    for i in linked {
-        let o=operations[i]
-        guard let id=o.refundOriginalID,let original=lookup[id],original.kind == .expense,original.date<=o.date,o.signedNative>0 else{return false}
-        if o.kind == .receipt {
-            guard o.receiptTreatment == .reimbursement, finamiCanCompensate(o, original) else { return false }
-        } else {
-            guard o.kind == .refund, original.account == o.account else { return false }
-        }
-        let (sum,overflow)=(sums[id] ?? 0).addingReportingOverflow(o.signedNative)
-        guard !overflow,sum <= -original.signedNative else{return false}
-        sums[id]=sum
-    }
-    for i in linked {
-        if let id=operations[i].refundOriginalID,let original=lookup[id] {
-            if operations[i].kind == .receipt { operations[i].receiptExpenseCategory = original.category }
-            else { operations[i].category=original.category }
-        }
-    }
-    return true
-}
-
 // Available is not necessarily the accounting balance: holds and reserved funds may differ.
 // The caller must explicitly accept the estimate; a zero available amount is ambiguous.
 func finamiEstimatedNetFromAvailable(_ available:Int64, limit:Int64) -> Int64? {

@@ -23,11 +23,11 @@ struct FinamiFusionCrystal: View {
         }
         .padding(6)
         .background {
-            let shape = RoundedRectangle(cornerRadius: 22, style: .continuous)
+            let shape = RoundedRectangle(cornerRadius: FinamiDesignPolicy.navigationCorner, style: .continuous)
             if opaque { shape.fill(Color(uiColor: .secondarySystemBackground)) }
             else { shape.fill(.regularMaterial) }
         }
-        .overlay { RoundedRectangle(cornerRadius: 22).strokeBorder(Color.primary.opacity(0.12), lineWidth: 1).allowsHitTesting(false) }
+        .overlay { RoundedRectangle(cornerRadius: FinamiDesignPolicy.navigationCorner).strokeBorder(Color.primary.opacity(0.12), lineWidth: 1).allowsHitTesting(false) }
         .padding(.horizontal, 8)
         .padding(.top, 4)
         .padding(.bottom, 3)
@@ -38,7 +38,7 @@ struct FinamiFusionCrystal: View {
         let selected = selection == index
         let tint = selected || index == 2 ? accent : Color.secondary
         let label = tabs[index].0
-        let shape = RoundedRectangle(cornerRadius: 15, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: FinamiDesignPolicy.navigationTileCorner, style: .continuous)
         return Button {
             guard selection != index else { onReselect(index); return }
             if reduceMotion || opaque { selection = index }
@@ -59,7 +59,7 @@ struct FinamiFusionCrystal: View {
             }
             .padding(.vertical, 5)
             .padding(.horizontal, 1)
-            .frame(maxWidth: .infinity, minHeight: dynamicType.isAccessibilitySize ? 82 : 60)
+            .frame(maxWidth: .infinity, minHeight: dynamicType.isAccessibilitySize ? FinamiDesignPolicy.navigationAccessibleHeight : FinamiDesignPolicy.navigationTileHeight)
             .background(shape.fill(selected ? accent.opacity(scheme == .dark ? 0.20 : 0.12) : Color.primary.opacity(0.045)))
             .overlay { shape.strokeBorder(selected ? accent : Color.primary.opacity(0.13), lineWidth: 1).allowsHitTesting(false) }
             .contentShape(shape)

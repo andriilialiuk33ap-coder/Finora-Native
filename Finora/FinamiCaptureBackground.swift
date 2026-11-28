@@ -18,7 +18,8 @@ enum FinamiCaptureBackground {
         guard !Task.isCancelled else { return }
         await store.loadDatabase()
         guard !Task.isCancelled, store.storageHealthy, !store.loading else { return }
-        store.refreshCaptures()
+        await store.refreshCapturesInBackground()
+        guard !Task.isCancelled else { return }
         UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "finami.lastBackgroundCapture")
     }
 }

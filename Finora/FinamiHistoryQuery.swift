@@ -13,13 +13,14 @@ struct FinamiHistoryQuery: Hashable {
     var maximum: Int64? = nil
     var reviewOnly: Bool = false
     var sourceBank: String? = nil
-    func apply(to operations: [Operation], names: [String: String], maskedAccounts: Set<String> = []) -> [Operation] {
+    func apply(to operations: [Operation], names: [String: String], maskedAccounts: Set<String> = [], isCancelled: () -> Bool = { false }) -> [Operation] {
         let term = search.trimmingCharacters(in: .whitespacesAndNewlines)
         // Match both Ukrainian decimal notation and the existing dot notation.
         let normalizedAmountTerm = term.filter { !$0.isWhitespace }.replacingOccurrences(of: ",", with: ".")
         let isAmountTerm = !normalizedAmountTerm.isEmpty && normalizedAmountTerm.utf8.allSatisfy { (48...57).contains($0) || $0 == 46 }
         let containsDigit = term.utf8.contains { (48...57).contains($0) }
-        return operations.filter { o in
+        let filtered = operations.filter { o in
+            if isCancelled() { return false }
             if reviewOnly && !o.requiresReview { return false }
             if let sourceBank, o.sourceBank != sourceBank { return false }
             if let from, o.date < from { return false }
@@ -40,11 +41,13 @@ struct FinamiHistoryQuery: Hashable {
             let content = [o.note,o.category,names[o.account] ?? "Рахунок",destination,(o.tags ?? []).joined(separator:" ")].joined(separator:" ")
             if content.localizedCaseInsensitiveContains(term) { return true }
             guard !masked, isAmountTerm || containsDigit else { return false }
-            let amount = String(format: "%.2f", locale: Locale(identifier: "en_US_POSIX"), Double(o.amount)/100)
+            let amount = finamiMinorText(o.amount)
             if isAmountTerm && amount.contains(normalizedAmountTerm) { return true }
             // Keep the original combined-text matching for older search habits.
             let legacy = [o.note, o.category, amount, names[o.account] ?? "Рахунок", (o.tags ?? []).joined(separator: " ")].joined(separator: " ")
             return legacy.localizedCaseInsensitiveContains(term)
-        }.sorted { sort.orders($0,$1) }
+        }
+        guard !isCancelled() else { return [] }
+        return filtered.sorted { sort.orders($0,$1) }
     }
 }

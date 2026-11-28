@@ -134,7 +134,7 @@ struct FinamiExportView: View {
         var events: [FinamiCalendarExportEvent] = []
         for p in s.upcomingPayments {
             let period = s.db.subscriptions?.first { $0.id == p.id }?.period
-            let occurrences = finamiPlannedOccurrences(id: p.id, start: p.date, amount: p.amount, remaining: p.remaining, subsequentAmount: p.recurringAmount, component: period?.component ?? .month, step: period?.step ?? 1, interval: interval)
+            let occurrences = p.occurrences(component: period?.component ?? .month, step: period?.step ?? 1, interval: interval)
             for occurrence in occurrences {
                 let title = includeNames ? p.name : p.kind
                 let value = NSDecimalNumber(decimal: Decimal(occurrence.amount) / 100).stringValue

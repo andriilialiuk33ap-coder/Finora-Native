@@ -2,6 +2,13 @@ import Foundation
 
 // Presentation only. Never reads or mutates the ledger.
 enum FinamiDesignPolicy {
+    // Fixed component geometry, separate from the user-selected card radius.
+    // Fusion Crystal's five tiles deliberately retain identical minimum heights.
+    static let navigationCorner: CGFloat = 22
+    static let navigationTileCorner: CGFloat = 15
+    static let navigationTileHeight: CGFloat = 60
+    static let navigationAccessibleHeight: CGFloat = 82
+    static let paymentGlyphCorner: CGFloat = 12
     static let layouts = ["grid", "list", "cards"]
     static let dashboards = ["compact", "premium", "analytics"]
     static let accents = ["gold", "blue", "emerald", "rose", "violet", "silver", "red", "cyan"]

@@ -3,7 +3,14 @@ import SwiftUI
 struct FinamiGlobalSearch: View {
     @EnvironmentObject private var s: Store
     @State private var query = ""
-    @State private var settledQuery = ""
+    private struct SearchRequest: Hashable {
+        let term: String
+        let version: UInt64
+        let masked: Bool
+    }
+    @State private var completed: SearchRequest?
+    @State private var operationResults: [Operation] = []
+    private var request: SearchRequest { .init(term: term, version: s.databaseVersion, masked: s.privateAmounts) }
     @State private var operation: Operation?
     @State private var account: Account?
     @State private var payment: FinamiPayment?
@@ -45,12 +52,12 @@ struct FinamiGlobalSearch: View {
                 }
                 Section("Найближчі платежі") {
                     ForEach(s.upcomingPayments.filter{matches($0.name) || matches($0.kind)}) { p in
-                        Button {payment=p} label:{VStack(alignment:.leading){Text(p.name);Text(p.date.formatted(.dateTime.day().month(.wide))).font(.caption).foregroundStyle(.secondary)}}.buttonStyle(.plain)
+                        Button {payment=p} label:{VStack(alignment:.leading){Text(p.name);Text(p.date.formatted(.dateTime.day().month(.wide))).font(.caption).foregroundStyle(.secondary)}}.buttonStyle(.plain).accessibilityIdentifier("qa.search.payment." + p.id)
                     }
                 }
                 Section("Операції") {
-                    if settledQuery != term { ProgressView("Пошук…") } else {
-                    let rows=s.queryHistory(.init(kind:"all",account:"all",category:"all",search:term,sort:.newest,hideAmounts:s.privateAmounts))
+                    if completed != request { ProgressView("Пошук…") } else {
+                    let rows = operationResults
                     if rows.isEmpty {Text("Немає відповідних операцій").foregroundStyle(.secondary)}
                     ForEach(Array(rows.prefix(60))) { o in
                         Button {operation=o} label: {OperationRow(o:o).environment(\.finamiMask,s.db.accounts.first(where:{$0.id==o.account})?.hideAmounts == true)}.buttonStyle(.plain)
@@ -60,12 +67,17 @@ struct FinamiGlobalSearch: View {
                 }
             } else { Text("Шукай назви рахунків, продавців, платежів та функцій. Суми можна шукати, якщо вони не приховані.").font(.caption).foregroundStyle(.secondary) }
         }.navigationTitle("Пошук Finami")
-         .task(id: term) {
-             let value = term
-             if value.isEmpty { settledQuery = ""; return }
+         .task(id: request) {
+             let key = request
+             completed = nil
+             operationResults = []
+             guard !key.term.isEmpty else { return }
              do { try await Task.sleep(nanoseconds: 200_000_000) } catch { return }
-             guard !Task.isCancelled, value == term else { return }
-             settledQuery = value
+             guard !Task.isCancelled, key == request else { return }
+             let rows = await s.searchOperationsInBackground(key.term, expectedVersion: key.version, masked: key.masked)
+             guard !Task.isCancelled, key == request, let rows else { return }
+             operationResults = rows
+             completed = key
          }
          .sheet(item:$operation){OpEditor(original:$0)}
          .sheet(item:$account){AccountEditor(a:$0)}

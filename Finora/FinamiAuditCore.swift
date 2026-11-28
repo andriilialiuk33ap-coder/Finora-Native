@@ -9,7 +9,7 @@ struct FinamiAuditIssue: Identifiable, Equatable {
 // Candidates only. Never delete or merge records automatically, including opposite entries on the same account.
 func finamiAuditIssues(operations: [Operation], accounts: [Account], records: [FinamiPaidRecord]) -> [FinamiAuditIssue] {
     var result: [FinamiAuditIssue] = []
-    let accountIDs = Set(accounts.map(\.id)), opIDs = Set(operations.map(\.id))
+    let accountIDs = Set(accounts.map(\.id))
     for o in operations where !accountIDs.contains(o.account) || (o.kind == .transfer && (!accountIDs.contains(o.destination) || o.destination == o.account)) {
         result.append(.init(id:"account-"+o.id,title:"Некоректний рахунок",detail:"Перевір джерело та призначення операції.",operationIDs:[o.id]))
     }
@@ -21,7 +21,21 @@ func finamiAuditIssues(operations: [Operation], accounts: [Account], records: [F
         let same = Set(rows.map(\.account)).count == 1
         result.append(.init(id:"pair-"+key,title:same ? "Протилежні записи на одному рахунку" : "Можливий внутрішній переказ",detail:"Однакова сума, дата та опис. Перевір обидві виписки; автоматичне об’єднання небезпечне.",operationIDs:rows.map(\.id)))
     }
-    for r in records { if let id=r.operationID, !opIDs.contains(id) { result.append(.init(id:"payment-"+r.id,title:"Втрачений зв’язок платежу",detail:"Пов’язана операція відсутня.",operationIDs:[id])) } }
+    let paymentIssues = Set(finamiPaymentIntegrityIssues(operations: operations, accounts: accounts, records: records))
+    for issue in paymentIssues {
+        let title: String
+        switch issue.kind {
+        case .duplicateRecord: title = "Повтор запису оплати"
+        case .duplicateLink: title = "Операція пов’язана з кількома оплатами"
+        case .missingDebit: title = "Втрачений зв’язок платежу"
+        case .wrongDebit: title = "Неправильний тип пов’язаної операції"
+        case .wrongAccount: title = "Рахунок оплати не збігається"
+        case .wrongAmount: title = "Сума оплати не збігається"
+        case .wrongCurrency: title = "Валюта оплати не збігається"
+        case .invalidRecord: title = "Некоректний запис оплати"
+        }
+        result.append(.init(id: "payment-" + issue.kind.rawValue + "-" + issue.reference + "-" + (issue.operationID ?? ""), title: title, detail: "Перевір історію оплат. Нічого не змінено автоматично.", operationIDs: issue.operationID.map { [$0] } ?? []))
+    }
     return result.sorted{$0.id<$1.id}
 }
 struct FinamiCategoryGroup: Identifiable {

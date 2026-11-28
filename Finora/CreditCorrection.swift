@@ -5,6 +5,8 @@ struct CreditImportCorrection: View {
     @EnvironmentObject var s: Store
     @State private var account = ""
     @State private var confirm = false
+    @State private var correctionVersion: UInt64?
+    @State private var correctionAccount = ""
     @State private var edited: Operation?
     private var candidates: [Operation] {
         s.db.operations.filter { $0.account == account && $0.sourceBank != nil && $0.classificationReviewed != true && ($0.kind == .income || $0.kind == .expense) }
@@ -37,11 +39,15 @@ struct CreditImportCorrection: View {
                         VStack(alignment:.leading,spacing:5) {
                             Text(o.note.isEmpty ? "Без опису" : o.note).foregroundStyle(.primary)
                             Text(o.kind.title + " → " + proposed(o).title).font(.caption).foregroundStyle(.orange)
-                            Text(money(o.amount)).font(.subheadline.bold())
+                            Text(s.privateAmounts || s.db.accounts.first(where: {$0.id == o.account})?.hideAmounts == true ? "••••" : currencyMoney(o.sourceMinor ?? o.amount, s.db.accounts.first(where: {$0.id == o.account})?.code ?? "UAH")).font(.subheadline.bold()).monospacedDigit()
                         }
                     }
                 }
-                Button("Застосувати запропоновані зміни") {confirm=true}.disabled(changes.isEmpty)
+                Button("Застосувати запропоновані зміни") {
+                    correctionVersion = s.databaseVersion
+                    correctionAccount = account
+                    confirm = true
+                }.disabled(changes.isEmpty)
             }
             Section("Потребують уточнення") {
                 ForEach(pending) { o in Button {edited=o} label: {OperationRow(o:o)}.buttonStyle(.plain) }
@@ -51,10 +57,15 @@ struct CreditImportCorrection: View {
         .sheet(item:$edited) {OpEditor(original:$0)}
         .confirmationDialog("Застосувати зміни типів?",isPresented:$confirm) {
             Button("Застосувати") {
+                guard correctionVersion == s.databaseVersion, correctionAccount == account,
+                      s.db.accounts.contains(where: { $0.id == correctionAccount }) else {
+                    s.error = "Рахунок або операції змінилися. Перевір запропоновані виправлення ще раз."
+                    return
+                }
                 let types = Dictionary(uniqueKeysWithValues: changes.map {($0.id, proposed($0))})
                 s.change { d in
                     for i in d.operations.indices {
-                        guard let k = types[d.operations[i].id] else {continue}
+                        guard d.operations[i].account == correctionAccount, let k = types[d.operations[i].id] else {continue}
                         d.operations[i].kind=k
                         if !k.isReportCategory {d.operations[i].category="Без категорії"}
                         d.operations[i].classificationReviewed=true

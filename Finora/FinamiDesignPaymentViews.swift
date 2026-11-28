@@ -34,16 +34,16 @@ struct FinamiInstallmentDesign: View {
                         if let schedule = obligation.importedSchedule, !schedule.isEmpty, !compact {
                             let rows = Array(schedule.sorted { $0.date < $1.date }.prefix(24))
                             HStack(spacing: 2) { ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                                let matched = (s.db.paidRecords ?? []).contains { $0.paymentID == obligation.id && $0.amount >= row.amount && Calendar.current.isDate($0.scheduledDate, inSameDayAs: row.date) }
+                                let matched = row.amount > 0 && (s.db.paidRecords ?? []).contains { $0.paymentID == obligation.id && $0.amount >= row.amount && Calendar.current.isDate($0.scheduledDate, inSameDayAs: row.date) }
                                 Capsule().fill(matched ? Color.green : Color.secondary.opacity(0.25)).frame(height: 5)
                             } }
-                            Text("Імпортований графік · підтверджені оплати зеленим").font(.caption2).foregroundStyle(.secondary)
+                            Text(obligation.confirmedSchedule == nil ? "Довідковий графік · підтверджені оплати зеленим" : "Підтверджений графік · оплати зеленим").font(.caption2).foregroundStyle(.secondary)
                         }
                     }
                 }
             }
             if !compact {
-                LabeledContent("Щомісяця", value: visible(obligation.monthly)).font(.caption)
+                LabeledContent(obligation.confirmedSchedule == nil ? "Щомісяця" : "Регулярний внесок (довідково)", value: visible(obligation.monthly)).font(.caption)
                 LabeledContent("Наступний платіж", value: visible(obligation.nextCharge)).font(.caption)
             }
             if obligation.remaining > 0 && Calendar.current.startOfDay(for: obligation.due) < Calendar.current.startOfDay(for: Date()) { Text("Прострочено").font(.caption).foregroundStyle(.orange) }
@@ -99,10 +99,11 @@ struct FinamiUpcomingDesign: View {
 }
 struct FinamiSubscriptionDesign: View {
     @EnvironmentObject private var s: Store
+    @Environment(\.finamiMask) private var environmentMasked
     var record: SubscriptionRecord
     var collapsed: Bool
     private var p: AppearancePreferences { s.db.preferences ?? .init() }
-    private var masked: Bool { s.privateAmounts || (p.designHiddenSubscriptions ?? []).contains(record.id) }
+    private var masked: Bool { environmentMasked || s.privateAmounts || (p.designHiddenSubscriptions ?? []).contains(record.id) }
     private func money(_ v: Int64) -> String { masked ? "••••" : s.visibleMoney(v,record.currency) }
     private var brand: (String, Color) {
         let n = record.name.lowercased()
